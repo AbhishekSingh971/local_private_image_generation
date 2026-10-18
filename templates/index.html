@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Private Image AI</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a2c; --line:#29354d; --muted:#aab6ca; --accent:#8b9cff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:radial-gradient(ellipse at top,#172344 0,#0b1020 55%); color:#f5f7ff; font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+    main { max-width:1000px; margin:0 auto; padding:28px 18px 56px; }
+    header { margin-bottom:24px; }
+    h1 { margin:0 0 8px; font-size:clamp(28px,5vw,42px); letter-spacing:-.04em; }
+    .sub, .muted { color:var(--muted); }
+    .privacy { display:inline-flex; gap:8px; align-items:center; border:1px solid #315c4b; background:#102a25; color:#b9f5d9; border-radius:999px; padding:6px 12px; font-size:13px; }
+    .layout { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .panel { background:rgba(18,26,44,.92); border:1px solid var(--line); border-radius:18px; padding:20px; min-width:0; box-shadow:0 12px 36px #0002; }
+    label { display:block; font-weight:650; margin:14px 0 7px; }
+    textarea, input[type=file], select { width:100%; border:1px solid #35425c; background:#0d1424; color:#f5f7ff; border-radius:10px; padding:11px; font:inherit; }
+    textarea { resize:vertical; min-height:112px; }
+    input[type=range] { width:100%; accent-color:var(--accent); }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    button, .download { border:0; border-radius:11px; padding:12px 16px; background:var(--accent); color:#0a1020; font-weight:750; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+    button { width:100%; margin-top:18px; font-size:16px; }
+    button:disabled { opacity:.55; cursor:wait; }
+    .preview { min-height:270px; display:flex; align-items:center; justify-content:center; border:1px dashed #3b4963; border-radius:13px; overflow:hidden; background:#0b1120; }
+    .preview img { max-width:100%; max-height:520px; object-fit:contain; display:block; }
+    .placeholder { color:#8290a8; padding:24px; text-align:center; }
+    .status { margin-top:14px; color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; }
+    .tiny { font-size:12px; color:#9aa8bf; margin-top:12px; }
+    .download { margin-top:12px; display:none; }
+    .warning { border-left:3px solid #e7b45d; padding:9px 12px; background:#302717; color:#f6dfb3; border-radius:7px; font-size:13px; margin-top:14px; }
+    @media (max-width:760px) { .layout { grid-template-columns:1fr; } main { padding:20px 12px 36px; } .panel { padding:15px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="privacy">● Local-first · No login · No image API</div>
+    <h1>Private Image AI</h1>
+    <div class="sub">Upload an image, describe the edit, and generate on this computer.</div>
+  </header>
+  <div class="layout">
+    <section class="panel">
+      <form id="form">
+        <label for="image">Input image</label>
+        <input id="image" name="image" type="file" accept="image/png,image/jpeg,image/webp" required>
+        <div class="tiny">PNG, JPG or WEBP · max 12 MB · resized to at most 512 × 512 for lower memory use.</div>
+        <div class="preview" style="margin-top:12px"><img id="sourcePreview" alt="Selected input preview" hidden><div id="sourcePlaceholder" class="placeholder">Your selected image will appear here.</div></div>
+
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" name="prompt" maxlength="1200" required placeholder="Example: Turn this photo into a watercolor illustration while keeping the same composition."></textarea>
+
+        <label for="negative_prompt">Negative prompt (optional)</label>
+        <textarea id="negative_prompt" name="negative_prompt" maxlength="600" style="min-height:68px" placeholder="blurry, distorted, low quality"></textarea>
+
+        <div class="row">
+          <div>
+            <label for="strength">Edit strength: <span id="strengthValue">0.65</span></label>
+            <input id="strength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.65">
+            <div class="tiny">Lower preserves more of the original.</div>
+          </div>
+          <div>
+            <label for="steps">Steps</label>
+            <select id="steps" name="steps">
+              <option value="5">5 · fastest test</option>
+              <option value="10">10</option>
+              <option value="15" selected>15 · recommended start</option>
+              <option value="20">20</option>
+              <option value="25">25 · slower</option>
+            </select>
+          </div>
+        </div>
+        <button id="submit" type="submit">Generate image locally</button>
+        <div class="warning">CPU generation can be very slow and may exceed 8 GB RAM. Close other apps before generating.</div>
+      </form>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+      <h2 style="margin-top:0">Generated result</h2>
+      <div class="preview"><img id="resultPreview" alt="Generated image" hidden><div id="resultPlaceholder" class="placeholder">Your generated image will appear here.</div></div>
+      <a id="download" class="download" download="generated-image.png">Save generated image</a>
+      <p class="tiny">Results are saved in the local <code>data/outputs</code> folder. Nothing is uploaded by this app during inference.</p>
+    </section>
+  </div>
+  <p class="tiny">Privacy note: first-time setup downloads software and model files from the internet. After the model is installed, generation runs locally. This app binds to 127.0.0.1 and is not exposed to your network.</p>
+</main>
+<script>
+const fileInput = document.getElementById('image');
+const sourcePreview = document.getElementById('sourcePreview');
+const sourcePlaceholder = document.getElementById('sourcePlaceholder');
+const resultPreview = document.getElementById('resultPreview');
+const resultPlaceholder = document.getElementById('resultPlaceholder');
+const form = document.getElementById('form');
+const submit = document.getElementById('submit');
+const statusEl = document.getElementById('status');
+const download = document.getElementById('download');
+const strength = document.getElementById('strength');
+strength.addEventListener('input', () => document.getElementById('strengthValue').textContent = Number(strength.value).toFixed(2));
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  sourcePreview.src = URL.createObjectURL(file);
+  sourcePreview.hidden = false;
+  sourcePlaceholder.hidden = true;
+});
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!fileInput.files.length) return;
+  submit.disabled = true;
+  submit.textContent = 'Generating… please keep this page open';
+  statusEl.textContent = 'Loading model if needed, then generating on your CPU. The first run may take a long time.';
+  resultPreview.hidden = true;
+  resultPlaceholder.hidden = false;
+  download.style.display = 'none';
+  try {
+    const response = await fetch('/generate', { method: 'POST', body: new FormData(form) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Generation failed.');
+    resultPreview.src = data.image_url + '?t=' + Date.now();
+    resultPreview.hidden = false;
+    resultPlaceholder.hidden = true;
+    download.href = data.image_url;
+    download.style.display = 'inline-flex';
+    statusEl.textContent = data.message + ' File: ' + data.filename;
+  } catch (err) {
+    statusEl.textContent = err.message || 'Something went wrong.';
+  } finally {
+    submit.disabled = false;
+    submit.textContent = 'Generate image locally';
+  }
+});
+</script>
+</body>
+</html>
