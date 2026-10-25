@@ -833,6 +833,13 @@ def _reconcile_orphaned_face_dataset_jobs() -> None:
             running_here = job["id"] in FACE_DATASET_JOB_EVENTS
         if running_here:
             continue
+        # Avoid racing the tiny gap between the DB insert and thread registration.
+        try:
+            updated_at = datetime.fromisoformat(job["updated_at"]) if job.get("updated_at") else None
+            if updated_at and (datetime.now(timezone.utc) - updated_at).total_seconds() < 120:
+                continue
+        except (TypeError, ValueError):
+            continue
         final_state = "interrupted"
         final_error = "The app process stopped while this job was active. Completed photos were preserved; start a new dataset job to continue."
         try:
@@ -985,32 +992,38 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
     seed = (int(task_id[:8], 16) + (target_index + 1) * 7919) % (2**31 - 1)
 
     if backend == "runpod":
-        if _face_dataset_job_cancelled(job["id"]):
-            raise FaceDatasetJobCancelled("Cancellation requested.")
-        upload = io.BytesIO()
-        init_image.save(upload, format="PNG")
-        upload.seek(0)
-        data = {
-            "prompt": prompt, "negative_prompt": negative_prompt, "steps": "22",
-            "strength": str(strength), "seed": str(seed), "task_id": task_id,
-            "aspect_ratio": "square", "image_preset": "photorealistic",
-            "use_global_body_model": "false",
-        }
-        if profile_id_for_generation:
-            data["face_profile_id"] = profile_id_for_generation
-        response = runpod_request(
-            "POST", "/api/remote/generate", data=data,
-            files={"image": ("source-face.png", upload, "image/png")}, timeout=(20, 600),
-        )
-        if _face_dataset_job_cancelled(job["id"]):
-            raise FaceDatasetJobCancelled("Cancellation requested.")
+        while not generation_lock.acquire(timeout=0.5):
+            if _face_dataset_job_cancelled(job["id"]):
+                raise FaceDatasetJobCancelled("Cancellation requested while waiting for RunPod.")
         try:
-            with Image.open(io.BytesIO(response.content)) as remote_image:
-                result = ImageOps.exif_transpose(remote_image).convert("RGB")
-                result.load()
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
-            raise RuntimeError("RunPod returned an invalid image for " + target["label"] + ".") from exc
-        return result, "runpod", prompt, negative_prompt, yaw, pitch
+            if _face_dataset_job_cancelled(job["id"]):
+                raise FaceDatasetJobCancelled("Cancellation requested.")
+            upload = io.BytesIO()
+            init_image.save(upload, format="PNG")
+            upload.seek(0)
+            data = {
+                "prompt": prompt, "negative_prompt": negative_prompt, "steps": "22",
+                "strength": str(strength), "seed": str(seed), "task_id": task_id,
+                "aspect_ratio": "square", "image_preset": "photorealistic",
+                "use_global_body_model": "false",
+            }
+            if profile_id_for_generation:
+                data["face_profile_id"] = profile_id_for_generation
+            response = runpod_request(
+                "POST", "/api/remote/generate", data=data,
+                files={"image": ("source-face.png", upload, "image/png")}, timeout=(20, 600),
+            )
+            if _face_dataset_job_cancelled(job["id"]):
+                raise FaceDatasetJobCancelled("Cancellation requested.")
+            try:
+                with Image.open(io.BytesIO(response.content)) as remote_image:
+                    result = ImageOps.exif_transpose(remote_image).convert("RGB")
+                    result.load()
+            except (UnidentifiedImageError, OSError, ValueError) as exc:
+                raise RuntimeError("RunPod returned an invalid image for " + target["label"] + ".") from exc
+            return result, "runpod", prompt, negative_prompt, yaw, pitch
+        finally:
+            generation_lock.release()
 
     if backend == "local_gpu" and not torch.cuda.is_available():
         raise RuntimeError("System GPU was selected, but CUDA is not available in this Python environment.")
