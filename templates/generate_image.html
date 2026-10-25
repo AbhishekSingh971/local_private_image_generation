@@ -7,6 +7,8 @@
   <section class="panel form-panel">
     <form id="generationForm">
       <label for="faceProfile">Face identity</label><select id="faceProfile" name="face_profile_id"><option value="">Base model (no trained face)</option></select>
+      <label class="switchline" for="useGlobalBodyModel"><input id="useGlobalBodyModel" name="use_global_body_model" type="checkbox" value="true"> Apply shared body-type model</label>
+      <p id="globalBodyGenerationStatus" class="field-help">Optional. Generate body samples and train the shared model from Training datasets before using it.</p>
       <label for="referenceImage">Reference image <span class="optional">optional</span></label><input id="referenceImage" name="image" type="file" accept="image/png,image/jpeg,image/webp">
       <div class="preview reference-preview"><img id="sourcePreview" alt="Reference image preview" hidden><div id="sourcePlaceholder" class="placeholder">Reference image preview</div></div>
       <label for="imagePreset">Image preset</label><select id="imagePreset" name="image_preset"><option value="standard">Standard · use my prompt as written</option><option value="photorealistic">Photorealistic · improve skin and lighting</option><option value="full_body_photo" selected>Photorealistic full-body · head to feet</option></select>
