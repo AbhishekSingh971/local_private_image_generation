@@ -271,3 +271,30 @@ def test_update_face_photo_validation_metadata(tmp_path, monkeypatch):
     stored, _ = studio_db.get_face_photo_bytes(photo_id)
     assert stored["actual_yaw"] == -27.0
     assert stored["validation_message"] == "Pose is within tolerance."
+
+
+
+def test_replacing_photo_resets_pose_validation(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "replace-validation.sqlite").as_posix())
+    studio_db.ensure_schema()
+    profile_id = uuid.uuid4().hex
+    studio_db.create_face_profile_record({
+        "id": profile_id,
+        "name": "Replace Review",
+        "token": "replace_" + profile_id[:5],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    group = studio_db.create_face_dataset_group(profile_id, "Angles", expected_count=9)
+    photo_id = studio_db.add_face_photo(
+        profile_id, "middle-left.jpg", b"original", group_id=group["id"],
+        angle_label="Middle-left", photo_kind="angle",
+        validation_status="passed", validation_message="Pose verified.",
+        target_yaw=-30.0, target_pitch=0.0, actual_yaw=-32.0, actual_pitch=1.0,
+    )
+    updated = studio_db.update_face_photo(photo_id, image_data=b"edited")
+    assert updated["validation_status"] == "needs_review"
+    metadata, stored = studio_db.get_face_photo_bytes(photo_id)
+    assert stored == b"edited"
+    assert metadata["validation_status"] == "needs_review"
+    assert metadata["actual_yaw"] is None
+    assert "replaced" in metadata["validation_message"]
