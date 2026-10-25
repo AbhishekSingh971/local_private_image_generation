@@ -837,6 +837,8 @@ def _reconcile_orphaned_face_dataset_jobs() -> None:
         # Avoid racing the tiny gap between the DB insert and thread registration.
         try:
             updated_at = datetime.fromisoformat(job["updated_at"]) if job.get("updated_at") else None
+            if updated_at and updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
             if updated_at and (datetime.now(timezone.utc) - updated_at).total_seconds() < 120:
                 continue
         except (TypeError, ValueError):
@@ -1116,7 +1118,16 @@ def _run_face_dataset_generation_job(job_id: str) -> None:
         # A new job starts with a clean failure list; failed targets from an earlier job
         # are kept in that job's history and only selected targets are re-enqueued.
         failed_targets = []
-        review_targets = []
+        existing_photos = list_face_dataset_group_photo_records(job["group_id"])
+        review_targets = [
+            {
+                "label": photo.get("angle_label") or "Training photo",
+                "photo_id": photo["id"],
+                "reason": photo.get("validation_message") or "This photo needs manual review.",
+            }
+            for photo in existing_photos
+            if photo.get("validation_status") == "needs_review"
+        ]
         generated_count = int(job.get("generated_count") or 0)
         group_count_base = int(job.get("group_count_base") or 0)
 
