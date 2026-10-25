@@ -376,7 +376,10 @@ def delete_face_profile_record(profile_id: str) -> bool:
 def add_face_photo(
     profile_id: str, filename: str, image_data: bytes, mime_type: str = "image/jpeg",
     group_id: str | None = None, angle_label: str | None = None,
-    photo_kind: str = "manual",
+    photo_kind: str = "manual", validation_status: str = "not_checked",
+    validation_message: str | None = None, target_yaw: float | None = None,
+    target_pitch: float | None = None, actual_yaw: float | None = None,
+    actual_pitch: float | None = None,
 ) -> str:
     if photo_kind not in {"source", "angle", "expression", "body", "manual"}:
         raise ValueError("Photo kind must be source, angle, expression, body or manual.")
@@ -388,10 +391,16 @@ def add_face_photo(
             group = session.get(FaceDatasetGroupRow, group_id)
             if not group or group.profile_id != profile_id:
                 raise ValueError("Dataset group was not found for this face profile.")
+        if validation_status not in {"not_checked", "passed", "needs_review", "not_applicable"}:
+            raise ValueError("Invalid photo validation status.")
         row = FacePhotoRow(
             id=uuid.uuid4().hex, profile_id=profile_id, filename=filename, mime_type=mime_type,
             byte_size=len(image_data), image_data=image_data, group_id=group_id,
             angle_label=(angle_label or "")[:80] or None, photo_kind=photo_kind,
+            validation_status=validation_status,
+            validation_message=(validation_message or "")[:1200] or None,
+            target_yaw=target_yaw, target_pitch=target_pitch,
+            actual_yaw=actual_yaw, actual_pitch=actual_pitch,
         )
         session.add(row)
         session.commit()
@@ -457,6 +466,10 @@ def list_face_dataset_group_photo_records(group_id: str) -> list[dict]:
             {
                 "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
                 "group_id": row.group_id, "angle_label": row.angle_label,
+                "photo_kind": row.photo_kind, "validation_status": row.validation_status,
+                "validation_message": row.validation_message, "target_yaw": row.target_yaw,
+                "target_pitch": row.target_pitch, "actual_yaw": row.actual_yaw,
+                "actual_pitch": row.actual_pitch,
             }
             for row in rows
         ]
@@ -527,6 +540,10 @@ def list_face_dataset_groups(profile_id: str | None = None, limit: int = 200) ->
                     "id": photo.id, "filename": photo.filename,
                     "angle_label": photo.angle_label or "Training photo",
                     "photo_kind": photo.photo_kind,
+                    "validation_status": photo.validation_status or "not_checked",
+                    "validation_message": photo.validation_message,
+                    "target_yaw": photo.target_yaw, "target_pitch": photo.target_pitch,
+                    "actual_yaw": photo.actual_yaw, "actual_pitch": photo.actual_pitch,
                     "mime_type": photo.mime_type, "byte_size": photo.byte_size,
                     "created_at": photo.created_at.isoformat() if photo.created_at else None,
                 }
@@ -535,6 +552,140 @@ def list_face_dataset_groups(profile_id: str | None = None, limit: int = 200) ->
             record["photo_count"] = len(photos)
             result.append(record)
         return result
+
+
+def _dataset_job_dict(row: FaceDatasetJobRow) -> dict:
+    def parse_list(value):
+        try:
+            decoded = json.loads(value or "[]")
+            return decoded if isinstance(decoded, list) else []
+        except (TypeError, json.JSONDecodeError):
+            return []
+    return {
+        "id": row.id, "group_id": row.group_id, "profile_id": row.profile_id,
+        "dataset_type": row.dataset_type, "status": row.status, "backend": row.backend,
+        "expected_count": row.expected_count, "generated_count": row.generated_count,
+        "current_index": row.current_index, "current_label": row.current_label,
+        "current_task_id": row.current_task_id, "cancel_requested": bool(row.cancel_requested),
+        "failed_targets": parse_list(row.failed_targets), "review_targets": parse_list(row.review_targets),
+        "source_photo_id": row.source_photo_id, "error": row.error,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def create_face_dataset_job(
+    *, job_id: str, group_id: str, profile_id: str, dataset_type: str,
+    backend: str, expected_count: int, source_photo_id: str,
+) -> dict:
+    if dataset_type not in {"face_angles", "expressions"}:
+        raise ValueError("Unsupported face dataset generation type.")
+    if backend not in {"cpu", "local_gpu", "runpod"}:
+        raise ValueError("Unsupported generation backend.")
+    if not 1 <= int(expected_count) <= 20:
+        raise ValueError("Expected target count must be between 1 and 20.")
+    if not all(isinstance(value, str) and len(value) == 32 for value in (job_id, group_id, profile_id, source_photo_id)):
+        raise ValueError("Invalid dataset generation job identifiers.")
+    ensure_schema()
+    with _session_factory()() as session:
+        group = session.get(FaceDatasetGroupRow, group_id)
+        if not group or group.profile_id != profile_id or group.dataset_type != dataset_type:
+            raise ValueError("Dataset group does not match the requested generation job.")
+        source = session.get(FacePhotoRow, source_photo_id)
+        if not source or source.profile_id != profile_id or source.group_id != group_id:
+            raise ValueError("Source photo does not belong to the target dataset group.")
+        row = FaceDatasetJobRow(
+            id=job_id, group_id=group_id, profile_id=profile_id,
+            dataset_type=dataset_type, status="queued", backend=backend,
+            expected_count=int(expected_count), generated_count=0, current_index=0,
+            current_label="", current_task_id=None, source_photo_id=source_photo_id,
+            cancel_requested=False, failed_targets="[]", review_targets="[]", error=None,
+        )
+        session.add(row)
+        session.commit()
+        return _dataset_job_dict(row)
+
+
+def get_face_dataset_job(job_id: str) -> dict | None:
+    ensure_schema()
+    with _session_factory()() as session:
+        row = session.get(FaceDatasetJobRow, job_id)
+        return _dataset_job_dict(row) if row else None
+
+
+def list_face_dataset_jobs(
+    *, profile_id: str | None = None, group_id: str | None = None,
+    active_only: bool = False, limit: int = 50,
+) -> list[dict]:
+    ensure_schema()
+    with _session_factory()() as session:
+        query = select(FaceDatasetJobRow)
+        if profile_id:
+            query = query.where(FaceDatasetJobRow.profile_id == profile_id)
+        if group_id:
+            query = query.where(FaceDatasetJobRow.group_id == group_id)
+        if active_only:
+            query = query.where(FaceDatasetJobRow.status.in_({"queued", "running", "cancelling"}))
+        rows = session.scalars(
+            query.order_by(FaceDatasetJobRow.created_at.desc()).limit(max(1, min(int(limit), 100)))
+        ).all()
+        return [_dataset_job_dict(row) for row in rows]
+
+
+def update_face_dataset_job(job_id: str, **fields) -> dict | None:
+    allowed = {
+        "status", "generated_count", "current_index", "current_label",
+        "current_task_id", "cancel_requested", "failed_targets", "review_targets", "error",
+    }
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError("Unsupported job fields: " + ", ".join(sorted(unknown)))
+    if "status" in fields and fields["status"] not in {
+        "queued", "running", "cancelling", "cancelled", "completed", "partial", "failed", "interrupted"
+    }:
+        raise ValueError("Invalid training job state.")
+    for key in ("generated_count", "current_index"):
+        if key in fields and int(fields[key]) < 0:
+            raise ValueError(key + " cannot be negative.")
+    ensure_schema()
+    with _session_factory()() as session:
+        row = session.get(FaceDatasetJobRow, job_id)
+        if not row:
+            return None
+        for key, value in fields.items():
+            if key in {"failed_targets", "review_targets"}:
+                value = json.dumps(value if isinstance(value, list) else [], ensure_ascii=False)
+            elif key == "error":
+                value = str(value or "")[:2000] or None
+            elif key == "current_label":
+                value = str(value or "")[:80]
+            setattr(row, key, value)
+        row.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        return _dataset_job_dict(row)
+
+
+def update_face_photo_validation(
+    photo_id: str, *, validation_status: str, validation_message: str = "",
+    actual_yaw: float | None = None, actual_pitch: float | None = None,
+) -> dict | None:
+    if validation_status not in {"not_checked", "passed", "needs_review", "not_applicable"}:
+        raise ValueError("Invalid photo validation status.")
+    ensure_schema()
+    with _session_factory()() as session:
+        row = session.get(FacePhotoRow, photo_id)
+        if not row:
+            return None
+        row.validation_status = validation_status
+        row.validation_message = (validation_message or "")[:1200] or None
+        row.actual_yaw = actual_yaw
+        row.actual_pitch = actual_pitch
+        session.commit()
+        return {
+            "id": row.id, "validation_status": row.validation_status,
+            "validation_message": row.validation_message,
+            "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch,
+        }
 
 
 def delete_face_dataset_group(group_id: str) -> dict | None:
@@ -582,6 +733,10 @@ def list_face_photo_records(profile_id: str, filenames: set[str] | None = None) 
                 "mime_type": row.mime_type, "byte_size": row.byte_size,
                 "group_id": row.group_id, "angle_label": row.angle_label,
                 "photo_kind": row.photo_kind,
+                "validation_status": row.validation_status or "not_checked",
+                "validation_message": row.validation_message,
+                "target_yaw": row.target_yaw, "target_pitch": row.target_pitch,
+                "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch,
                 "image_data": bytes(row.image_data),
             }
             for row in rows
@@ -597,7 +752,11 @@ def get_face_photo_bytes(photo_id: str) -> tuple[dict, bytes] | None:
         return ({"id": row.id, "profile_id": row.profile_id, "filename": row.filename,
                  "mime_type": row.mime_type, "byte_size": row.byte_size,
                  "group_id": row.group_id, "angle_label": row.angle_label,
-                 "photo_kind": row.photo_kind}, bytes(row.image_data))
+                 "photo_kind": row.photo_kind,
+                 "validation_status": row.validation_status or "not_checked",
+                 "validation_message": row.validation_message,
+                 "target_yaw": row.target_yaw, "target_pitch": row.target_pitch,
+                 "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch}, bytes(row.image_data))
 
 
 def update_face_photo(
@@ -628,6 +787,10 @@ def update_face_photo(
             "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
             "group_id": row.group_id, "angle_label": row.angle_label or "Training photo",
             "photo_kind": row.photo_kind,
+            "validation_status": row.validation_status or "not_checked",
+            "validation_message": row.validation_message,
+            "target_yaw": row.target_yaw, "target_pitch": row.target_pitch,
+            "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch,
             "mime_type": row.mime_type, "byte_size": row.byte_size,
         }
 
@@ -643,6 +806,7 @@ def delete_face_photo(photo_id: str) -> dict | None:
             "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
             "group_id": row.group_id, "angle_label": row.angle_label,
             "photo_kind": row.photo_kind,
+            "validation_status": row.validation_status or "not_checked",
         }
         session.delete(row)
         session.commit()
