@@ -68,6 +68,22 @@ class FaceProfileRow(Base):
     runpod_training_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
+class FaceDatasetGroupRow(Base):
+    __tablename__ = "face_dataset_groups"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    profile_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("face_profiles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="generating")
+    expected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    generated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class FacePhotoRow(Base):
     __tablename__ = "face_photos"
 
@@ -79,6 +95,8 @@ class FacePhotoRow(Base):
     mime_type: Mapped[str] = mapped_column(String(100), default="image/jpeg", nullable=False)
     byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
     image_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    group_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    angle_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -145,9 +163,15 @@ def ensure_schema() -> None:
         # create_all does not add columns to a table created by an earlier version.
         # Add this column in-place so existing SQLite and PostgreSQL databases keep working.
         profile_columns = {column["name"] for column in inspect(engine).get_columns("face_profiles")}
-        if "description" not in profile_columns:
-            with engine.begin() as connection:
+        with engine.begin() as connection:
+            if "description" not in profile_columns:
                 connection.execute(text("ALTER TABLE face_profiles ADD COLUMN description TEXT NOT NULL DEFAULT ''"))
+        photo_columns = {column["name"] for column in inspect(engine).get_columns("face_photos")}
+        with engine.begin() as connection:
+            if "group_id" not in photo_columns:
+                connection.execute(text("ALTER TABLE face_photos ADD COLUMN group_id VARCHAR(32)"))
+            if "angle_label" not in photo_columns:
+                connection.execute(text("ALTER TABLE face_photos ADD COLUMN angle_label VARCHAR(80)"))
         _SCHEMA_READY.add(url)
 
 
@@ -297,16 +321,26 @@ def delete_face_profile_record(profile_id: str) -> bool:
         return True
 
 
-def add_face_photo(profile_id: str, filename: str, image_data: bytes, mime_type: str = "image/jpeg") -> None:
+def add_face_photo(
+    profile_id: str, filename: str, image_data: bytes, mime_type: str = "image/jpeg",
+    group_id: str | None = None, angle_label: str | None = None,
+) -> str:
     ensure_schema()
     with _session_factory()() as session:
         if not session.get(FaceProfileRow, profile_id):
             raise ValueError("Face profile is not present in the configured database.")
-        session.add(FacePhotoRow(
+        if group_id:
+            group = session.get(FaceDatasetGroupRow, group_id)
+            if not group or group.profile_id != profile_id:
+                raise ValueError("Dataset group was not found for this face profile.")
+        row = FacePhotoRow(
             id=uuid.uuid4().hex, profile_id=profile_id, filename=filename, mime_type=mime_type,
-            byte_size=len(image_data), image_data=image_data,
-        ))
+            byte_size=len(image_data), image_data=image_data, group_id=group_id,
+            angle_label=(angle_label or "")[:80] or None,
+        )
+        session.add(row)
         session.commit()
+        return row.id
 
 
 def list_face_photo_names(profile_id: str) -> set[str]:
@@ -330,6 +364,7 @@ def list_face_photo_records(profile_id: str, filenames: set[str] | None = None) 
             {
                 "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
                 "mime_type": row.mime_type, "byte_size": row.byte_size,
+                "group_id": row.group_id, "angle_label": row.angle_label,
                 "image_data": bytes(row.image_data),
             }
             for row in rows
@@ -343,7 +378,8 @@ def get_face_photo_bytes(photo_id: str) -> tuple[dict, bytes] | None:
         if not row:
             return None
         return ({"id": row.id, "profile_id": row.profile_id, "filename": row.filename,
-                 "mime_type": row.mime_type, "byte_size": row.byte_size}, bytes(row.image_data))
+                 "mime_type": row.mime_type, "byte_size": row.byte_size,
+                 "group_id": row.group_id, "angle_label": row.angle_label}, bytes(row.image_data))
 
 
 def save_face_model_bundle(profile_id: str, backend: str, filename: str, bundle_data: bytes, file_count: int) -> dict:
