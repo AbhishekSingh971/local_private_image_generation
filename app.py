@@ -803,6 +803,526 @@ def api_list_face_dataset_groups():
         return jsonify(error="Could not read dataset groups. Check the database connection."), 503
 
 
+
+class FaceDatasetJobCancelled(RuntimeError):
+    """Raised to unwind denoising as soon as a dataset job is cancelled."""
+
+
+def _face_dataset_job_cancelled(job_id: str) -> bool:
+    with FACE_DATASET_JOB_LOCK:
+        event = FACE_DATASET_JOB_EVENTS.get(job_id)
+        if event is not None and event.is_set():
+            return True
+    try:
+        job = get_face_dataset_job(job_id)
+        return bool(job and job.get("cancel_requested"))
+    except Exception:
+        app.logger.exception("Could not check dataset-job cancellation state")
+        return False
+
+
+def _reconcile_orphaned_face_dataset_jobs() -> None:
+    """Mark in-flight rows interrupted after a server restart instead of showing phantom activity."""
+    try:
+        jobs = list_face_dataset_jobs(active_only=True, limit=100)
+    except Exception:
+        return
+    for job in jobs:
+        with FACE_DATASET_JOB_LOCK:
+            running_here = job["id"] in FACE_DATASET_JOB_EVENTS
+        if running_here:
+            continue
+        final_state = "interrupted"
+        final_error = "The app process stopped while this job was active. Completed photos were preserved; start a new dataset job to continue."
+        try:
+            update_face_dataset_job(job["id"], status=final_state, current_task_id=None, error=final_error)
+            group = get_face_dataset_group(job["group_id"])
+            if group:
+                update_face_dataset_group(
+                    group["id"],
+                    status="partial" if job["generated_count"] else "failed",
+                    generated_count=job["generated_count"],
+                    error=final_error,
+                )
+        except Exception:
+            app.logger.exception("Could not reconcile an interrupted face dataset job")
+
+
+def _create_face_dataset_job_payload(job: dict) -> dict:
+    result = dict(job)
+    task_id = result.get("current_task_id")
+    result["generation_progress"] = _get_generation_progress(task_id) if task_id else None
+    result["progress_percent"] = round(
+        100 * min(int(result.get("generated_count") or 0), int(result.get("expected_count") or 1))
+        / max(1, int(result.get("expected_count") or 1))
+    )
+    return result
+
+
+@app.post("/api/face-profiles/<profile_id>/dataset-jobs")
+def api_start_face_dataset_job(profile_id):
+    """Create a durable dataset group and start its target sequence on a server worker thread."""
+    group_id = None
+    job_id = None
+    try:
+        profile_id = validate_profile_id(profile_id)
+        profile = get_profile(profile_id)
+        if not profile:
+            return jsonify(error="Face profile not found."), 404
+        dataset_type = (request.form.get("dataset_type") or "face_angles").strip().lower()
+        targets = targets_for_dataset_type(dataset_type)
+        title = _clean_prompt(request.form.get("title"), "Dataset group title", 120)
+        backend = _resolve_compute_backend(request.form)
+        uploads = request.files.getlist("source_image")
+        if not uploads or not uploads[0] or not uploads[0].filename:
+            return jsonify(error="Choose one source face photo."), 400
+        images = _parse_uploads(uploads[:1], max_files=1)
+        if not images:
+            return jsonify(error="The source photo could not be decoded."), 400
+        image = images[0]
+        if image.width < 128 or image.height < 128:
+            return jsonify(error="The source image must be at least 128 × 128 pixels."), 400
+        if backend == "runpod" and not runpod_configured():
+            return jsonify(error="RunPod is not configured. Choose Local CPU or configure a running RunPod worker."), 400
+
+        ensure_schema()
+        if not get_face_profile_record(profile_id):
+            insert_face_profile_record(profile)
+        group = create_face_dataset_group(
+            profile_id, title, expected_count=len(targets),
+            dataset_type=dataset_type,
+            prompt=("Explicit target yaw/pitch and identity-preservation conditioning" if dataset_type == "face_angles"
+                    else "Vary expression only while retaining the source head pose."),
+        )
+        group_id = group["id"]
+        source_path = save_profile_image(
+            profile_id, image, group_id=group_id, angle_label="Original source",
+            photo_kind="source", validation_status="not_applicable",
+            validation_message="Original user-provided reference; never overwritten by this generation job.",
+        )
+        source_records = list_face_dataset_group_photo_records(group_id)
+        source_record = next((item for item in source_records if item["filename"] == source_path.name), None)
+        if not source_record:
+            raise RuntimeError("The source photo was written but its database record could not be found.")
+        job_id = uuid.uuid4().hex
+        job = create_face_dataset_job(
+            job_id=job_id, group_id=group_id, profile_id=profile_id,
+            dataset_type=dataset_type, backend=backend, expected_count=len(targets),
+            source_photo_id=source_record["id"],
+        )
+        cancel_event = threading.Event()
+        with FACE_DATASET_JOB_LOCK:
+            # The single generation executor serializes access to the active image pipeline.
+            if any(not event.is_set() for event in FACE_DATASET_JOB_EVENTS.values()):
+                raise ValueError("A face-angle or expression batch is already running. Cancel or finish it first.")
+            FACE_DATASET_JOB_EVENTS[job_id] = cancel_event
+            future = FACE_DATASET_JOB_POOL.submit(_run_face_dataset_generation_job, job_id)
+            FACE_DATASET_JOB_FUTURES[job_id] = future
+        return jsonify(status="queued", job=_create_face_dataset_job_payload(job), group=get_face_dataset_group(group_id)), 202
+    except ValueError as exc:
+        if group_id:
+            try:
+                update_face_dataset_group(group_id, status="failed", error=str(exc))
+            except Exception:
+                pass
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not start a face dataset generation job")
+        if group_id:
+            try:
+                update_face_dataset_group(group_id, status="failed", error="Could not start the background generation job.")
+            except Exception:
+                pass
+        return jsonify(error="Could not start the background generation job. Check database connectivity and the selected compute backend."), 503
+
+
+def _render_face_dataset_target(job: dict, target: dict, source_image, source_image_bytes: bytes, task_id: str, target_index: int):
+    """Render one target using the configured local or RunPod backend."""
+    backend = job["backend"]
+    profile = get_profile(job["profile_id"])
+    lora_backend = "runpod" if backend == "runpod" else "local"
+    use_face_lora = bool(profile and profile_ready_for_backend(job["profile_id"], lora_backend))
+    profile_id_for_generation = job["profile_id"] if use_face_lora else None
+    dataset_type = job["dataset_type"]
+    identity_instruction = (
+        "Preserve the exact recognizable identity from the input photo: same adult person, facial proportions, eye spacing, nose, lips, jawline, skin tone, apparent age, and hairstyle. Keep natural photorealistic skin texture and lighting. Do not change gender presentation, ethnicity, makeup style, hair, or background unnecessarily. "
+    )
+    if dataset_type == "face_angles":
+        yaw = float(target["yaw"])
+        pitch = float(target["pitch"])
+        pose_instruction = (
+            f"REQUIRED TARGET HEAD POSE: yaw {yaw:+.0f} degrees and pitch {pitch:+.0f} degrees. "
+            + target["prompt"] + ". "
+            + "Rotate the head itself; do not simulate the requested view by moving only the eyes or camera. "
+            + "For side profiles, the nose and chin silhouette must visibly point sideways and the far eye must not remain fully visible. "
+        )
+        strength = float(target["strength"])
+    else:
+        yaw = pitch = None
+        pose_instruction = (
+            "Keep the source head direction, camera angle, head tilt, hair, face shape, and lighting unchanged. "
+            "Change the facial expression only: " + target["prompt"] + ". "
+        )
+        strength = float(target["strength"])
+    prompt = identity_instruction + pose_instruction + "Photorealistic close head-and-shoulders DSLR portrait, realistic anatomy, no illustration."
+    negative_prompt = (
+        "different person, identity drift, changed face shape, different eyes, different nose, different lips, changed hairstyle, "
+        "frontal face when a side profile is requested, wrong head direction, looking only with the eyes, duplicate face, "
+        "child, elderly face, cartoon, anime, illustration, CGI, 3D render, plastic skin, distorted features, asymmetrical eyes, "
+        "blur, watermark, logo, text, frame"
+    )
+    if len(prompt) > 1200:
+        prompt = prompt[:1190]
+    width, height = resolve_image_dimensions("square")
+    init_image = ImageOps.fit(source_image.convert("RGB"), (width, height), method=Image.Resampling.LANCZOS)
+    seed = (int(task_id[:8], 16) + (target_index + 1) * 7919) % (2**31 - 1)
+
+    if backend == "runpod":
+        if _face_dataset_job_cancelled(job["id"]):
+            raise FaceDatasetJobCancelled("Cancellation requested.")
+        upload = io.BytesIO()
+        init_image.save(upload, format="PNG")
+        upload.seek(0)
+        data = {
+            "prompt": prompt, "negative_prompt": negative_prompt, "steps": "22",
+            "strength": str(strength), "seed": str(seed), "task_id": task_id,
+            "aspect_ratio": "square", "image_preset": "photorealistic",
+            "use_global_body_model": "false",
+        }
+        if profile_id_for_generation:
+            data["face_profile_id"] = profile_id_for_generation
+        response = runpod_request(
+            "POST", "/api/remote/generate", data=data,
+            files={"image": ("source-face.png", upload, "image/png")}, timeout=(20, 600),
+        )
+        if _face_dataset_job_cancelled(job["id"]):
+            raise FaceDatasetJobCancelled("Cancellation requested.")
+        try:
+            with Image.open(io.BytesIO(response.content)) as remote_image:
+                result = ImageOps.exif_transpose(remote_image).convert("RGB")
+                result.load()
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise RuntimeError("RunPod returned an invalid image for " + target["label"] + ".") from exc
+        return result, "runpod", prompt, negative_prompt, yaw, pitch
+
+    if backend == "local_gpu" and not torch.cuda.is_available():
+        raise RuntimeError("System GPU was selected, but CUDA is not available in this Python environment.")
+    while not generation_lock.acquire(timeout=0.5):
+        if _face_dataset_job_cancelled(job["id"]):
+            raise FaceDatasetJobCancelled("Cancellation requested while waiting for the image pipeline.")
+    try:
+        if _face_dataset_job_cancelled(job["id"]):
+            raise FaceDatasetJobCancelled("Cancellation requested.")
+        pipeline = _load_cpu_or_gpu_pipeline("img2img", profile_id_for_generation, backend)
+        generator_device = "cuda" if backend == "local_gpu" else "cpu"
+        effective_prompt, effective_negative = build_generation_prompts(prompt, negative_prompt, "photorealistic")
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="running", progress=4,
+            total_steps=22, stage="denoising", message="Generating " + target["label"] + " with explicit pose targets…",
+        )
+        def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+            if _face_dataset_job_cancelled(job["id"]):
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="cancelling",
+                    progress=round(100 * step_index / 22), current_step=step_index + 1,
+                    total_steps=22, stage="cancelling", message="Stopping at the next denoising step…",
+                )
+                raise FaceDatasetJobCancelled("Cancellation requested.")
+            steps_total = len(getattr(active_pipeline.scheduler, "timesteps", [])) or 22
+            current = min(step_index + 1, steps_total)
+            _set_generation_progress(
+                task_id, asset_type="image", backend=backend, status="running",
+                progress=min(94, 4 + round(90 * current / max(steps_total, 1))),
+                current_step=current, total_steps=steps_total, stage="denoising",
+                message=f"Generating {target['label']} · step {current} of {steps_total}",
+            )
+            return callback_kwargs
+        result = pipeline(
+            prompt=effective_prompt,
+            negative_prompt=effective_negative or None,
+            image=init_image,
+            strength=strength,
+            width=width, height=height,
+            num_inference_steps=22, guidance_scale=7.5,
+            generator=torch.Generator(device=generator_device).manual_seed(seed),
+            callback_on_step_end=on_step_end,
+        ).images[0].convert("RGB")
+        if _face_dataset_job_cancelled(job["id"]):
+            raise FaceDatasetJobCancelled("Cancellation requested.")
+        return result, backend, prompt, negative_prompt, yaw, pitch
+    finally:
+        generation_lock.release()
+
+
+def _run_face_dataset_generation_job(job_id: str) -> None:
+    """Generate each requested target sequentially, persisting it before moving to the next."""
+    try:
+        job = get_face_dataset_job(job_id)
+        if not job:
+            return
+        update_face_dataset_job(job_id, status="running", error=None if hasattr(job, "error") else "")
+        source = get_face_photo_bytes(job["source_photo_id"])
+        if not source:
+            raise RuntimeError("The original source photo is missing from the database.")
+        _source_metadata, source_bytes = source
+        try:
+            with Image.open(io.BytesIO(source_bytes)) as image_file:
+                source_image = ImageOps.exif_transpose(image_file).convert("RGB")
+                source_image.load()
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+            raise RuntimeError("The original source photo is no longer a valid image.") from exc
+        source_pose, source_pose_error = estimate_head_pose(source_image)
+        targets = targets_for_dataset_type(job["dataset_type"])
+        failed_targets = list(job.get("failed_targets") or [])
+        review_targets = list(job.get("review_targets") or [])
+        generated_count = int(job.get("generated_count") or 0)
+
+        for index, target in enumerate(targets):
+            if _face_dataset_job_cancelled(job_id):
+                break
+            current_task_id = uuid.uuid4().hex
+            update_face_dataset_job(
+                job_id, status="running", current_index=index + 1,
+                current_label=target["label"], current_task_id=current_task_id,
+                error="",
+            )
+            _set_generation_progress(
+                current_task_id, asset_type="image", backend=job["backend"], status="running",
+                progress=1, total_steps=22, stage="starting",
+                message="Preparing target " + target["label"] + " (" + str(index + 1) + "/" + str(len(targets)) + ").",
+            )
+            try:
+                result, backend, prompt, negative_prompt, target_yaw, target_pitch = _render_face_dataset_target(
+                    job, target, source_image, source_bytes, current_task_id, index
+                )
+                if _face_dataset_job_cancelled(job_id):
+                    _set_generation_progress(
+                        current_task_id, asset_type="image", backend=backend, status="cancelled",
+                        progress=0, total_steps=22, stage="cancelled", message="Generation was cancelled before saving this image.",
+                    )
+                    break
+
+                actual_pose, actual_pose_error = estimate_head_pose(result)
+                if job["dataset_type"] == "face_angles":
+                    validation_status, validation_message = validate_pose_target(
+                        actual_pose, target_yaw, target_pitch
+                    )
+                elif source_pose is not None:
+                    validation_status, validation_message = validate_pose_target(
+                        actual_pose, source_pose.yaw, source_pose.pitch,
+                        yaw_tolerance=20.0, pitch_tolerance=15.0,
+                    )
+                    if validation_status == "passed":
+                        validation_message = "Expression image retained approximately the source head pose. " + validation_message
+                else:
+                    validation_status = "needs_review"
+                    validation_message = source_pose_error or actual_pose_error or "Could not verify that the expression output preserved the source head pose."
+
+                filename = _save_generated_png(result)
+                profile = get_profile(job["profile_id"])
+                asset = _persist_generated_asset(
+                    "image", filename,
+                    title=(get_face_dataset_group(job["group_id"]) or {}).get("title", "Face dataset") + " - " + target["label"],
+                    prompt=prompt, negative_prompt=negative_prompt, profile=profile,
+                    backend=backend, generation_mode="img2img",
+                )
+                photo_kind = "angle" if job["dataset_type"] == "face_angles" else "expression"
+                target_label = target["label"] + (" · Needs review" if validation_status == "needs_review" else "")
+                if job["dataset_type"] == "face_angles":
+                    caption = f"head pose: yaw {target_yaw:+.0f} degrees, pitch {target_pitch:+.0f} degrees; {target['prompt']}"
+                else:
+                    if source_pose:
+                        caption = f"facial expression: {target['label']}; preserve source head pose yaw {source_pose.yaw:+.0f} degrees, pitch {source_pose.pitch:+.0f} degrees; {target['prompt']}"
+                    else:
+                        caption = f"facial expression: {target['label']}; preserve the source head pose; {target['prompt']}"
+                photo_path = save_profile_image(
+                    job["profile_id"], result, group_id=job["group_id"],
+                    angle_label=target_label, photo_kind=photo_kind,
+                    validation_status=validation_status, validation_message=validation_message,
+                    target_yaw=target_yaw if target_yaw is not None else (source_pose.yaw if source_pose else None),
+                    target_pitch=target_pitch if target_pitch is not None else (source_pose.pitch if source_pose else None),
+                    actual_yaw=actual_pose.yaw if actual_pose else None,
+                    actual_pitch=actual_pose.pitch if actual_pose else None,
+                    training_caption=caption,
+                )
+                records = list_face_dataset_group_photo_records(job["group_id"])
+                photo_record = next((item for item in records if item["filename"] == photo_path.name), None)
+                if not photo_record:
+                    raise RuntimeError("Image was generated, but its training photo record could not be located.")
+                generated_count += 1
+                if validation_status == "needs_review":
+                    review_targets.append({
+                        "label": target["label"], "photo_id": photo_record["id"],
+                        "asset_id": asset["id"], "reason": validation_message,
+                    })
+                update_face_dataset_job(
+                    job_id, generated_count=generated_count, current_task_id=None,
+                    failed_targets=failed_targets, review_targets=review_targets, error="",
+                )
+                update_face_dataset_group(
+                    job["group_id"], status="generating",
+                    generated_count=generated_count, error="",
+                )
+                _set_generation_progress(
+                    current_task_id, asset_type="image", backend=backend, status="completed",
+                    progress=100, current_step=22, total_steps=22, stage="saved",
+                    message=("Saved " + target["label"] + " to the library and dataset. "
+                             + ("Needs review: " if validation_status == "needs_review" else "")
+                             + validation_message),
+                )
+            except FaceDatasetJobCancelled:
+                _set_generation_progress(
+                    current_task_id, asset_type="image", backend=job["backend"], status="cancelled",
+                    progress=0, total_steps=22, stage="cancelled", message="Generation was cancelled.",
+                )
+                break
+            except Exception as exc:
+                if _face_dataset_job_cancelled(job_id):
+                    _set_generation_progress(
+                        current_task_id, asset_type="image", backend=job["backend"], status="cancelled",
+                        progress=0, total_steps=22, stage="cancelled", message="Generation was cancelled.",
+                    )
+                    break
+                message = str(exc)[:900] or "Unknown generation error."
+                app.logger.exception("Target %s failed for face dataset job %s", target["label"], job_id)
+                failed_targets.append({"label": target["label"], "error": message})
+                update_face_dataset_job(
+                    job_id, current_task_id=None, generated_count=generated_count,
+                    failed_targets=failed_targets, error=target["label"] + ": " + message,
+                )
+                _set_generation_progress(
+                    current_task_id, asset_type="image", backend=job["backend"], status="failed",
+                    progress=0, total_steps=22, stage="failed",
+                    message=target["label"] + " failed. Moving to the next target.",
+                )
+            # Small state refresh between targets prevents stale cancel decisions.
+            job = get_face_dataset_job(job_id) or job
+            if _face_dataset_job_cancelled(job_id):
+                break
+
+        job = get_face_dataset_job(job_id) or job
+        cancelled = _face_dataset_job_cancelled(job_id)
+        if cancelled:
+            final_status = "cancelled"
+            group_status = "cancelled"
+            final_message = "Cancelled by the user. All previously completed photos remain saved."
+        elif failed_targets:
+            final_status = "partial" if generated_count else "failed"
+            group_status = final_status
+            final_message = "Some targets failed. Successful photos remain saved; failed targets are listed for review."
+        else:
+            final_status = "completed"
+            group_status = "completed"
+            final_message = (
+                "All requested images were generated and saved."
+                if not review_targets else
+                f"All requested images were saved; {len(review_targets)} target(s) need visual review because the pose could not be verified or did not match."
+            )
+        update_face_dataset_job(
+            job_id, status=final_status, generated_count=generated_count,
+            current_task_id=None, failed_targets=failed_targets,
+            review_targets=review_targets, error=final_message if final_status != "completed" or review_targets else "",
+        )
+        update_face_dataset_group(
+            job["group_id"], status=group_status, generated_count=generated_count,
+            error=final_message if final_status != "completed" or review_targets else "",
+        )
+    except Exception as exc:
+        app.logger.exception("Background face dataset job %s crashed", job_id)
+        try:
+            job = get_face_dataset_job(job_id)
+            if job:
+                failed_status = "partial" if job["generated_count"] else "failed"
+                update_face_dataset_job(job_id, status=failed_status, current_task_id=None, error=str(exc)[:1500])
+                update_face_dataset_group(
+                    job["group_id"], status=failed_status,
+                    generated_count=job["generated_count"], error=str(exc)[:1200],
+                )
+        except Exception:
+            app.logger.exception("Could not persist a failed dataset job state")
+    finally:
+        with FACE_DATASET_JOB_LOCK:
+            FACE_DATASET_JOB_EVENTS.pop(job_id, None)
+            FACE_DATASET_JOB_FUTURES.pop(job_id, None)
+
+
+@app.get("/api/training-generation-jobs/active")
+def api_active_face_dataset_jobs():
+    _reconcile_orphaned_face_dataset_jobs()
+    try:
+        jobs = list_face_dataset_jobs(active_only=True, limit=20)
+        return jsonify(jobs=[_create_face_dataset_job_payload(job) for job in jobs])
+    except Exception:
+        app.logger.exception("Could not list active face dataset jobs")
+        return jsonify(error="Could not read active background jobs."), 503
+
+
+@app.get("/api/training-generation-jobs/<job_id>")
+def api_face_dataset_job_status(job_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id or ""):
+        return jsonify(error="Invalid dataset job ID."), 400
+    _reconcile_orphaned_face_dataset_jobs()
+    try:
+        job = get_face_dataset_job(job_id)
+        if not job:
+            return jsonify(error="Dataset generation job not found."), 404
+        return jsonify(job=_create_face_dataset_job_payload(job))
+    except Exception:
+        app.logger.exception("Could not read face dataset job status")
+        return jsonify(error="Could not read this background job."), 503
+
+
+@app.post("/api/training-generation-jobs/<job_id>/cancel")
+def api_cancel_face_dataset_job(job_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id or ""):
+        return jsonify(error="Invalid dataset job ID."), 400
+    try:
+        job = get_face_dataset_job(job_id)
+        if not job:
+            return jsonify(error="Dataset generation job not found."), 404
+        if job["status"] not in {"queued", "running", "cancelling"}:
+            return jsonify(job=_create_face_dataset_job_payload(job), message="This job has already finished."), 200
+        update_face_dataset_job(job_id, cancel_requested=True, status="cancelling")
+        with FACE_DATASET_JOB_LOCK:
+            event = FACE_DATASET_JOB_EVENTS.get(job_id)
+            if event is not None:
+                event.set()
+        current_task_id = job.get("current_task_id")
+        if current_task_id and job.get("backend") == "runpod":
+            try:
+                runpod_request("POST", f"/api/remote/generation-cancel/{current_task_id}", timeout=(5, 8))
+            except Exception as exc:
+                app.logger.warning("RunPod cancel request could not be confirmed for dataset job %s: %s", job_id, str(exc)[:300])
+        return jsonify(status="cancelling", job_id=job_id, message="Cancellation requested. Any completed images are preserved.")
+    except Exception:
+        app.logger.exception("Could not request cancellation for face dataset job")
+        return jsonify(error="Could not request cancellation. Check the database connection."), 503
+
+
+@app.post("/api/training-generation-jobs/<job_id>/retry-failed")
+def api_retry_failed_face_dataset_targets(job_id):
+    """Queue just the targets previously marked failed, without regenerating saved targets."""
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id or ""):
+        return jsonify(error="Invalid dataset job ID."), 400
+    try:
+        existing = get_face_dataset_job(job_id)
+        if not existing:
+            return jsonify(error="Dataset generation job not found."), 404
+        if existing["status"] in {"queued", "running", "cancelling"}:
+            return jsonify(error="This batch is still active."), 409
+        failed = existing.get("failed_targets") or []
+        if not failed:
+            return jsonify(error="This batch has no failed targets to retry."), 400
+        # Retrying only failed targets is intentionally a new job/group to keep a clear history.
+        group = get_face_dataset_group(existing["group_id"])
+        if not group:
+            return jsonify(error="The original dataset group no longer exists."), 404
+        return jsonify(error="Failed-target retry is not available yet; review the failed target list and start a new dataset group."), 409
+    except Exception:
+        app.logger.exception("Could not inspect failed target list")
+        return jsonify(error="Could not inspect failed targets."), 503
+
+
 def _stage_profile_dataset_files(profile_id: str, filenames: list[str]) -> list[tuple[Path, Path]]:
     """Move dataset photos out of the training scan path until a DB delete commits."""
     folder = dataset_dir(validate_profile_id(profile_id)).resolve()
