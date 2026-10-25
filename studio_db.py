@@ -130,6 +130,8 @@ class FaceDatasetJobRow(Base):
     current_label: Mapped[str] = mapped_column(String(80), nullable=False, default="")
     current_task_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_photo_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    group_count_base: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    target_manifest: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     failed_targets: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     review_targets: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
@@ -210,6 +212,12 @@ def ensure_schema() -> None:
                 connection.execute(text("ALTER TABLE face_dataset_groups ADD COLUMN dataset_type VARCHAR(24) NOT NULL DEFAULT 'face_angles'"))
             if "prompt" not in group_columns:
                 connection.execute(text("ALTER TABLE face_dataset_groups ADD COLUMN prompt TEXT NOT NULL DEFAULT ''"))
+        job_columns = {column["name"] for column in inspect(engine).get_columns("face_dataset_jobs")}
+        with engine.begin() as connection:
+            if "group_count_base" not in job_columns:
+                connection.execute(text("ALTER TABLE face_dataset_jobs ADD COLUMN group_count_base INTEGER NOT NULL DEFAULT 0"))
+            if "target_manifest" not in job_columns:
+                connection.execute(text("ALTER TABLE face_dataset_jobs ADD COLUMN target_manifest TEXT NOT NULL DEFAULT '[]'"))
         photo_columns = {column["name"] for column in inspect(engine).get_columns("face_photos")}
         with engine.begin() as connection:
             if "group_id" not in photo_columns:
@@ -571,6 +579,8 @@ def _dataset_job_dict(row: FaceDatasetJobRow) -> dict:
         "expected_count": row.expected_count, "generated_count": row.generated_count,
         "current_index": row.current_index, "current_label": row.current_label,
         "current_task_id": row.current_task_id, "cancel_requested": bool(row.cancel_requested),
+        "group_count_base": int(row.group_count_base or 0),
+        "target_manifest": parse_list(row.target_manifest),
         "failed_targets": parse_list(row.failed_targets), "review_targets": parse_list(row.review_targets),
         "source_photo_id": row.source_photo_id, "error": row.error,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -581,6 +591,7 @@ def _dataset_job_dict(row: FaceDatasetJobRow) -> dict:
 def create_face_dataset_job(
     *, job_id: str, group_id: str, profile_id: str, dataset_type: str,
     backend: str, expected_count: int, source_photo_id: str,
+    target_manifest: list[dict] | None = None, group_count_base: int = 0,
 ) -> dict:
     if dataset_type not in {"face_angles", "expressions"}:
         raise ValueError("Unsupported face dataset generation type.")
@@ -588,6 +599,11 @@ def create_face_dataset_job(
         raise ValueError("Unsupported generation backend.")
     if not 1 <= int(expected_count) <= 20:
         raise ValueError("Expected target count must be between 1 and 20.")
+    normalized_targets = [item for item in (target_manifest or []) if isinstance(item, dict)]
+    if normalized_targets and len(normalized_targets) != int(expected_count):
+        raise ValueError("Target manifest count must match expected_count.")
+    if int(group_count_base) < 0:
+        raise ValueError("Base group photo count cannot be negative.")
     if not all(isinstance(value, str) and len(value) == 32 for value in (job_id, group_id, profile_id, source_photo_id)):
         raise ValueError("Invalid dataset generation job identifiers.")
     ensure_schema()
@@ -603,6 +619,8 @@ def create_face_dataset_job(
             dataset_type=dataset_type, status="queued", backend=backend,
             expected_count=int(expected_count), generated_count=0, current_index=0,
             current_label="", current_task_id=None, source_photo_id=source_photo_id,
+            group_count_base=int(group_count_base),
+            target_manifest=json.dumps(normalized_targets, ensure_ascii=False),
             cancel_requested=False, failed_targets="[]", review_targets="[]", error=None,
         )
         session.add(row)
