@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, create_engine, event, func, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, event, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -81,6 +81,22 @@ class FacePhotoRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
+class FaceModelArtifactRow(Base):
+    __tablename__ = "face_model_artifacts"
+    __table_args__ = (UniqueConstraint("profile_id", "backend", name="uq_face_model_profile_backend"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    profile_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("face_profiles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    backend: Mapped[str] = mapped_column(String(16), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    bundle_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    bundle_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class GeneratedAssetRow(Base):
     __tablename__ = "generated_assets"
 
@@ -136,7 +152,7 @@ def database_status() -> dict:
         return {
             "connected": True,
             "engine": "postgresql" if url.startswith("postgresql") else "sqlite",
-            "configured_postgresql": database_url_configured(),
+            "configured_postgresql": url.startswith("postgresql"),
             "message": "PostgreSQL connected." if url.startswith("postgresql") else
                 ("Connected to an explicitly configured SQLite database." if database_url_configured()
                  else "DATABASE_URL is not set; using the local SQLite development database."),
@@ -146,7 +162,7 @@ def database_status() -> dict:
         return {
             "connected": False,
             "engine": "postgresql" if url.startswith("postgresql") else "sqlite",
-            "configured_postgresql": database_url_configured(),
+            "configured_postgresql": url.startswith("postgresql"),
             "message": "Database connection failed. Check DATABASE_URL and the database network/access settings in .env.",
         }
 
@@ -297,6 +313,61 @@ def get_face_photo_bytes(photo_id: str) -> tuple[dict, bytes] | None:
             return None
         return ({"id": row.id, "profile_id": row.profile_id, "filename": row.filename,
                  "mime_type": row.mime_type, "byte_size": row.byte_size}, bytes(row.image_data))
+
+
+def save_face_model_bundle(profile_id: str, backend: str, filename: str, bundle_data: bytes, file_count: int) -> dict:
+    if backend not in {"local", "runpod"}:
+        raise ValueError("Face model backend must be local or runpod.")
+    if not bundle_data or len(bundle_data) > 512 * 1024 * 1024:
+        raise ValueError("Face model bundle must be non-empty and no larger than 512 MB.")
+    ensure_schema()
+    with _session_factory()() as session:
+        if not session.get(FaceProfileRow, profile_id):
+            raise ValueError("Face profile is not present in the configured database.")
+        row = session.scalars(
+            select(FaceModelArtifactRow).where(
+                FaceModelArtifactRow.profile_id == profile_id,
+                FaceModelArtifactRow.backend == backend,
+            )
+        ).first()
+        if row is None:
+            row = FaceModelArtifactRow(
+                id=uuid.uuid4().hex, profile_id=profile_id, backend=backend,
+                filename=Path(filename).name, file_count=file_count,
+                bundle_size=len(bundle_data), bundle_data=bundle_data,
+            )
+            session.add(row)
+        else:
+            row.filename = Path(filename).name
+            row.file_count = file_count
+            row.bundle_size = len(bundle_data)
+            row.bundle_data = bundle_data
+            row.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        return {
+            "id": row.id, "profile_id": row.profile_id, "backend": row.backend,
+            "filename": row.filename, "file_count": row.file_count, "bundle_size": row.bundle_size,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+
+def get_face_model_bundle(profile_id: str, backend: str) -> dict | None:
+    ensure_schema()
+    with _session_factory()() as session:
+        row = session.scalars(
+            select(FaceModelArtifactRow).where(
+                FaceModelArtifactRow.profile_id == profile_id,
+                FaceModelArtifactRow.backend == backend,
+            )
+        ).first()
+        if not row:
+            return None
+        return {
+            "id": row.id, "profile_id": row.profile_id, "backend": row.backend,
+            "filename": row.filename, "file_count": row.file_count, "bundle_size": row.bundle_size,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "bundle_data": bytes(row.bundle_data),
+        }
 
 
 def _asset_dict(row: GeneratedAssetRow, include_content: bool = False) -> dict:
