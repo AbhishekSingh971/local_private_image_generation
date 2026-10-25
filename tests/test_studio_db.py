@@ -147,3 +147,36 @@ def test_legacy_profile_migration_does_not_resurrect_deleted_profile(tmp_path, m
     # A new process would run the migration again; the persisted marker prevents resurrection.
     monkeypatch.setattr(face_profiles, "_DB_MIGRATED", False)
     assert face_profiles.list_profiles() == []
+
+
+
+def test_typed_dataset_groups_persist_category_and_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "typed-groups.sqlite").as_posix())
+    studio_db.ensure_schema()
+    profile_id = uuid.uuid4().hex
+    studio_db.create_face_profile_record({
+        "id": profile_id,
+        "name": "Typed Model",
+        "token": "typed_" + profile_id[:6],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    default_group = studio_db.create_face_dataset_group(profile_id, "Angles")
+    assert default_group["dataset_type"] == "face_angles"
+    assert default_group["prompt"] == ""
+
+    expression_group = studio_db.create_face_dataset_group(
+        profile_id, "Expressions", dataset_type="expressions", prompt="Keep this person's identity and vary expression."
+    )
+    body_group = studio_db.create_face_dataset_group(
+        profile_id, "Shared body", expected_count=5, dataset_type="body_type",
+        prompt="Photorealistic adult model with a naturally athletic build.",
+    )
+    assert expression_group["dataset_type"] == "expressions"
+    assert expression_group["prompt"] == "Keep this person's identity and vary expression."
+    assert body_group["dataset_type"] == "body_type"
+    assert "athletic build" in body_group["prompt"]
+
+    listed = {group["id"]: group for group in studio_db.list_face_dataset_groups(profile_id)}
+    assert listed[expression_group["id"]]["dataset_type"] == "expressions"
+    assert listed[body_group["id"]]["prompt"] == body_group["prompt"]
