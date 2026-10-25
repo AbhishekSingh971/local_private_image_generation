@@ -196,12 +196,30 @@ def remote_train_profile():
         resolution = int(request.form.get("resolution", "512"))
         if not 100 <= steps <= 3000 or resolution not in (384, 512):
             raise ValueError("Training steps must be 100–3000 and resolution must be 384 or 512.")
-        images = local_engine._parse_uploads(request.files.getlist("photos"))
+        photo_uploads = request.files.getlist("photos")
+        images = local_engine._parse_uploads(photo_uploads)
         if len(images) < 5:
             raise ValueError("At least 5 valid face photos are required.")
+        caption_by_name = {}
+        for caption_file in request.files.getlist("captions"):
+            try:
+                caption_by_name[Path(caption_file.filename or "").name] = caption_file.stream.read(1200).decode("utf-8", errors="replace").strip()
+            except (OSError, UnicodeError):
+                continue
         create_profile(name, profile_id=profile_id, token=token, description=description)
-        for image in images:
-            save_profile_image(profile_id, image)
+        for upload, image in zip(photo_uploads, images):
+            caption = caption_by_name.get(Path(upload.filename or "").name, "")
+            if caption:
+                lowered = caption.lower()
+                if lowered.startswith("body type:"):
+                    photo_kind = "body"
+                elif any(term in lowered for term in ("smile", "laugh", "expression", "surprised", "neutral", "serious")):
+                    photo_kind = "expression"
+                else:
+                    photo_kind = "angle"
+                save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
+            else:
+                save_profile_image(profile_id, image)
         existing = get_profile(profile_id)
         if existing and existing.get("local_training_state") == "running":
             return jsonify(error="This face profile is already training on the GPU worker."), 409
