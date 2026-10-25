@@ -1007,6 +1007,125 @@ def face_photo_content(photo_id):
     return send_file(io.BytesIO(image_data), mimetype=metadata["mime_type"], max_age=0)
 
 
+@app.post("/api/face-photos/<photo_id>/edit-preview")
+def api_preview_face_photo_edit(photo_id):
+    """Generate a non-persistent img2img preview for a single grouped photo."""
+    if not re.fullmatch(r"[a-f0-9]{32}", photo_id or ""):
+        return jsonify(error="Invalid training photo ID."), 400
+    try:
+        stored = get_face_photo_bytes(photo_id)
+    except Exception:
+        app.logger.exception("Could not read training photo for edit preview")
+        return jsonify(error="Could not read the source photo."), 503
+    if not stored:
+        return jsonify(error="Training photo not found."), 404
+    metadata, image_bytes = stored
+    group = get_face_dataset_group(metadata.get("group_id")) if metadata.get("group_id") else None
+    if not group:
+        return jsonify(error="The training photo is not inside a named dataset group."), 400
+    if group.get("status") == "generating":
+        return jsonify(error="Wait for this dataset group to finish generating before editing a photo."), 409
+    try:
+        prompt = _clean_prompt(request.form.get("prompt"), "Edit prompt", 1200)
+        negative_prompt = _clean_prompt(request.form.get("negative_prompt", ""), "Negative prompt", 600)
+        strength = float(request.form.get("strength", "0.35"))
+        steps = int(request.form.get("steps", "20"))
+        backend = _resolve_compute_backend(request.form)
+        use_global_body_model = _truthy(request.form.get("use_global_body_model"))
+        seed = resolve_generation_seed(request.form.get("seed"))
+        task_id = (request.form.get("task_id") or uuid.uuid4().hex).strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+            raise ValueError("Invalid generation task ID.")
+        if not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
+            raise ValueError("Strength must be 0.20–0.95 and steps must be 5–25.")
+        if not prompt:
+            raise ValueError("Describe the change you want to preview.")
+    except (ValueError, TypeError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    profile_id = metadata.get("profile_id")
+    if is_global_body_profile(profile_id):
+        profile_id = None
+    profile = get_profile(profile_id) if profile_id else None
+    if profile_id and (not profile or not profile_ready_for_backend(profile_id, "runpod" if backend == "runpod" else "local")):
+        # The source photo itself still conditions img2img; avoid forcing an untrained profile LoRA.
+        profile_id = None
+    if use_global_body_model:
+        body_profile = ensure_global_body_profile()
+        body_backend = "runpod" if backend == "runpod" else "local"
+        if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, body_backend):
+            return jsonify(error="The shared body model is not trained for this backend yet."), 400
+        prompt = GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            init_image = ImageOps.exif_transpose(source).convert("RGB")
+            init_image.load()
+        width, height = resolve_image_dimensions("square")
+        init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        return jsonify(error="The saved training photo cannot be read as an image."), 400
+
+    if not generation_lock.acquire(blocking=False):
+        return jsonify(error="Another generation is running. Please wait, then retry the preview."), 429
+    try:
+        if backend == "runpod":
+            data = {
+                "prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps),
+                "strength": str(strength), "seed": str(seed), "task_id": task_id,
+                "aspect_ratio": "square", "image_preset": "photorealistic",
+                "use_global_body_model": "true" if use_global_body_model else "false",
+            }
+            if profile_id:
+                data["face_profile_id"] = profile_id
+            buffer = io.BytesIO()
+            init_image.save(buffer, format="PNG")
+            buffer.seek(0)
+            response = runpod_request(
+                "POST", "/api/remote/generate", data=data,
+                files={"image": ("training-photo.png", buffer, "image/png")}, timeout=(20, 600),
+            )
+            image_data = response.content
+        else:
+            if backend == "local_gpu" and not torch.cuda.is_available():
+                return jsonify(error="System GPU is unavailable in this Python environment. Select RunPod or local CPU."), 400
+            pipeline = _load_cpu_or_gpu_pipeline(
+                "img2img", profile_id, backend, use_global_body_model=use_global_body_model
+            )
+            effective_prompt, effective_negative = build_generation_prompts(prompt, negative_prompt, "photorealistic")
+            generator_device = "cuda" if backend == "local_gpu" else "cpu"
+            result = pipeline(
+                prompt=effective_prompt, negative_prompt=effective_negative or None,
+                image=init_image, strength=strength, width=width, height=height,
+                num_inference_steps=steps, guidance_scale=7.5,
+                generator=torch.Generator(device=generator_device).manual_seed(seed),
+            ).images[0]
+            buffer = io.BytesIO()
+            result.save(buffer, format="PNG")
+            image_data = buffer.getvalue()
+        if not image_data:
+            return jsonify(error="The model returned an empty preview image."), 502
+        return jsonify(
+            status="preview_ready", photo_id=photo_id,
+            image_data_url="data:image/png;base64," + base64.b64encode(image_data).decode("ascii"),
+            message="Preview generated only. The saved training photo has not been changed.",
+        )
+    except (RuntimeError, ValueError) as exc:
+        app.logger.warning("Photo edit preview failed: %s", str(exc)[:500])
+        message = str(exc)
+        if "out of memory" in message.lower() or "memory" in message.lower():
+            message = "The selected device ran out of memory. Try fewer steps or local CPU/RunPod."
+        return jsonify(error="Preview generation failed: " + message), 502
+    except Exception as exc:
+        app.logger.exception("Unexpected photo edit preview failure")
+        message = str(exc)
+        if "out of memory" in message.lower() or "memory" in message.lower():
+            message = "The selected device ran out of memory. Try fewer steps or local CPU/RunPod."
+        return jsonify(error="Preview generation failed: " + message), 500
+    finally:
+        generation_lock.release()
+
+
 @app.post("/api/face-profiles/<profile_id>/photos/from-assets")
 def api_add_generated_photos(profile_id):
     try:
