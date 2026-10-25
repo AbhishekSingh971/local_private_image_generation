@@ -218,7 +218,7 @@ def remote_generate():
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
         mode = "img2img" if image is not None else "txt2img"
-        pipeline = local_engine._load_cpu_or_gpu_pipeline(mode, profile_id)
+        pipeline = local_engine._load_cpu_or_gpu_pipeline(mode, profile_id, "local_gpu")
         generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
         kwargs = {
             "prompt": prompt, "negative_prompt": negative_prompt or None,
