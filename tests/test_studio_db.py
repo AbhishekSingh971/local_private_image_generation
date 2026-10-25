@@ -13,6 +13,7 @@ def test_assets_and_face_models_are_persisted(tmp_path, monkeypatch):
         "id": profile_id,
         "name": "Studio A",
         "token": "studio_a_" + profile_id[:5],
+        "description": "Short curly hair and brown eyes",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     studio_db.add_face_photo(profile_id, "face_test.jpg", b"photo-bytes")
@@ -22,7 +23,9 @@ def test_assets_and_face_models_are_persisted(tmp_path, monkeypatch):
         negative_prompt="blurry", profile_id=profile_id, profile_name="Studio A",
         backend="cpu", generation_mode="txt2img",
     )
-    assert studio_db.get_face_profile_record(profile_id)["image_count"] == 1
+    stored_profile = studio_db.get_face_profile_record(profile_id)
+    assert stored_profile["image_count"] == 1
+    assert stored_profile["description"] == "Short curly hair and brown eyes"
     assert studio_db.list_face_photo_names(profile_id) == {"face_test.jpg"}
     assert studio_db.get_asset(asset["id"], include_content=True)["media_data"] == b"png-bytes"
     backup = studio_db.save_face_model_bundle(profile_id, "local", "model.zip", b"weights", 1)
