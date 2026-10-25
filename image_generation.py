@@ -6,6 +6,7 @@ placed first. The original user prompt is retained after the small preset prefix
 from __future__ import annotations
 
 import re
+import secrets
 
 IMAGE_DIMENSIONS = {
     "portrait": (512, 768),
@@ -14,6 +15,21 @@ IMAGE_DIMENSIONS = {
 }
 
 IMAGE_PRESETS = {"standard", "photorealistic", "full_body_photo"}
+
+MAX_GENERATION_SEED = (2 ** 31) - 1
+
+
+def resolve_generation_seed(seed: object = None) -> int:
+    """Return a safe 31-bit seed, creating one when the caller leaves it blank."""
+    if seed is None or str(seed).strip() == "":
+        return secrets.randbelow(MAX_GENERATION_SEED + 1)
+    try:
+        value = int(str(seed).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Seed must be an integer between 0 and 2147483647.") from exc
+    if not 0 <= value <= MAX_GENERATION_SEED:
+        raise ValueError("Seed must be an integer between 0 and 2147483647.")
+    return value
 NUDE_TERMS = re.compile(
     r"\b(?:nude|nudity|naked|unclothed|undressed|fine[ -]?art nude|without clothes|no clothes)\b",
     re.IGNORECASE,
