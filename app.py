@@ -29,6 +29,7 @@ from flask import Flask, request, send_from_directory, send_file, jsonify, rende
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
+from image_generation import build_generation_prompts, resolve_image_dimensions, validate_image_preset
 from face_profiles import (
     DATA_DIR,
     LORA_DIR,
@@ -70,7 +71,8 @@ for folder in (INPUT_DIR, OUTPUT_DIR, VIDEO_OUTPUT_DIR, MODEL_DIR, LORA_DIR):
 Image.MAX_IMAGE_PIXELS = 40_000_000
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
-MODEL_ID = os.environ.get("SD_MODEL_ID", "stable-diffusion-v1-5/stable-diffusion-v1-5")
+MODEL_ID = os.environ.get("SD_MODEL_ID", "").strip() or "stable-diffusion-v1-5/stable-diffusion-v1-5"
+MODEL_PATH_OVERRIDE = os.environ.get("SD_MODEL_PATH", "").strip()
 
 pipe = None
 pipeline_mode = None
@@ -927,14 +929,24 @@ def _load_cpu_or_gpu_pipeline(mode, profile_id, compute_backend="cpu"):
             gc.collect()
             if use_cuda:
                 torch.cuda.empty_cache()
-            local_model = MODEL_DIR if (MODEL_DIR / "model_index.json").is_file() else MODEL_ID
+            # Explicit model configuration takes priority over the bundled SD 1.5 folder.
+            # This lets the user select a compatible, properly licensed photorealistic checkpoint.
+            if MODEL_PATH_OVERRIDE:
+                override_path = Path(MODEL_PATH_OVERRIDE).expanduser()
+                local_model = override_path if override_path.is_dir() else MODEL_PATH_OVERRIDE
+            elif os.environ.get("SD_MODEL_ID", "").strip():
+                local_model = MODEL_ID
+            else:
+                local_model = MODEL_DIR if (MODEL_DIR / "model_index.json").is_file() else MODEL_ID
             pipeline_class = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
             kwargs = {
                 "torch_dtype": torch.float16 if use_cuda else torch.float32,
                 "safety_checker": None,
                 "requires_safety_checker": False,
             }
-            if local_model == MODEL_DIR:
+            if isinstance(local_model, Path):
+                if not (local_model / "model_index.json").is_file():
+                    raise ValueError(f"SD_MODEL_PATH is not a Diffusers model folder: {local_model}")
                 kwargs["local_files_only"] = True
             try:
                 loaded = pipeline_class.from_pretrained(local_model, **kwargs)
@@ -972,8 +984,11 @@ def generate():
         negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = float(request.form.get("strength", "0.45"))
-        steps = int(request.form.get("steps", "10"))
+        steps = int(request.form.get("steps", "25"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
+        aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
+        image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
+        width, height = resolve_image_dimensions(aspect_ratio)
         backend = _resolve_compute_backend(request.form)
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
@@ -995,7 +1010,7 @@ def generate():
             with Image.open(image_file.stream) as source:
                 init_image = ImageOps.exif_transpose(source).convert("RGB")
                 init_image.load()
-            init_image = ImageOps.fit(init_image, (512, 512), method=Image.Resampling.LANCZOS)
+            init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
 
@@ -1020,6 +1035,7 @@ def generate():
             data = {
                 "prompt": prompt, "negative_prompt": negative_prompt,
                 "steps": str(steps), "strength": str(strength), "task_id": task_id,
+                "aspect_ratio": aspect_ratio, "image_preset": image_preset,
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
@@ -1092,11 +1108,16 @@ def generate():
                     message=f"Generating image · step {current} of {scheduler_steps}",
                 )
                 return callback_kwargs
+            effective_prompt, effective_negative_prompt = build_generation_prompts(
+                prompt, negative_prompt, image_preset
+            )
             kwargs = {
-                "prompt": prompt,
-                "negative_prompt": negative_prompt or None,
+                "prompt": effective_prompt,
+                "negative_prompt": effective_negative_prompt or None,
+                "width": width,
+                "height": height,
                 "num_inference_steps": steps,
-                "guidance_scale": 7.0,
+                "guidance_scale": 7.5,
                 "generator": torch.Generator(device=generator_device).manual_seed(int(time.time_ns() % (2**31 - 1))),
             }
             if init_image is not None:
