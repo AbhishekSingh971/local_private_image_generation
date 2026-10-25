@@ -10,3 +10,5 @@ imageio>=2.34,<3
 imageio-ffmpeg>=0.5,<1
 requests>=2.31,<3
 python-dotenv>=1.0,<2
+SQLAlchemy>=2.0,<3
+psycopg[binary]>=3.2,<4
