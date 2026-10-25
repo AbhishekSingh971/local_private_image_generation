@@ -1462,7 +1462,7 @@ def api_face_photo_detail(photo_id):
             return jsonify(error="Supply an angle_label to update the photo label."), 400
         try:
             next_label = str(payload.get("angle_label") or "").strip()
-            photo = update_face_photo(photo_id, angle_label=next_label)
+            photo = update_face_photo(photo_id, angle_label=next_label, training_caption=next_label)
             if not photo:
                 return jsonify(error="Training photo not found."), 404
             caption_path = dataset_dir(metadata["profile_id"]) / (Path(metadata["filename"]).name + ".caption.txt")
