@@ -1,4 +1,5 @@
 import base64
+from datetime import datetime, timezone
 import gc
 import io
 import os
@@ -812,8 +813,8 @@ class FaceDatasetJobCancelled(RuntimeError):
 def _face_dataset_job_cancelled(job_id: str) -> bool:
     with FACE_DATASET_JOB_LOCK:
         event = FACE_DATASET_JOB_EVENTS.get(job_id)
-        if event is not None and event.is_set():
-            return True
+        if event is not None:
+            return event.is_set()
     try:
         job = get_face_dataset_job(job_id)
         return bool(job and job.get("cancel_requested"))
@@ -858,6 +859,8 @@ def _reconcile_orphaned_face_dataset_jobs() -> None:
 
 def _create_face_dataset_job_payload(job: dict) -> dict:
     result = dict(job)
+    group = get_face_dataset_group(result.get("group_id")) if result.get("group_id") else None
+    result["title"] = (group or {}).get("title", "Face dataset")
     task_id = result.get("current_task_id")
     result["generation_progress"] = _get_generation_progress(task_id) if task_id else None
     result["progress_percent"] = round(
