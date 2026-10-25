@@ -325,7 +325,8 @@ def dataset_images(profile_id: str) -> list[Path]:
 
 
 def save_profile_image(
-    profile_id: str, image, *, group_id: str | None = None, angle_label: str | None = None
+    profile_id: str, image, *, group_id: str | None = None,
+    angle_label: str | None = None, photo_kind: str = "manual",
 ) -> Path:
     profile_id = validate_profile_id(profile_id)
     if not get_profile(profile_id):
@@ -341,7 +342,7 @@ def save_profile_image(
         from studio_db import add_face_photo
         add_face_photo(
             profile_id, destination.name, destination.read_bytes(), "image/jpeg",
-            group_id=group_id, angle_label=angle_label,
+            group_id=group_id, angle_label=angle_label, photo_kind=photo_kind,
         )
     return destination
 
