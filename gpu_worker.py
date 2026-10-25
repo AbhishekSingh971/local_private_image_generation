@@ -260,6 +260,9 @@ def remote_generate():
         steps = int(request.form.get("steps", "10"))
         strength = float(request.form.get("strength", "0.45"))
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
+        task_id = (request.form.get("task_id") or "").strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+            raise ValueError("Invalid generation task ID.")
     except (ValueError, TypeError, KeyError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt or len(prompt) > 1200 or len(negative_prompt) > 600:
@@ -267,6 +270,7 @@ def remote_generate():
     if not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
         return jsonify(error="Invalid step count or image strength."), 400
     if not torch.cuda.is_available():
+        _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
         return jsonify(error="CUDA is not available on this worker."), 503
     if profile_id:
         profile = get_profile(profile_id)
@@ -282,11 +286,24 @@ def remote_generate():
             image = ImageOps.fit(image, (512, 512), method=Image.Resampling.LANCZOS)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
             return jsonify(error="Reference image is not a valid PNG, JPG or WEBP image."), 400
+    _set_generation_progress(task_id, asset_type="image", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the image model and selected face on RunPod…")
     if not local_engine.generation_lock.acquire(blocking=False):
+        _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="busy", message="Another GPU generation is already running.")
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
         mode = "img2img" if image is not None else "txt2img"
         pipeline = local_engine._load_cpu_or_gpu_pipeline(mode, profile_id, "local_gpu")
+        _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on RunPod…")
+        def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+            scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
+            current = min(step_index + 1, scheduler_steps)
+            percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+            _set_generation_progress(
+                task_id, asset_type="image", status="running", progress=percent,
+                current_step=current, total_steps=scheduler_steps, stage="denoising",
+                message=f"Generating image on RunPod · step {current} of {scheduler_steps}",
+            )
+            return callback_kwargs
         generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
         kwargs = {
             "prompt": prompt, "negative_prompt": negative_prompt or None,
@@ -294,12 +311,15 @@ def remote_generate():
         }
         if image is not None:
             kwargs.update(image=image, strength=strength)
-        result = pipeline(**kwargs).images[0]
+        result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+        _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
         result.save(output, format="PNG")
         output.seek(0)
+        _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on RunPod.")
         return send_file(output, mimetype="image/png", download_name="generated.png")
     except Exception as exc:
+        _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="Image generation failed on RunPod.")
         message = str(exc)
         if "out of memory" in message.lower():
             message = "GPU out of memory. Try fewer steps or a smaller request."
