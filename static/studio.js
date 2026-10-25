@@ -1119,6 +1119,14 @@
           const image=document.createElement("img");image.src=photo.content_url;image.alt=photo.angle_label||"Training photo";image.loading="lazy";
           image.addEventListener("error",()=>{image.alt="Preview unavailable";image.style.opacity=".35";});
           const label=document.createElement("span");label.textContent=photo.angle_label||photo.filename||"Training photo";
+          const validation=document.createElement("span");
+          const validationStatus=photo.validation_status||"not_checked";
+          validation.className="photo-validation-badge "+validationStatus.replace(/_/g,"-");
+          validation.textContent=validationStatus==="passed"?"Pose verified":validationStatus==="needs_review"?"Needs review":validationStatus==="not_applicable"?"Source photo":"Not checked";
+          if(photo.validation_message)validation.title=photo.validation_message;
+          const validationDetail=document.createElement("span");validationDetail.className="photo-validation-details";
+          if(photo.validation_message)validationDetail.textContent=photo.validation_message;
+          else if(Number.isFinite(Number(photo.actual_yaw)))validationDetail.textContent="Estimated yaw "+Number(photo.actual_yaw).toFixed(0)+"°, pitch "+Number(photo.actual_pitch||0).toFixed(0)+"°.";
           const photoActions=document.createElement("div");photoActions.className="dataset-photo-actions";
           const renamePhoto=document.createElement("button");renamePhoto.type="button";renamePhoto.className="secondary-button";renamePhoto.textContent="Edit label";renamePhoto.disabled=busy;
           renamePhoto.addEventListener("click",async()=>{
@@ -1158,7 +1166,9 @@
           });
           const editWithPrompt=document.createElement("button");editWithPrompt.type="button";editWithPrompt.className="secondary-button";editWithPrompt.textContent="Edit with prompt";editWithPrompt.disabled=busy;editWithPrompt.addEventListener("click",()=>openTrainingPhotoEdit(photo,group));
           photoActions.append(editWithPrompt,renamePhoto,replacePhoto,deletePhoto);
-          figure.append(image,label,photoActions,replaceInput);photos.appendChild(figure);
+          figure.append(image,label,validation);
+          if(validationDetail.textContent)figure.append(validationDetail);
+          figure.append(photoActions,replaceInput);photos.appendChild(figure);
         });
         card.appendChild(photos);
         if(group.error){const error=document.createElement("p");error.className="dataset-group-error";error.textContent=group.error;card.appendChild(error);}
