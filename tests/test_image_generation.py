@@ -31,25 +31,58 @@ def test_standard_preset_does_not_change_user_prompts():
     assert negative == "low quality"
 
 
-def test_full_body_nude_prompt_prioritizes_nudity_and_head_to_toe_framing():
+def test_full_body_preset_adds_framing_for_a_person_when_unspecified():
     prompt, negative = build_generation_prompts(
-        "beautiful adult woman, thick thighs, realistic face, nude fine-art photo",
-        "",
-        "full_body_photo",
+        "a realistic woman wearing a red dress", "", "full_body_photo"
     )
-    assert prompt.startswith("photorealistic non-sexual fine-art nude photograph of an adult woman")
-    assert "feet visible" in prompt
-    assert "clothes" in negative
-    assert "bikini" in negative
-    assert "cut off feet" in negative
+    assert prompt.startswith("photorealistic full-body photograph")
+    assert "entire person visible from head to feet" in prompt
+    assert "cropped body" in negative
+    assert "clothes, clothing, dress" not in negative
 
 
-def test_full_body_clothed_prompt_does_not_suppress_clothing():
+def test_explicit_closeup_overrides_full_body_preset():
+    prompt, negative = build_generation_prompts(
+        "close-up portrait of a woman wearing a red dress", "", "full_body_photo"
+    )
+    assert prompt.startswith("photorealistic photograph")
+    assert "full-body photograph" not in prompt
+    assert "cropped body" not in negative
+
+
+def test_reference_photo_prevents_forced_full_body_reframing():
+    prompt, negative = build_generation_prompts(
+        "woman in a red dress", "", "full_body_photo", has_reference_image=True
+    )
+    assert prompt.startswith("photorealistic photograph")
+    assert "full-body photograph" not in prompt
+    assert "cropped body" not in negative
+
+
+def test_prompt_style_overrides_photorealistic_preset():
+    prompt, negative = build_generation_prompts(
+        "anime illustration of a woman wearing a red dress", "keep clean lines", "full_body_photo"
+    )
+    assert prompt == "anime illustration of a woman wearing a red dress"
+    assert negative == "keep clean lines"
+
+
+def test_prompt_does_not_get_unrequested_nudity_or_clothing_constraints():
     prompt, negative = build_generation_prompts(
         "photorealistic woman wearing a red dress", "", "full_body_photo"
     )
-    assert prompt.startswith("photorealistic full-body fine-art photograph")
+    assert "nude" not in prompt.lower()
     assert "clothes, clothing, dress" not in negative
+    assert "bikini" not in negative
+
+
+def test_non_person_prompt_does_not_get_forced_human_composition():
+    prompt, negative = build_generation_prompts(
+        "a red sports car on a mountain road", "", "full_body_photo"
+    )
+    assert prompt.startswith("photorealistic photograph")
+    assert "full-body" not in prompt
+    assert "cropped body" not in negative
 
 
 def test_invalid_preset_is_rejected():
