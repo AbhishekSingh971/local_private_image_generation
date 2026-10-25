@@ -68,6 +68,13 @@ def test_legacy_profile_migration_does_not_resurrect_deleted_profile(tmp_path, m
 
     assert len(face_profiles.list_profiles()) == 1
     assert studio_db.get_face_profile_record(profile_id)["image_count"] == 1
+
+    # Simulate loss of the local cache; the database should rebuild it on a new process start.
+    (dataset / "face_legacy.jpg").unlink()
+    monkeypatch.setattr(face_profiles, "_DB_MIGRATED", False)
+    assert len(face_profiles.list_profiles()) == 1
+    assert (dataset / "face_legacy.jpg").read_bytes() == b"legacy-photo"
+
     assert face_profiles.delete_profile(profile_id) is True
 
     # A new process would run the migration again; the persisted marker prevents resurrection.
