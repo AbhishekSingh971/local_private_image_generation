@@ -142,10 +142,12 @@ def api_generation_progress(task_id):
                 remote_stage = remote_progress.get("stage", "")
                 remote_message = remote_progress.get("message", "")
                 if remote_status == "completed":
+                    # The worker finished rendering, but the HTTP response body may
+                    # still be transferring to this app instance.
                     remote_status = "running"
-                    remote_percent = 94
-                    remote_stage = "saving"
-                    remote_message = "GPU work finished; saving media to the database library…"
+                    remote_percent = 93
+                    remote_stage = "transferring"
+                    remote_message = "GPU work finished; receiving the rendered file from RunPod…"
                 _set_generation_progress(
                     task_id, asset_type=progress["asset_type"], backend="runpod",
                     status=remote_status, progress=remote_percent,
