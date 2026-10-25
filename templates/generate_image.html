@@ -18,6 +18,12 @@
       <label for="outputTitle">Save as</label><input id="outputTitle" name="title" type="text" maxlength="160" placeholder="e.g. Studio portrait 01">
       <button type="submit" id="generateButton">Generate photo</button>
       <div id="generationStatus" class="status" role="status" aria-live="polite"></div>
+      <div id="imageProgress" class="generation-progress" hidden aria-live="polite">
+        <div class="progress-heading"><span id="imageProgressStage">Preparing image…</span><strong id="imageProgressPercent">0%</strong></div>
+        <progress id="imageProgressBar" max="100" value="0" aria-label="Image generation progress"></progress>
+        <p id="imageProgressDetail" class="progress-detail">Waiting for the model to start.</p>
+        <p id="imageProgressStep" class="progress-step"></p>
+      </div>
     </form>
   </section>
   <section class="panel result-panel">
