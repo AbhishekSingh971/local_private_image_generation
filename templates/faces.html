@@ -18,16 +18,22 @@
     <section class="panel form-panel">
       <div class="section-heading inline-heading"><div><div class="eyebrow">STEP 2</div><h2>Add training photos</h2></div></div>
       <label for="addPhotosProfile">Face profile</label><select id="addPhotosProfile"><option value="">Select a face profile</option></select>
-      <div class="source-tabs"><button type="button" class="source-tab active" data-source-tab="local">From computer</button><button type="button" class="source-tab" data-source-tab="generated">From generated images</button><button type="button" class="source-tab" data-source-tab="angles">Auto-generate 5 angles</button></div>
+      <div class="source-tabs">
+        <button type="button" class="source-tab" data-source-tab="local">From computer</button>
+        <button type="button" class="source-tab" data-source-tab="generated">From generated images</button>
+        <button type="button" class="source-tab active" data-source-tab="angles">Face angles</button>
+        <button type="button" class="source-tab" data-source-tab="expressions">Expressions</button>
+        <button type="button" class="source-tab" data-source-tab="body">Body type · global</button>
+      </div>
       <div class="photo-source" data-source-panel="local">
         <label for="morePhotos">Choose local photos</label><input id="morePhotos" type="file" accept="image/png,image/jpeg,image/webp" multiple>
         <button type="button" class="secondary-button" id="addPhotosButton">Add selected local photos</button><div id="addPhotosStatus" class="status" role="status" aria-live="polite"></div>
       </div>
-      <div class="photo-source" data-source-panel="angles" hidden>
-        <p>Upload one clear source photo and create five labeled angle variations. The original plus successful variations are added to this profile as a dataset group and remain visible on Training datasets.</p>
+      <div class="photo-source" data-source-panel="variations">
+        <p id="variationModeDescription">Upload one clear source photo and create five labeled views of the same person. Only the viewpoint should change; the original is kept unchanged.</p>
         <label for="angleGroupTitle">Dataset group name</label><input id="angleGroupTitle" type="text" maxlength="120" placeholder="e.g. Model A · first angle set">
         <label for="angleSourceImage">One source face photo</label><input id="angleSourceImage" type="file" accept="image/png,image/jpeg,image/webp">
-        <p class="field-help">Use a clear image of an adult who has consented. Angle changes are approximate with SD 1.5 and may alter identity; review the results before training.</p>
+        <p class="field-help">Use a clear photo of an adult who has consented. Angle and expression changes are approximate; review each result before training.</p>
         <button type="button" id="generateFaceAnglesButton">Generate five angles and add to dataset</button>
         <button type="button" id="retryFaceAngleButton" class="secondary-button" hidden>Retry failed angle once</button>
         <p class="field-help">Each successful angle is saved to the image library and its dataset group immediately. If an angle fails, retry that same angle once without losing the completed views.</p>
@@ -37,6 +43,21 @@
           <progress id="faceAnglesProgressBar" max="100" value="0" aria-label="Angle dataset generation progress"></progress>
           <p id="faceAnglesProgressDetail" class="progress-detail">Waiting to start.</p>
         </div>
+      </div>
+      <div class="photo-source" data-source-panel="body" hidden>
+        <h3>Shared body-type model</h3>
+        <p>Generate five full-body samples from a text prompt—no reference photo is required. These samples belong to a shared body model, not a specific face, so the model can be reused with any face identity.</p>
+        <label for="bodyGroupTitle">Dataset group name</label>
+        <input id="bodyGroupTitle" type="text" maxlength="120" placeholder="e.g. Curvy athletic figure">
+        <label for="bodyTypePrompt">Body type / figure prompt</label>
+        <textarea id="bodyTypePrompt" rows="4" maxlength="1000" placeholder="Photorealistic full-body adult model, naturally curvy athletic build, defined waist, broad shoulders, proportionate hips and thighs, realistic anatomy, neutral studio background"></textarea>
+        <p class="field-help">Describe body proportions and shape, not a person's identity. The generated examples are added to the shared body dataset automatically.</p>
+        <div class="actions">
+          <button type="button" id="generateBodyDatasetButton">Generate 5 body samples</button>
+          <button type="button" id="trainGlobalBodyButton" class="secondary-button">Train shared body model</button>
+        </div>
+        <div id="bodyDatasetStatus" class="status" role="status" aria-live="polite"></div>
+        <p id="globalBodyModelStatus" class="field-help">Checking shared body model status…</p>
       </div>
       <div class="photo-source" data-source-panel="generated" hidden>
         <p class="field-help">Search and browse your full saved image library. Selected images remain selected as you move between pages.</p>
@@ -63,7 +84,7 @@
       <div class="section-heading"><div><div class="eyebrow">YOUR IDENTITIES</div><h2>Face library</h2></div><span id="profileCount" class="value-pill">0 profiles</span></div>
       <div class="profile-list" id="profileList"><div class="empty-state">Loading face profiles…</div></div>
     </section>
-    <section class="panel info-panel"><h3>Training source options</h3><p><strong>Local photos:</strong> select images from your computer.</p><p><strong>Generated images:</strong> reuse a saved image from the library.</p><p><strong>Auto-generate angles:</strong> create a named group containing the original and up to five labeled variations. Open Training datasets to review groups, then retrain the associated profile to include the new photos in its LoRA.</p></section>
+    <section class="panel info-panel"><h3>Training source options</h3><p><strong>Local photos:</strong> select images from your computer.</p><p><strong>Generated images:</strong> reuse a saved image from the library.</p><p><strong>Face angles and expressions:</strong> create same-person variations and caption them for identity-LoRA training.</p><p><strong>Body type · global:</strong> generate examples from a text prompt, then train a shared body LoRA that can be combined with any face model.</p></section>
   </aside>
 </div>
 {% endblock %}
