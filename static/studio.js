@@ -396,21 +396,35 @@
   const sortInput=$("#assetSort");
   const countLabel=$("#assetCount");
   const libraryStatus=$("#libraryStatus");
+  function updateAssetPagination() {
+    const pagination=$("#assetPagination");
+    const previous=$("#assetPrev");
+    const next=$("#assetNext");
+    const label=$("#assetPageLabel");
+    const pages=Math.max(1,Math.ceil(assetTotal/assetPageSize));
+    const current=Math.floor(assetOffset/assetPageSize)+1;
+    if(pagination)pagination.hidden=assetTotal<=assetPageSize;
+    if(previous)previous.disabled=assetOffset<=0;
+    if(next)next.disabled=assetOffset+assetPageSize>=assetTotal;
+    if(label)label.textContent="Page "+current+" of "+pages;
+  }
   function renderAssets(assets) {
     if(!assetGrid) return;
-    const query=(searchInput?.value||"").trim().toLowerCase();
-    let visible=assets.filter(asset => !query || (asset.title+" "+asset.prompt+" "+asset.profile_name).toLowerCase().includes(query));
-    const sort=sortInput?.value||"newest";
-    visible.sort((a,b)=>sort==="title"?a.title.localeCompare(b.title):sort==="oldest"?String(a.created_at).localeCompare(String(b.created_at)):String(b.created_at).localeCompare(String(a.created_at)));
+    const query=(searchInput?.value||"").trim();
     assetGrid.replaceChildren();
-    if(countLabel)countLabel.textContent=visible.length+" item(s)"+(visible.length!==assets.length?" · "+assets.length+" total":"");
-    if(!visible.length){
+    if(countLabel) {
+      const first=assetTotal?assetOffset+1:0;
+      const last=Math.min(assetOffset+assets.length,assetTotal);
+      countLabel.textContent=assetTotal+" saved "+(assetType==="image"?"image(s)":"video(s)")+(assetTotal?" · showing "+first+"–"+last:"");
+    }
+    updateAssetPagination();
+    if(!assets.length){
       const empty=document.createElement("div");empty.className="empty-state panel";
       const title=document.createElement("h3");title.textContent=query?"No matching media":"Nothing saved here yet";
       const detail=document.createElement("p");detail.textContent=query?"Try another search term.":"Create your first "+assetType+" and it will appear in this library.";
       empty.append(title,detail);assetGrid.appendChild(empty);return;
     }
-    visible.forEach(asset=>{
+    assets.forEach(asset=>{
       const card=document.createElement("article");card.className="asset-card panel";
       let media;
       if(asset.asset_type==="image"){media=document.createElement("img");media.alt=asset.title;media.loading="lazy";media.src="/assets/"+asset.id+"/content";}
@@ -437,21 +451,32 @@
   async function loadAssets() {
     if(!assetGrid||!assetType)return;
     try{
-      const data=await readJson(await fetch("/api/assets?type="+encodeURIComponent(assetType)+"&limit=500"));
+      const params=new URLSearchParams({
+        type:assetType,limit:String(assetPageSize),offset:String(assetOffset),
+        q:searchInput?.value||"",sort:sortInput?.value||"newest"
+      });
+      const data=await readJson(await fetch("/api/assets?"+params.toString()));
       assetCache.clear();(data.assets||[]).forEach(asset=>assetCache.set(asset.id,asset));
+      assetTotal=Number(data.total||0);assetOffset=Number(data.offset||0);
       renderAssets([...assetCache.values()]);
     }catch(error){
       assetGrid.replaceChildren();const empty=document.createElement("div");empty.className="empty-state panel";empty.textContent="Could not load saved media: "+error.message;assetGrid.appendChild(empty);
+      if(countLabel)countLabel.textContent="Library unavailable";
     }
   }
-  searchInput?.addEventListener("input",()=>renderAssets([...assetCache.values()]));
-  sortInput?.addEventListener("change",()=>renderAssets([...assetCache.values()]));
+  searchInput?.addEventListener("input",()=>{assetOffset=0;loadAssets();});
+  sortInput?.addEventListener("change",()=>{assetOffset=0;loadAssets();});
+  $("#assetPrev")?.addEventListener("click",()=>{assetOffset=Math.max(0,assetOffset-assetPageSize);loadAssets();});
+  $("#assetNext")?.addEventListener("click",()=>{if(assetOffset+assetPageSize<assetTotal){assetOffset+=assetPageSize;loadAssets();}});
   async function deleteAsset(asset,button) {
     if(!confirm("Permanently delete “"+asset.title+"” from the database and local output folder?"))return;
     button.disabled=true;if(libraryStatus)libraryStatus.textContent="Deleting saved media…";
     try{
       await readJson(await fetch("/api/assets/"+asset.id,{method:"DELETE"}));
-      assetCache.delete(asset.id);renderAssets([...assetCache.values()]);
+      assetCache.delete(asset.id);
+      assetTotal=Math.max(0,assetTotal-1);
+      if(assetOffset>=assetTotal&&assetOffset>0)assetOffset=Math.max(0,assetOffset-assetPageSize);
+      await loadAssets();
       if(libraryStatus)libraryStatus.textContent="Deleted “"+asset.title+"”.";
     }catch(error){if(libraryStatus)libraryStatus.textContent=error.message;}
     finally{button.disabled=false;}
@@ -471,7 +496,7 @@
     button.disabled=true;if(status)status.textContent="Saving asset details…";
     try{
       const asset=await readJson(await fetch("/api/assets/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:$("#editAssetTitle").value,prompt:$("#editAssetPrompt").value,negative_prompt:$("#editAssetNegative").value})}));
-      assetCache.set(asset.asset.id,asset.asset);renderAssets([...assetCache.values()]);
+      assetCache.set(asset.asset.id,asset.asset);await loadAssets();
       if(libraryStatus)libraryStatus.textContent="Saved changes to “"+asset.asset.title+"”.";
       closeEditAsset();
     }catch(error){if(status)status.textContent=error.message;}
