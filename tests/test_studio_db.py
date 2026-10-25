@@ -180,3 +180,67 @@ def test_typed_dataset_groups_persist_category_and_prompt(tmp_path, monkeypatch)
     listed = {group["id"]: group for group in studio_db.list_face_dataset_groups(profile_id)}
     assert listed[expression_group["id"]]["dataset_type"] == "expressions"
     assert listed[body_group["id"]]["prompt"] == body_group["prompt"]
+
+
+
+def test_background_dataset_job_state_and_pose_validation_persist(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "background-job.sqlite").as_posix())
+    studio_db.ensure_schema()
+    profile_id = uuid.uuid4().hex
+    studio_db.create_face_profile_record({
+        "id": profile_id,
+        "name": "Background Model",
+        "token": "background_" + profile_id[:5],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    group = studio_db.create_face_dataset_group(
+        profile_id, "Nine angle targets", expected_count=9, dataset_type="face_angles",
+    )
+    source_id = studio_db.add_face_photo(
+        profile_id, "source.jpg", b"source-bytes", group_id=group["id"],
+        angle_label="Original source", photo_kind="source", validation_status="not_applicable",
+    )
+    photo_id = studio_db.add_face_photo(
+        profile_id, "left-profile.jpg", b"generated-bytes", group_id=group["id"],
+        angle_label="Left profile · Needs review", photo_kind="angle",
+        validation_status="needs_review",
+        validation_message="Estimated yaw did not match the target.",
+        training_caption="head pose: yaw -90 degrees, pitch 0 degrees",
+        target_yaw=-90.0, target_pitch=0.0, actual_yaw=-8.0, actual_pitch=1.0,
+    )
+    job_id = uuid.uuid4().hex
+    job = studio_db.create_face_dataset_job(
+        job_id=job_id, group_id=group["id"], profile_id=profile_id,
+        dataset_type="face_angles", backend="cpu", expected_count=9,
+        source_photo_id=source_id,
+    )
+    assert job["status"] == "queued"
+    assert job["expected_count"] == 9
+    running = studio_db.update_face_dataset_job(
+        job_id, status="running", current_index=6, current_label="Left profile",
+        current_task_id=uuid.uuid4().hex, generated_count=5,
+        review_targets=[{"label": "Left profile", "photo_id": photo_id}],
+    )
+    assert running["status"] == "running"
+    assert running["generated_count"] == 5
+    assert running["review_targets"][0]["label"] == "Left profile"
+    assert studio_db.get_face_dataset_job(job_id)["current_index"] == 6
+    assert [row["id"] for row in studio_db.list_face_dataset_jobs(active_only=True)] == [job_id]
+
+    stored_meta, stored_bytes = studio_db.get_face_photo_bytes(photo_id)
+    assert stored_bytes == b"generated-bytes"
+    assert stored_meta["validation_status"] == "needs_review"
+    assert stored_meta["target_yaw"] == -90.0
+    assert stored_meta["training_caption"].startswith("head pose:")
+
+    listed = studio_db.list_face_dataset_groups(profile_id)[0]
+    listed_photo = next(photo for photo in listed["photos"] if photo["id"] == photo_id)
+    assert listed_photo["validation_status"] == "needs_review"
+    assert "did not match" in listed_photo["validation_message"]
+
+    cancelled = studio_db.update_face_dataset_job(job_id, status="cancelling", cancel_requested=True)
+    assert cancelled["cancel_requested"] is True
+    assert cancelled["status"] == "cancelling"
+    cancelled = studio_db.update_face_dataset_job(job_id, status="cancelled", current_task_id=None)
+    assert cancelled["status"] == "cancelled"
+    assert studio_db.list_face_dataset_jobs(active_only=True) == []
