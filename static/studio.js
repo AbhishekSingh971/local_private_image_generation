@@ -187,6 +187,7 @@
           if ($("#addPhotosProfile")) $("#addPhotosProfile").value = profile.id;
           if ($("#faceProfile")) $("#faceProfile").value = profile.id;
           if ($("#videoProfile")) $("#videoProfile").value = profile.id;
+          updateFaceConditionControls();
           $("#trainProfile")?.scrollIntoView({behavior:"smooth", block:"center"});
         });
         const deleteButton = document.createElement("button"); deleteButton.type="button"; deleteButton.className="danger-button"; deleteButton.textContent="Delete";
@@ -250,6 +251,7 @@
       updateProfileDescriptionCount();
       await refreshProfiles();
       ["trainProfile","faceProfile","videoProfile","addPhotosProfile"].forEach(id => {const node=$("#"+id);if(node)node.value=data.profile.id;});
+      updateFaceConditionControls();
       if (status) status.textContent="Created “"+data.profile.name+"” with "+data.profile.image_count+" photo(s). Prompt token: "+data.profile.token+".";
     } catch (error) { if (status) status.textContent=error.message; }
     finally { if (button) {button.disabled=false;button.textContent="Create profile";} }
@@ -775,7 +777,7 @@
 
   const trainGlobalBodyButton=$("#trainGlobalBodyButton");
   trainGlobalBodyButton?.addEventListener("click",async()=>{
-    const status=$("#bodyDatasetStatus");
+    const status=$("#bodyDatasetStatus")||$("#globalBodyModelStatus");
     const button=trainGlobalBodyButton;
     const info=await loadGlobalBodyStatus();
     if(!info||!info.profile_id){if(status)status.textContent="Could not load the shared body profile.";return;}
@@ -787,7 +789,7 @@
     try {
       const response=await readJson(await fetch("/api/face-profiles/"+info.profile_id+"/train",{method:"POST",body:formData}));
       if(status)status.textContent=response.message||"Shared body-model training started."; 
-      const selected=backend==="runpod"?"runpod":"local";
+      const selected=(response.backend||backend)==="runpod"?"runpod":"local";
       const started=Date.now();
       while(Date.now()-started<8*60*60*1000){
         await new Promise(resolve=>setTimeout(resolve,4000));
