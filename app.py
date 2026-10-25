@@ -1051,7 +1051,7 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
         pipeline_mode_for_target = "pose_img2img" if pose_control_image is not None else "img2img"
         pipeline = _load_cpu_or_gpu_pipeline(pipeline_mode_for_target, profile_id_for_generation, backend)
         generator_device = "cuda" if backend == "local_gpu" else "cpu"
-        effective_prompt, effective_negative = build_generation_prompts(prompt, negative_prompt, "photorealistic")
+        effective_prompt, effective_negative = build_generation_prompts(prompt, negative_prompt, "photorealistic", has_reference_image=True)
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="running", progress=4,
             total_steps=22, stage="denoising", message="Generating " + target["label"] + " with explicit pose targets…",
@@ -1734,7 +1734,8 @@ def api_preview_face_photo_edit(photo_id):
                 "img2img", profile_id, backend, use_global_body_model=use_global_body_model
             )
             effective_prompt, effective_negative = build_generation_prompts(
-                prompt, negative_prompt, "full_body_photo" if edit_aspect_ratio == "portrait" else "photorealistic"
+                prompt, negative_prompt, "full_body_photo" if edit_aspect_ratio == "portrait" else "photorealistic",
+                has_reference_image=True,
             )
             generator_device = "cuda" if backend == "local_gpu" else "cpu"
             result = pipeline(
@@ -2374,7 +2375,7 @@ def generate():
                 )
                 return callback_kwargs
             effective_prompt, effective_negative_prompt = build_generation_prompts(
-                prompt, negative_prompt, image_preset
+                prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
             )
             kwargs = {
                 "prompt": effective_prompt,
