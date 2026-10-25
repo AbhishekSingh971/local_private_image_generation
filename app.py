@@ -1541,6 +1541,24 @@ def generate():
         backend = _resolve_compute_backend(request.form)
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = _truthy(request.form.get("use_global_body_model"))
+        face_angle = (request.form.get("face_angle") or "").strip().lower()
+        face_expression = (request.form.get("face_expression") or "").strip().lower()
+        angle_prompts = {
+            "": "", "front": "front-facing view, face looking toward the camera",
+            "three_quarter_left": "three-quarter view turned about 45 degrees to the subject's left",
+            "three_quarter_right": "three-quarter view turned about 45 degrees to the subject's right",
+            "left_profile": "left-facing side profile, approximately 90-degree head turn",
+            "right_profile": "right-facing side profile, approximately 90-degree head turn",
+        }
+        expression_prompts = {
+            "": "", "neutral": "natural neutral facial expression",
+            "smile": "gentle natural smile",
+            "laugh": "natural genuine laughing expression",
+            "serious": "serious composed facial expression",
+            "surprised": "mild natural surprised expression",
+        }
+        if face_angle not in angle_prompts or face_expression not in expression_prompts:
+            raise ValueError("Choose a supported face angle and expression.")
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID. Refresh the page and retry.")
@@ -1553,6 +1571,12 @@ def generate():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
+    if (face_angle or face_expression) and not profile_id:
+        return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
+    if face_angle:
+        prompt += ", head angle: " + angle_prompts[face_angle]
+    if face_expression:
+        prompt += ", facial expression: " + expression_prompts[face_expression]
     if use_global_body_model:
         try:
             body_profile = ensure_global_body_profile()
