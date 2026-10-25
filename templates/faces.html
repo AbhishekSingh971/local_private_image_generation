@@ -18,10 +18,23 @@
     <section class="panel form-panel">
       <div class="section-heading inline-heading"><div><div class="eyebrow">STEP 2</div><h2>Add training photos</h2></div></div>
       <label for="addPhotosProfile">Face profile</label><select id="addPhotosProfile"><option value="">Select a face profile</option></select>
-      <div class="source-tabs"><button type="button" class="source-tab active" data-source-tab="local">From computer</button><button type="button" class="source-tab" data-source-tab="generated">From generated images</button></div>
+      <div class="source-tabs"><button type="button" class="source-tab active" data-source-tab="local">From computer</button><button type="button" class="source-tab" data-source-tab="generated">From generated images</button><button type="button" class="source-tab" data-source-tab="angles">Auto-generate 5 angles</button></div>
       <div class="photo-source" data-source-panel="local">
         <label for="morePhotos">Choose local photos</label><input id="morePhotos" type="file" accept="image/png,image/jpeg,image/webp" multiple>
         <button type="button" class="secondary-button" id="addPhotosButton">Add selected local photos</button><div id="addPhotosStatus" class="status" role="status" aria-live="polite"></div>
+      </div>
+      <div class="photo-source" data-source-panel="angles" hidden>
+        <p>Upload one clear source photo and create five labeled angle variations. The original plus successful variations are added to this profile as a dataset group and remain visible on Training datasets.</p>
+        <label for="angleGroupTitle">Dataset group name</label><input id="angleGroupTitle" type="text" maxlength="120" placeholder="e.g. Model A · first angle set">
+        <label for="angleSourceImage">One source face photo</label><input id="angleSourceImage" type="file" accept="image/png,image/jpeg,image/webp">
+        <p class="field-help">Use a clear image of an adult who has consented. Angle changes are approximate with SD 1.5 and may alter identity; review the results before training.</p>
+        <button type="button" id="generateFaceAnglesButton">Generate five angles and add to dataset</button>
+        <div id="faceAnglesStatus" class="status" role="status" aria-live="polite"></div>
+        <div id="faceAnglesProgress" class="generation-progress" hidden aria-live="polite">
+          <div class="progress-heading"><span id="faceAnglesProgressStage">Preparing dataset</span><strong id="faceAnglesProgressPercent">0%</strong></div>
+          <progress id="faceAnglesProgressBar" max="100" value="0" aria-label="Angle dataset generation progress"></progress>
+          <p id="faceAnglesProgressDetail" class="progress-detail">Waiting to start.</p>
+        </div>
       </div>
       <div class="photo-source" data-source-panel="generated" hidden>
         <p class="field-help">Search and browse your full saved image library. Selected images remain selected as you move between pages.</p>
@@ -48,7 +61,7 @@
       <div class="section-heading"><div><div class="eyebrow">YOUR IDENTITIES</div><h2>Face library</h2></div><span id="profileCount" class="value-pill">0 profiles</span></div>
       <div class="profile-list" id="profileList"><div class="empty-state">Loading face profiles…</div></div>
     </section>
-    <section class="panel info-panel"><h3>Training source options</h3><p><strong>Local photos:</strong> select image files from your computer; the app validates and re-encodes them before saving.</p><p><strong>Generated images:</strong> pick an image from your saved image library, then add it to the selected profile's dataset.</p><p>Both source types are copied into the profile's isolated training dataset. A generated image is not automatically used for training unless you explicitly select it.</p></section>
+    <section class="panel info-panel"><h3>Training source options</h3><p><strong>Local photos:</strong> select images from your computer.</p><p><strong>Generated images:</strong> reuse a saved image from the library.</p><p><strong>Auto-generate angles:</strong> create a named group containing the original and up to five labeled variations. Open Training datasets to review groups, then retrain the associated profile to include the new photos in its LoRA.</p></section>
   </aside>
 </div>
 {% endblock %}
