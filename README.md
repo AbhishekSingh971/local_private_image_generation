@@ -4,7 +4,8 @@ A local-first Windows/Flask application for generating photos, training separate
 
 ## Features
 
-- Local text-to-image and image-to-image generation with Stable Diffusion 1.5.
+- Local text-to-image and image-to-image generation with selectable 512×768 portrait, 512×512 square, or 768×512 landscape composition.
+- Image-generation presets: standard, photorealistic, and full-body photorealistic. The full-body preset prioritizes head-to-toe framing, adds relevant negative terms for cropped images/anatomy, and discourages clothing when the prompt requests nude adult fine-art imagery.
 - Separate sidebar pages for overview, image generation, video generation, face model training, generated images and generated videos.
 - PostgreSQL persistence for face profiles, face-training photos, trained LoRA ZIP backups and generated media bytes plus prompts, backend, timestamps and titles.
 - Local working copies of per-profile photo datasets under `data/face_profiles/<profile-id>/dataset/`; adding a second person's photos does not mix them with the first person's dataset.
@@ -44,9 +45,13 @@ Requirements: Windows 10/11 64-bit, Python 3.11 x64, PostgreSQL reachable from t
 
 The Windows installer installs CPU-only PyTorch. This is for local development and slow image generation; it does not enable CUDA training or local video generation. The local web app binds to 127.0.0.1 only.
 
+### Select a compatible photorealistic checkpoint
+
+The original Stable Diffusion 1.5 checkpoint often produces less convincing human faces and skin than a checkpoint fine-tuned for photography. The app now honors an explicit `SD_MODEL_ID` Hugging Face Diffusers repository even if the bundled base folder exists, or an existing local Diffusers folder via `SD_MODEL_PATH`. Add the setting to your private `.env` and restart both the app and RunPod worker. Review each model's license, compatibility, and access requirements before use. Leave both variables blank to use the bundled model. Changing the base checkpoint may require retraining face LoRAs against that checkpoint.
+
 ## Use the multipage workspace
 
-- Image generation: open Generate image from the sidebar, select a trained face, optionally upload a reference image, enter prompts and save a title. Successful output is stored in PostgreSQL and appears in Generated images.
+- Image generation: open Generate image from the sidebar, select a trained face, choose the composition and image preset, optionally upload a reference image, enter a concise prompt and save a title. Portrait is 512×768 by default to provide more room for full-length subjects; inference defaults to 25 steps and can be reduced for faster tests. Successful output is stored in PostgreSQL and appears in Generated images. Stable Diffusion 1.5 has a short CLIP text context, so keep essential subject, clothing/nudity, body, and framing terms near the start. A preset can improve the wording and framing, but cannot guarantee a particular result.
 - Video generation: open Generate video, select the face/profile trained on the selected backend, choose frame count and steps, and generate the clip. Successful output is stored in PostgreSQL and appears in Generated videos.
 - Face models: create isolated identity profiles, add photos from your computer, or use the Generated images picker to add previously saved outputs as training photos. Each profile can include an optional face/training description of up to 200 words; the trigger token remains a short identifier. Stable Diffusion 1.5 uses a fixed text-encoder context window, so the trainer rotates through short description chunks across training steps instead of sending all 200 words in one prompt. At least 5 photos are required to start training; 15–30 varied photos are a better starting point.
 - Libraries: use the separate Generated images and Generated videos pages to search across all saved items, page through the results, preview, edit the title/prompt/negative prompt, download the original media bytes, or delete an item. Deletion removes the database record and the local output copy. The generated-image picker on Face models can also search and page through saved image outputs when selecting training photos.
