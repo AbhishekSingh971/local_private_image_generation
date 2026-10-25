@@ -924,7 +924,7 @@ def api_start_face_dataset_job(profile_id):
         job = create_face_dataset_job(
             job_id=job_id, group_id=group_id, profile_id=profile_id,
             dataset_type=dataset_type, backend=backend, expected_count=len(targets),
-            source_photo_id=source_record["id"],
+            source_photo_id=source_record["id"], target_manifest=targets, group_count_base=0,
         )
         cancel_event = threading.Event()
         with FACE_DATASET_JOB_LOCK:
@@ -1112,10 +1112,13 @@ def _run_face_dataset_generation_job(job_id: str) -> None:
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
             raise RuntimeError("The original source photo is no longer a valid image.") from exc
         source_pose, source_pose_error = estimate_head_pose(source_image)
-        targets = targets_for_dataset_type(job["dataset_type"])
-        failed_targets = list(job.get("failed_targets") or [])
-        review_targets = list(job.get("review_targets") or [])
+        targets = job.get("target_manifest") or targets_for_dataset_type(job["dataset_type"])
+        # A new job starts with a clean failure list; failed targets from an earlier job
+        # are kept in that job's history and only selected targets are re-enqueued.
+        failed_targets = []
+        review_targets = []
         generated_count = int(job.get("generated_count") or 0)
+        group_count_base = int(job.get("group_count_base") or 0)
 
         for index, target in enumerate(targets):
             if _face_dataset_job_cancelled(job_id):
@@ -1201,7 +1204,7 @@ def _run_face_dataset_generation_job(job_id: str) -> None:
                 )
                 update_face_dataset_group(
                     job["group_id"], status="generating",
-                    generated_count=generated_count, error="",
+                    generated_count=group_count_base + generated_count, error="",
                 )
                 _set_generation_progress(
                     current_task_id, asset_type="image", backend=backend, status="completed",
@@ -1247,16 +1250,22 @@ def _run_face_dataset_generation_job(job_id: str) -> None:
             group_status = "cancelled"
             final_message = "Cancelled by the user. All previously completed photos remain saved."
         elif failed_targets:
-            final_status = "partial" if generated_count else "failed"
+            final_status = "partial" if (group_count_base + generated_count) else "failed"
             group_status = final_status
-            final_message = "Some targets failed. Successful photos remain saved; failed targets are listed for review."
+            final_message = "Some targets failed. Successful photos remain saved; failed targets are listed for retry."
         else:
-            final_status = "completed"
-            group_status = "completed"
+            group_total = group_count_base + generated_count
+            group_record = get_face_dataset_group(job["group_id"]) or {}
+            if group_total >= int(group_record.get("expected_count") or job["expected_count"]):
+                final_status = "completed"
+                group_status = "completed"
+            else:
+                final_status = "partial"
+                group_status = "partial"
             final_message = (
-                "All requested images were generated and saved."
+                "All scheduled targets were generated and saved."
                 if not review_targets else
-                f"All requested images were saved; {len(review_targets)} target(s) need visual review because the pose could not be verified or did not match."
+                f"Scheduled targets were saved; {len(review_targets)} target(s) need visual review because the pose could not be verified or did not match."
             )
         update_face_dataset_job(
             job_id, status=final_status, generated_count=generated_count,
@@ -1264,7 +1273,8 @@ def _run_face_dataset_generation_job(job_id: str) -> None:
             review_targets=review_targets, error=final_message if final_status != "completed" or review_targets else "",
         )
         update_face_dataset_group(
-            job["group_id"], status=group_status, generated_count=generated_count,
+            job["group_id"], status=group_status,
+            generated_count=group_count_base + generated_count,
             error=final_message if final_status != "completed" or review_targets else "",
         )
     except Exception as exc:
@@ -1341,9 +1351,14 @@ def api_cancel_face_dataset_job(job_id):
 
 @app.post("/api/training-generation-jobs/<job_id>/retry-failed")
 def api_retry_failed_face_dataset_targets(job_id):
-    """Queue just the targets previously marked failed, without regenerating saved targets."""
+    """Queue only failed targets; already saved targets are never regenerated."""
+    global FACE_DATASET_STARTING
     if not re.fullmatch(r"[a-f0-9]{32}", job_id or ""):
         return jsonify(error="Invalid dataset job ID."), 400
+    with FACE_DATASET_JOB_LOCK:
+        if FACE_DATASET_STARTING or FACE_DATASET_JOB_EVENTS:
+            return jsonify(error="Another face dataset batch is active. Cancel or finish it first."), 409
+        FACE_DATASET_STARTING = True
     try:
         existing = get_face_dataset_job(job_id)
         if not existing:
@@ -1353,14 +1368,53 @@ def api_retry_failed_face_dataset_targets(job_id):
         failed = existing.get("failed_targets") or []
         if not failed:
             return jsonify(error="This batch has no failed targets to retry."), 400
-        # Retrying only failed targets is intentionally a new job/group to keep a clear history.
         group = get_face_dataset_group(existing["group_id"])
         if not group:
             return jsonify(error="The original dataset group no longer exists."), 404
-        return jsonify(error="Failed-target retry is not available yet; review the failed target list and start a new dataset group."), 409
+        all_targets = existing.get("target_manifest") or targets_for_dataset_type(existing["dataset_type"])
+        by_label = {target.get("label"): target for target in all_targets if isinstance(target, dict)}
+        retry_targets = [
+            dict(by_label[item.get("label")])
+            for item in failed if isinstance(item, dict) and item.get("label") in by_label
+        ]
+        # Maintain order from the original manifest and de-duplicate failures.
+        failed_labels = {item.get("label") for item in failed if isinstance(item, dict)}
+        retry_targets = [dict(target) for target in all_targets if target.get("label") in failed_labels]
+        if not retry_targets:
+            return jsonify(error="The failed target list no longer matches this dataset manifest."), 409
+        source_id = existing["source_photo_id"]
+        source = get_face_photo_bytes(source_id)
+        if not source:
+            return jsonify(error="The original source photo is missing; failed targets cannot be retried."), 409
+        next_id = uuid.uuid4().hex
+        job = create_face_dataset_job(
+            job_id=next_id, group_id=group["id"], profile_id=existing["profile_id"],
+            dataset_type=existing["dataset_type"], backend=existing["backend"],
+            expected_count=len(retry_targets), source_photo_id=source_id,
+            target_manifest=retry_targets,
+            group_count_base=int(group.get("generated_count") or 0),
+        )
+        update_face_dataset_group(
+            group["id"], status="generating", generated_count=int(group.get("generated_count") or 0), error=""
+        )
+        cancel_event = threading.Event()
+        with FACE_DATASET_JOB_LOCK:
+            FACE_DATASET_JOB_EVENTS[next_id] = cancel_event
+            future = FACE_DATASET_JOB_POOL.submit(_run_face_dataset_generation_job, next_id)
+            FACE_DATASET_JOB_FUTURES[next_id] = future
+        return jsonify(
+            status="queued", job=_create_face_dataset_job_payload(job),
+            group=get_face_dataset_group(group["id"]),
+            message=f"Retrying {len(retry_targets)} failed target(s) only. Previously saved images will be retained.",
+        ), 202
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     except Exception:
-        app.logger.exception("Could not inspect failed target list")
-        return jsonify(error="Could not inspect failed targets."), 503
+        app.logger.exception("Could not retry failed face dataset targets")
+        return jsonify(error="Could not queue failed-target retry."), 503
+    finally:
+        with FACE_DATASET_JOB_LOCK:
+            FACE_DATASET_STARTING = False
 
 
 def _stage_profile_dataset_files(profile_id: str, filenames: list[str]) -> list[tuple[Path, Path]]:
