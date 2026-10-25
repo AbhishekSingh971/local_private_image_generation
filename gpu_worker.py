@@ -337,6 +337,9 @@ def remote_generate_video():
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
+        task_id = (request.form.get("task_id") or "").strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+            raise ValueError("Invalid generation task ID.")
     except (ValueError, TypeError, KeyError) as exc:
         return jsonify(error=str(exc) or "Invalid video settings."), 400
     if not prompt or len(prompt) > 1000 or len(negative_prompt) > 600:
@@ -344,14 +347,18 @@ def remote_generate_video():
     if not 5 <= steps <= 20 or frames not in (8, 16, 24):
         return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
     if not torch.cuda.is_available():
+        _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
         return jsonify(error="CUDA is not available on this worker."), 503
     if not (local_engine.MOTION_DIR / "config.json").is_file():
+        _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="AnimateDiff motion adapter is missing on the GPU worker.")
         return jsonify(error="AnimateDiff motion adapter is missing on the GPU worker."), 400
     if profile_id:
         profile = get_profile(profile_id)
         if not profile or not profile.get("local_model_ready"):
             return jsonify(error="The selected face LoRA is not trained on this GPU worker."), 400
+    _set_generation_progress(task_id, asset_type="video", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the video model and selected face on RunPod…")
     if not local_engine.generation_lock.acquire(blocking=False):
+        _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="busy", message="Another GPU generation is already running.")
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
         from diffusers import AnimateDiffPipeline, MotionAdapter
@@ -375,17 +382,32 @@ def remote_generate_video():
                 if profile_id:
                     VIDEO_PIPE.load_lora_weights(str(model_path(profile_id)))
                     VIDEO_ACTIVE_LORA = profile_id
+        _set_generation_progress(task_id, asset_type="video", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting video denoising steps on RunPod…")
+        def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+            scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
+            current = min(step_index + 1, scheduler_steps)
+            percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+            _set_generation_progress(
+                task_id, asset_type="video", status="running", progress=percent,
+                current_step=current, total_steps=scheduler_steps, stage="denoising",
+                message=f"Generating video on RunPod · step {current} of {scheduler_steps} · {frames} frames",
+            )
+            return callback_kwargs
         generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
         result = VIDEO_PIPE(
             prompt=prompt, negative_prompt=negative_prompt or None,
             num_frames=frames, num_inference_steps=steps,
             guidance_scale=7.0, generator=generator,
+            callback_on_step_end=on_step_end,
         )
+        _set_generation_progress(task_id, asset_type="video", status="running", progress=95, current_step=steps, total_steps=steps, stage="encoding", message="Encoding generated frames into MP4…")
         filename = f"gpu_{uuid.uuid4().hex}.mp4"
         video_path = local_engine.VIDEO_OUTPUT_DIR / filename
         export_to_video(result.frames[0], str(video_path), fps=8)
+        _set_generation_progress(task_id, asset_type="video", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Video generation completed on RunPod.")
         return send_file(video_path, mimetype="video/mp4", download_name="generated.mp4")
     except Exception as exc:
+        _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="Video generation failed on RunPod.")
         message = str(exc)
         if "out of memory" in message.lower():
             message = "GPU out of memory. Try fewer frames."
