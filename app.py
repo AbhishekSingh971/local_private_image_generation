@@ -240,6 +240,22 @@ def _save_generated_png(image) -> str:
     return filename
 
 
+def _safe_list_assets(asset_type=None, limit=200):
+    try:
+        return list_assets(asset_type, limit)
+    except Exception:
+        app.logger.exception("Media library is unavailable")
+        return []
+
+
+def _safe_profile_count():
+    try:
+        return len(list_profiles())
+    except Exception:
+        app.logger.exception("Face profile store is unavailable")
+        return 0
+
+
 def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode):
     folder = OUTPUT_DIR if asset_type == "image" else VIDEO_OUTPUT_DIR
     path = folder / Path(filename).name
@@ -349,12 +365,12 @@ def index():
 
 @app.get("/dashboard")
 def dashboard():
-    images = list_assets("image", 500)
-    videos = list_assets("video", 500)
+    images = _safe_list_assets("image", 500)
+    videos = _safe_list_assets("video", 500)
     return render_template(
         "dashboard.html", page_key="dashboard", active_page="dashboard",
         image_count=len(images), video_count=len(videos),
-        profile_count=len(list_profiles()), recent_assets=list_assets(limit=8),
+        profile_count=_safe_profile_count(), recent_assets=_safe_list_assets(limit=8),
     )
 
 
@@ -704,7 +720,7 @@ def api_face_train_status(profile_id):
         return jsonify(error=str(exc), status="running", profile=profile), 502
     state = payload.get("status", "running")
     if state == "completed":
-        if database_url_configured() and get_face_model_bundle(profile_id, "runpod") is None:
+        if database_url_configured() and profile.get("runpod_training_state") != "completed":
             try:
                 model_response = runpod_request(
                     "GET", f"/api/remote/models/{profile_id}", timeout=(15, 120)
