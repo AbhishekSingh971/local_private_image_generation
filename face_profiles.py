@@ -339,6 +339,10 @@ def dataset_images(profile_id: str) -> list[Path]:
 def save_profile_image(
     profile_id: str, image, *, group_id: str | None = None,
     angle_label: str | None = None, photo_kind: str = "manual",
+    validation_status: str = "not_checked", validation_message: str | None = None,
+    target_yaw: float | None = None, target_pitch: float | None = None,
+    actual_yaw: float | None = None, actual_pitch: float | None = None,
+    training_caption: str | None = None,
 ) -> Path:
     profile_id = validate_profile_id(profile_id)
     if not get_profile(profile_id):
@@ -355,11 +359,14 @@ def save_profile_image(
         add_face_photo(
             profile_id, destination.name, destination.read_bytes(), "image/jpeg",
             group_id=group_id, angle_label=angle_label, photo_kind=photo_kind,
+            validation_status=validation_status, validation_message=validation_message,
+            target_yaw=target_yaw, target_pitch=target_pitch,
+            actual_yaw=actual_yaw, actual_pitch=actual_pitch,
         )
     # Training captions let the LoRA associate a pose/expression/body description
     # with the shared trigger token instead of treating every image as identical.
     caption_path = destination.with_name(destination.name + ".caption.txt")
-    caption = (angle_label or "").strip()
+    caption = (training_caption or angle_label or "").strip()
     if caption and photo_kind not in {"source", "manual"}:
         caption_path.write_text(caption[:1200], encoding="utf-8")
     else:
