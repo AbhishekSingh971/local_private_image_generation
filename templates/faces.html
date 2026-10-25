@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Face models · Private Face Studio{% endblock %}
+{% block page_heading %}Face model studio{% endblock %}
+{% block content %}
+<div class="page-intro"><div><div class="eyebrow">IDENTITIES · DATASETS · TRAINING</div><h1>Train one face at a time</h1><p>Each face profile has a separate dataset and model. Add photos from your computer or reuse an image you already generated and saved in your library.</p></div></div>
+<div class="faces-layout">
+  <div class="stack">
+    <section class="panel form-panel">
+      <div class="section-heading inline-heading"><div><div class="eyebrow">STEP 1</div><h2>Create face profile</h2></div></div>
+      <form id="createProfileForm">
+        <div class="twocol"><div><label for="profileName">Profile name</label><input id="profileName" name="name" type="text" maxlength="80" required placeholder="e.g. Studio Model A"></div><div><label for="profileToken">Trigger token <span class="optional">optional</span></label><input id="profileToken" name="token" type="text" maxlength="48" placeholder="generated if blank"><p class="field-help">Keep this short; use it in prompts to call the trained identity.</p></div></div>
+        <label for="profileDescription">Face description / training details <span class="optional">up to 200 words</span></label><textarea id="profileDescription" name="description" rows="4" placeholder="Describe stable features such as hairstyle, eye color, facial structure, and other details to teach across this identity."></textarea><div id="profileDescriptionCount" class="field-help" aria-live="polite">0/200 words</div>
+        <label for="newProfilePhotos">Initial photos <span class="optional">optional</span></label><input id="newProfilePhotos" name="photos" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+        <p class="field-help">Use photos of the same consenting person. Each image is limited to 8 MB.</p>
+        <button type="submit" id="createProfileButton">Create profile</button><div id="createProfileStatus" class="status" role="status" aria-live="polite"></div>
+      </form>
+    </section>
+    <section class="panel form-panel">
+      <div class="section-heading inline-heading"><div><div class="eyebrow">STEP 2</div><h2>Add training photos</h2></div></div>
+      <label for="addPhotosProfile">Face profile</label><select id="addPhotosProfile"><option value="">Select a face profile</option></select>
+      <div class="source-tabs">
+        <button type="button" class="source-tab" data-source-tab="local">From computer</button>
+        <button type="button" class="source-tab" data-source-tab="generated">From generated images</button>
+        <button type="button" class="source-tab active" data-source-tab="angles">Face angles</button>
+        <button type="button" class="source-tab" data-source-tab="expressions">Expressions</button>
+        <button type="button" class="source-tab" data-source-tab="body">Body type · global</button>
+      </div>
+      <div class="photo-source" data-source-panel="local">
+        <label for="morePhotos">Choose local photos</label><input id="morePhotos" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+        <button type="button" class="secondary-button" id="addPhotosButton">Add selected local photos</button><div id="addPhotosStatus" class="status" role="status" aria-live="polite"></div>
+      </div>
+      <div class="photo-source" data-source-panel="variations">
+        <p id="variationModeDescription">Upload one source photo. Face angles creates 9 target poses; Expressions creates 10 facial expressions. The original remains unchanged.</p>
+        <label for="angleGroupTitle">Dataset group name</label><input id="angleGroupTitle" type="text" maxlength="120" placeholder="e.g. Model A · first angle set">
+        <label for="angleSourceImage">One source face photo</label><input id="angleSourceImage" type="file" accept="image/png,image/jpeg,image/webp">
+        <p class="field-help">Use a clear photo of an adult who has consented. Angle and expression changes are approximate; review each result before training.</p>
+        <div class="target-selection" aria-labelledby="targetSelectionHeading">
+          <div class="target-selection-heading"><strong id="targetSelectionHeading">Choose targets to generate</strong><label class="target-select-all"><input type="checkbox" id="selectAllFaceTargets" checked> Select all</label></div>
+          <p id="targetSelectionHelp" class="field-help">All 9 face angles are selected. Uncheck any target you do not need.</p>
+          <div id="faceTargetChecklist" class="target-checklist"></div>
+        </div>
+        <button type="button" id="generateFaceAnglesButton">Start selected face angles</button>
+        <button type="button" id="retryFaceAngleButton" class="secondary-button" hidden>Retry failed target</button>
+        <p class="field-help">Generation runs on the server, so navigation does not stop the batch. Each image is saved immediately. Failed or mismatched outputs are marked for review.</p>
+        <div id="faceAnglesStatus" class="status" role="status" aria-live="polite"></div>
+        <div id="faceAnglesProgress" class="generation-progress" hidden aria-live="polite">
+          <div class="progress-heading"><span id="faceAnglesProgressStage">Preparing dataset</span><strong id="faceAnglesProgressPercent">0%</strong></div>
+          <progress id="faceAnglesProgressBar" max="100" value="0" aria-label="Face dataset generation progress"></progress>
+          <p id="faceAnglesProgressDetail" class="progress-detail">Waiting to start.</p>
+        </div>
+      </div>
+      <div class="photo-source" data-source-panel="body" hidden>
+        <h3>Shared body-type model</h3>
+        <p>Generate five full-body samples from a text prompt—no reference photo is required. These samples belong to a shared body model, not a specific face, so the model can be reused with any face identity.</p>
+        <label for="bodyGroupTitle">Dataset group name</label>
+        <input id="bodyGroupTitle" type="text" maxlength="120" placeholder="e.g. Curvy athletic figure">
+        <label for="bodyTypePrompt">Body type / figure prompt</label>
+        <textarea id="bodyTypePrompt" rows="4" maxlength="1000" placeholder="Photorealistic full-body adult model, naturally curvy athletic build, defined waist, broad shoulders, proportionate hips and thighs, realistic anatomy, neutral studio background"></textarea>
+        <p class="field-help">Describe body proportions and shape, not a person's identity. The generated examples are added to the shared body dataset automatically.</p>
+        <div class="actions">
+          <button type="button" id="generateBodyDatasetButton">Generate 5 body samples</button>
+          <button type="button" id="trainGlobalBodyButton" class="secondary-button">Train shared body model</button>
+        </div>
+        <div id="bodyDatasetStatus" class="status" role="status" aria-live="polite"></div>
+        <p id="globalBodyModelStatus" class="field-help">Checking shared body model status…</p>
+      </div>
+      <div class="photo-source" data-source-panel="generated" hidden>
+        <p class="field-help">Search and browse your full saved image library. Selected images remain selected as you move between pages.</p>
+        <div class="generated-picker-toolbar">
+          <input type="search" id="generatedPhotoSearch" placeholder="Search saved images or prompts" aria-label="Search generated images">
+          <div class="generated-picker-pagination"><button type="button" class="secondary-button" id="generatedPhotoPrev" disabled>←</button><span id="generatedPhotoPageLabel">Page 1</span><button type="button" class="secondary-button" id="generatedPhotoNext" disabled>→</button></div>
+        </div>
+        <div id="generatedPhotoPicker" class="generated-photo-picker"><div class="empty-state">Loading saved images…</div></div>
+        <div id="generatedSelectionCount" class="field-help">0 images selected</div>
+        <button type="button" class="secondary-button" id="addGeneratedPhotosButton">Add selected generated images to profile</button><div id="generatedPhotosStatus" class="status" role="status" aria-live="polite"></div>
+      </div>
+    </section>
+    <section class="panel form-panel">
+      <div class="section-heading inline-heading"><div><div class="eyebrow">STEP 3</div><h2>Train selected face</h2></div></div>
+      <form id="trainForm">
+        <label for="trainProfile">Face profile to train</label><select name="profile_id" id="trainProfile" required><option value="">Select a profile</option></select>
+        <div class="twocol"><div><label for="trainSteps">Training steps</label><select id="trainSteps" name="steps"><option value="400">400 · quick test</option><option value="800" selected>800 · starting point</option><option value="1200">1200 · longer</option></select></div><div><label for="trainResolution">Resolution</label><select id="trainResolution" name="resolution"><option value="384">384 · lower VRAM</option><option value="512" selected>512 · standard SD 1.5</option></select></div></div>
+        <button type="submit" id="trainButton">Train selected face</button><div id="trainStatus" class="status" role="status" aria-live="polite">At least 5 clear photos are required. Training requires a CUDA GPU, either System GPU or RunPod.</div>
+      </form>
+    </section>
+  </div>
+  <aside class="stack">
+    <section class="panel">
+      <div class="section-heading"><div><div class="eyebrow">YOUR IDENTITIES</div><h2>Face library</h2></div><span id="profileCount" class="value-pill">0 profiles</span></div>
+      <div class="profile-list" id="profileList"><div class="empty-state">Loading face profiles…</div></div>
+    </section>
+    <section class="panel info-panel"><h3>Training source options</h3><p><strong>Local photos:</strong> select images from your computer.</p><p><strong>Generated images:</strong> reuse a saved image from the library.</p><p><strong>Face angles and expressions:</strong> create same-person variations and caption them for identity-LoRA training.</p><p><strong>Body type · global:</strong> generate examples from a text prompt, then train a shared body LoRA that can be combined with any face model.</p></section>
+  </aside>
+</div>
+{% endblock %}

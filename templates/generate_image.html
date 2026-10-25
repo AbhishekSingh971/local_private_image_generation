@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Generate image · Private Face Studio{% endblock %}
+{% block page_heading %}Image generation{% endblock %}
+{% block content %}
+<div class="page-intro"><div><div class="eyebrow">CREATE · IMAGE</div><h1>Generate an image</h1><p>Describe the image you want or optionally provide a reference image. Completed output is saved to your database-backed library.</p></div><a class="text-link" href="{{ url_for('library_images_page') }}">Open saved images →</a></div>
+<div class="work-grid">
+  <section class="panel form-panel">
+    <form id="generationForm">
+      <label for="faceProfile">Face identity</label><select id="faceProfile" name="face_profile_id"><option value="">Base model (no trained face)</option></select>
+      <div class="twocol">
+        <div><label for="faceAngle">Face angle <span class="optional">optional</span></label><select id="faceAngle" name="face_angle"><option value="">Use prompt / default</option><option value="front">Front view</option><option value="three_quarter_left">Three-quarter left</option><option value="three_quarter_right">Three-quarter right</option><option value="left_profile">Left profile</option><option value="right_profile">Right profile</option></select></div>
+        <div><label for="faceExpression">Expression <span class="optional">optional</span></label><select id="faceExpression" name="face_expression"><option value="">Use prompt / default</option><option value="neutral">Neutral</option><option value="smile">Gentle smile</option><option value="laugh">Laughing</option><option value="serious">Serious</option><option value="surprised">Surprised</option></select></div>
+      </div>
+      <label class="switchline" for="useGlobalBodyModel"><input id="useGlobalBodyModel" name="use_global_body_model" type="checkbox" value="true"> Apply shared body-type model</label>
+      <p id="globalBodyGenerationStatus" class="field-help">Optional. Generate body samples and train the shared model from Training datasets before using it.</p>
+      <label for="referenceImage">Reference image <span class="optional">optional</span></label><input id="referenceImage" name="image" type="file" accept="image/png,image/jpeg,image/webp">
+      <div class="preview reference-preview"><img id="sourcePreview" alt="Reference image preview" hidden><div id="sourcePlaceholder" class="placeholder">Reference image preview</div></div>
+      <label for="imagePreset">Image preset</label><select id="imagePreset" name="image_preset"><option value="standard">Standard · use my prompt as written</option><option value="photorealistic">Photorealistic · improve skin and lighting</option><option value="full_body_photo" selected>Photorealistic full-body · head to feet</option></select>
+      <label for="aspectRatio">Composition / aspect ratio</label><select id="aspectRatio" name="aspect_ratio"><option value="portrait" selected>Portrait 2:3 · 512 × 768 · full-body</option><option value="square">Square · 512 × 512</option><option value="landscape">Landscape 3:2 · 768 × 512</option></select>
+      <label for="prompt">Prompt</label><textarea id="prompt" name="prompt" maxlength="1200" rows="4" required placeholder="Photorealistic full-body photograph of an adult woman, thick thighs, naturally curvy fit figure, nude fine-art study, realistic skin, entire body head to feet..."></textarea>
+      <p class="field-help">Keep the most important subject details near the start. SD 1.5 has a short text context and can truncate long prompts. The full-body preset puts framing first; when your prompt asks for nudity, it also discourages accidental clothing.</p>
+      <label for="negativePrompt">Negative prompt <span class="optional">optional</span></label><textarea id="negativePrompt" name="negative_prompt" maxlength="600" rows="2" placeholder="cartoon, CGI, plastic skin, blurry face, distorted anatomy, extra limbs, cropped body, cut off feet"></textarea>
+      <div class="twocol">
+        <div><label for="strength">Reference strength <span id="strengthValue" class="value-pill">0.45</span></label><input id="strength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.45"><p class="field-help">Only used with a reference image. 0.75–0.90 allows bigger changes but may alter the face and pose.</p></div>
+        <div><label for="steps">Inference steps</label><select id="steps" name="steps"><option value="5">5 · quick test</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25" selected>25 · more detail (slower)</option></select></div>
+      </div>
+      <label for="outputTitle">Save as</label><input id="outputTitle" name="title" type="text" maxlength="160" placeholder="e.g. Studio portrait 01">
+      <button type="submit" id="generateButton">Generate photo</button>
+      <div id="generationStatus" class="status" role="status" aria-live="polite"></div>
+      <div id="imageProgress" class="generation-progress" hidden aria-live="polite">
+        <div class="progress-heading"><span id="imageProgressStage">Preparing image…</span><strong id="imageProgressPercent">0%</strong></div>
+        <progress id="imageProgressBar" max="100" value="0" aria-label="Image generation progress"></progress>
+        <p id="imageProgressDetail" class="progress-detail">Waiting for the model to start.</p>
+        <p id="imageProgressStep" class="progress-step"></p>
+      </div>
+    </form>
+  </section>
+  <section class="panel result-panel">
+    <div class="result-heading"><div><div class="eyebrow">LATEST RESULT</div><h2>Your image</h2></div><span class="pill" id="imageSavedPill">Not generated</span></div>
+    <div class="preview result-preview"><img id="resultPreview" alt="Generated photo" hidden><div id="resultPlaceholder" class="placeholder"><div class="empty-icon">✧</div>Your generated photo will appear here.</div></div>
+    <div class="result-actions"><a id="downloadImage" class="button-link" href="#" download hidden>Download image ↓</a><a class="button-link secondary-link" href="{{ url_for('library_images_page') }}">Browse image library →</a></div>
+    <p class="field-help">Image bytes and details are saved to your database; a local output copy is kept for training and backup workflows.</p>
+  </section>
+</div>
+{% endblock %}

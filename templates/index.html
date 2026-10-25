@@ -3,134 +3,435 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Local Private Image AI</title>
+  <title>Private Face Studio</title>
   <style>
-    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a2c; --line:#29354d; --muted:#aab6ca; --accent:#8b9cff; }
-    * { box-sizing:border-box; }
-    body { margin:0; background:radial-gradient(ellipse at top,#172344 0,#0b1020 55%); color:#f5f7ff; font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
-    main { max-width:1000px; margin:0 auto; padding:28px 18px 56px; }
-    header { margin-bottom:24px; }
-    h1 { margin:0 0 8px; font-size:clamp(28px,5vw,42px); letter-spacing:-.04em; }
-    .sub, .muted { color:var(--muted); }
-    .privacy { display:inline-flex; gap:8px; align-items:center; border:1px solid #315c4b; background:#102a25; color:#b9f5d9; border-radius:999px; padding:6px 12px; font-size:13px; }
-    .layout { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
-    .panel { background:rgba(18,26,44,.92); border:1px solid var(--line); border-radius:18px; padding:20px; min-width:0; box-shadow:0 12px 36px #0002; }
-    label { display:block; font-weight:650; margin:14px 0 7px; }
-    textarea, input[type=file], select { width:100%; border:1px solid #35425c; background:#0d1424; color:#f5f7ff; border-radius:10px; padding:11px; font:inherit; }
-    textarea { resize:vertical; min-height:112px; }
-    input[type=range] { width:100%; accent-color:var(--accent); }
-    .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    button, .download { border:0; border-radius:11px; padding:12px 16px; background:var(--accent); color:#0a1020; font-weight:750; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
-    button { width:100%; margin-top:18px; font-size:16px; }
-    button:disabled { opacity:.55; cursor:wait; }
-    .preview { min-height:270px; display:flex; align-items:center; justify-content:center; border:1px dashed #3b4963; border-radius:13px; overflow:hidden; background:#0b1120; }
-    .preview img { max-width:100%; max-height:520px; object-fit:contain; display:block; }
-    .placeholder { color:#8290a8; padding:24px; text-align:center; }
-    .status { margin-top:14px; color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; }
-    .tiny { font-size:12px; color:#9aa8bf; margin-top:12px; }
-    .download { margin-top:12px; display:none; }
-    .warning { border-left:3px solid #e7b45d; padding:9px 12px; background:#302717; color:#f6dfb3; border-radius:7px; font-size:13px; margin-top:14px; }
-    @media (max-width:760px) { .layout { grid-template-columns:1fr; } main { padding:20px 12px 36px; } .panel { padding:15px; } }
+    :root{color-scheme:dark;--bg:#0a1020;--panel:#121a2b;--panel2:#0d1424;--line:#2c3850;--muted:#a8b4c9;--accent:#aab5ff;--mint:#9de5c5;--warn:#f4cf83}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 12% 0,#1a2c50 0,#0a1020 54%);color:#f4f6ff;font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
+    main{max-width:1220px;margin:auto;padding:28px 18px 54px}header{margin-bottom:20px}h1{font-size:clamp(30px,5vw,44px);letter-spacing:-.045em;line-height:1.12;margin:8px 0}h2{font-size:21px;margin:0 0 10px}h3{font-size:16px;margin:0 0 8px}p{margin:8px 0}
+    .muted,.tiny,.sub{color:var(--muted)}.sub{max-width:760px}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#bdc7ff;font-weight:800;margin-bottom:6px}
+    .pill{display:inline-flex;border:1px solid #315d4d;background:#102a24;color:#b9f5d9;border-radius:999px;padding:5px 11px;font-size:12px;font-weight:750}
+    .panel{background:rgba(18,26,43,.94);border:1px solid var(--line);border-radius:17px;padding:19px;min-width:0;box-shadow:0 12px 34px #0002}
+    .section{margin-top:18px}.grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:18px;align-items:start}.stack{display:grid;gap:18px}.twocol{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    label{display:block;font-weight:700;margin:13px 0 6px}input[type=text],input[type=file],input[type=number],textarea,select{font:inherit;width:100%;background:var(--panel2);color:#f4f6ff;border:1px solid #394761;border-radius:10px;padding:10px 11px}
+    textarea{resize:vertical;min-height:80px}input[type=file]{padding:8px;font-size:13px}input[type=checkbox]{width:18px;height:18px;accent-color:var(--mint)}
+    button,.download{font:inherit;font-weight:800;border:0;border-radius:10px;background:var(--accent);color:#10162b;padding:11px 14px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+    button{width:100%;margin-top:14px}button.secondary{background:#27354e;color:#f2f5ff;border:1px solid #40516e}button:disabled{opacity:.55;cursor:wait}.actions{display:flex;gap:10px;align-items:center}.actions>*{flex:1}
+    .tiny{font-size:12px;margin-top:7px}.status{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);margin-top:10px;font-size:13px}
+    .note{border-left:3px solid var(--warn);background:#2c2619;color:#f3dfb3;padding:10px 12px;border-radius:6px;font-size:13px;margin-top:12px}
+    .success{border-left:3px solid #64c89a;background:#102a24;color:#bfefda;padding:10px 12px;border-radius:6px;font-size:13px;margin-top:12px}
+    .gpurow{display:flex;align-items:center;justify-content:space-between;gap:16px}.switchline{display:flex;align-items:center;gap:9px;font-weight:800}.gpuhead{margin-bottom:6px}
+    .preview{min-height:200px;display:flex;align-items:center;justify-content:center;border:1px dashed #3b4963;border-radius:12px;overflow:hidden;background:#0b1120}.preview img,.preview video{max-width:100%;max-height:440px;object-fit:contain;display:block}.placeholder{color:#8290a8;padding:24px;text-align:center}
+    .profile-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:14px}.profile-card{border:1px solid #33415a;background:#0e1628;border-radius:12px;padding:13px;min-width:0}.profile-name{font-weight:800;font-size:15px;overflow-wrap:anywhere}.profile-meta{font-size:12px;color:var(--muted);margin-top:5px;overflow-wrap:anywhere}
+    .badge-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.tag{font-size:11px;background:#26344c;color:#dce4ff;border-radius:6px;padding:3px 7px}.tag.ready{background:#12372d;color:#b7f1d7}.tag.pending{background:#3b301c;color:#f5dcaa}
+    .download{margin-top:12px;display:none}.full{grid-column:1/-1}code{color:#d6ddff;overflow-wrap:anywhere}
+    @media(max-width:800px){main{padding:20px 12px 40px}.grid{grid-template-columns:1fr}.panel{padding:15px}.gpurow{align-items:flex-start;flex-direction:column}.twocol{grid-template-columns:1fr}}
   </style>
 </head>
-<body>
-<main>
-  <header>
-    <div class="privacy">● Local-first · No login · No image API</div>
-    <h1>Private Image AI</h1>
-    <div class="sub">Upload an image, describe the edit, and generate on this computer.</div>
-  </header>
-  <div class="layout">
+<body><main>
+<header>
+  <span class="pill">● Private Face Studio · Local-first</span>
+  <h1>One face at a time.<br>Reusable identities for photos and videos.</h1>
+  <p class="sub">Create a named face profile, upload its own photo dataset, train a reusable LoRA, then select that identity whenever you generate media. Profiles and weights stay on your computer unless you explicitly route a task to RunPod.</p>
+</header>
+
+<section class="panel">
+  <div class="gpurow">
+    <div>
+      <div class="eyebrow gpuhead">Compute mode</div>
+      <label class="switchline" for="useRunpod"><input id="useRunpod" type="checkbox"> Enable GPU acceleration</label>
+      <div class="tiny">Off by default: force local CPU. When on, detect available GPUs and select System GPU or RunPod GPU.</div>
+    </div>
+    <div class="pill" id="gpuModePill">LOCAL · CPU</div>
+  </div>
+  <div id="computeBackendWrap" hidden>
+    <label for="computeBackend">Use available compute device</label>
+    <select id="computeBackend">
+      <option value="cpu">Local CPU (fallback)</option>
+    </select>
+    <div class="tiny">On toggle enable: prefer a supported local CUDA GPU, otherwise choose a reachable RunPod GPU. You can switch to any other detected option here.</div>
+  </div>
+  <div id="gpuStatus" class="status" role="status" aria-live="polite">GPU acceleration is off. Requests run on the local CPU; no cloud request is made.</div>
+  <div class="note">The toggle only routes tasks. It never purchases, starts or stops a RunPod Pod. If you select RunPod, that task's face photos, prompts and optional reference image are sent to your configured worker. A running Pod can incur charges.</div>
+</section>
+
+<section class="panel section">
+  <div class="eyebrow">Face library · Persistent profiles</div>
+  <h2>Create a new face profile</h2>
+  <p class="muted">Give each consenting person or fictional adult model a separate profile. Each profile has its own photo dataset, trigger token, and trained adapter; adding a new face will not mix it with existing faces.</p>
+  <form id="createProfileForm">
+    <div class="twocol">
+      <div><label for="profileName">Profile name</label><input id="profileName" name="name" type="text" maxlength="80" placeholder="e.g. Studio Model A" required></div>
+      <div><label for="profileToken">Prompt token (optional)</label><input id="profileToken" name="token" type="text" maxlength="48" placeholder="auto-generated, e.g. face_a1b2c3d4"></div>
+    </div>
+    <label for="newProfilePhotos">Face photos (optional at profile creation)</label>
+    <input id="newProfilePhotos" name="photos" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+    <div class="tiny">For useful training, aim for 15–30 clear photos of the same face, with different angles and lighting. Each file is limited to 8 MB. Use your own photos or images with permission.</div>
+    <button type="submit" id="createProfileButton">Create profile and save photos locally</button>
+  </form>
+  <div id="createProfileStatus" class="status" role="status" aria-live="polite"></div>
+
+  <div class="twocol section">
+    <div>
+      <label for="addPhotosProfile">Add photos to an existing profile</label>
+      <select id="addPhotosProfile"><option value="">Select a face profile</option></select>
+    </div>
+    <div>
+      <label for="morePhotos">Additional photos</label>
+      <input id="morePhotos" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+    </div>
+  </div>
+  <button type="button" class="secondary" id="addPhotosButton">Add photos to selected profile</button>
+  <div id="addPhotosStatus" class="status" role="status" aria-live="polite"></div>
+  <div class="profile-list" id="profileList"><div class="placeholder">Loading saved profiles…</div></div>
+  <div class="tiny">Profile metadata is saved in <code>data/face_profiles.json</code>. Each profile's images are stored separately in <code>data/face_profiles/&lt;profile-id&gt;/dataset/</code>.</div>
+</section>
+
+<div class="grid section">
+  <div class="stack">
     <section class="panel">
-      <form id="form">
-        <label for="image">Input image</label>
-        <input id="image" name="image" type="file" accept="image/png,image/jpeg,image/webp" required>
-        <div class="tiny">PNG, JPG or WEBP · max 12 MB · resized to at most 512 × 512 for lower memory use.</div>
-        <div class="preview" style="margin-top:12px"><img id="sourcePreview" alt="Selected input preview" hidden><div id="sourcePlaceholder" class="placeholder">Your selected image will appear here.</div></div>
-
-        <label for="prompt">Prompt</label>
-        <textarea id="prompt" name="prompt" maxlength="1200" required placeholder="Example: Turn this photo into a watercolor illustration while keeping the same composition."></textarea>
-
-        <label for="negative_prompt">Negative prompt (optional)</label>
-        <textarea id="negative_prompt" name="negative_prompt" maxlength="600" style="min-height:68px" placeholder="blurry, distorted, low quality"></textarea>
-
-        <div class="row">
-          <div>
-            <label for="strength">Edit strength: <span id="strengthValue">0.65</span></label>
-            <input id="strength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.65">
-            <div class="tiny">Lower preserves more of the original.</div>
-          </div>
-          <div>
-            <label for="steps">Steps</label>
-            <select id="steps" name="steps">
-              <option value="5">5 · fastest test</option>
-              <option value="10">10</option>
-              <option value="15" selected>15 · recommended start</option>
-              <option value="20">20</option>
-              <option value="25">25 · slower</option>
-            </select>
-          </div>
+      <div class="eyebrow">Train · Once per identity, retrain when needed</div>
+      <h2>Train selected face</h2>
+      <form id="trainForm">
+        <label for="trainProfile">Face profile</label><select name="profile_id" id="trainProfile" required><option value="">Create a profile first</option></select>
+        <div class="twocol">
+          <div><label for="trainSteps">Training steps</label><select id="trainSteps" name="steps"><option value="400">400 · quick test</option><option value="800" selected>800 · starting point</option><option value="1200">1200 · longer</option></select></div>
+          <div><label for="trainResolution">Resolution</label><select id="trainResolution" name="resolution"><option value="384">384 · lower VRAM</option><option value="512" selected>512 · standard SD 1.5</option></select></div>
         </div>
-        <button id="submit" type="submit">Generate image locally</button>
-        <div class="warning">CPU generation can be very slow and may exceed 8 GB RAM. Close other apps before generating.</div>
+        <button type="submit" id="trainButton">Train selected face</button>
       </form>
-      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div id="trainStatus" class="status" role="status" aria-live="polite">Training uses the selected backend. This 8 GB CPU-only laptop cannot train LoRA locally; configure RunPod and turn on the GPU toggle to train remotely.</div>
+      <div class="note">A model must finish training on the backend you select. A RunPod-trained LoRA is available on RunPod; a locally trained LoRA is available locally. The app does not automatically copy private LoRAs between machines.</div>
     </section>
 
     <section class="panel">
-      <h2 style="margin-top:0">Generated result</h2>
-      <div class="preview"><img id="resultPreview" alt="Generated image" hidden><div id="resultPlaceholder" class="placeholder">Your generated image will appear here.</div></div>
-      <a id="download" class="download" download="generated-image.png">Save generated image</a>
-      <p class="tiny">Results are saved in the local <code>data/outputs</code> folder. Nothing is uploaded by this app during inference.</p>
+      <div class="eyebrow">Generate · Image</div>
+      <h2>Generate a photo</h2>
+      <form id="generationForm">
+        <label for="faceProfile">Face identity</label><select id="faceProfile" name="face_profile_id"><option value="">Base model (no trained face)</option></select>
+        <label for="referenceImage">Reference image (optional)</label><input id="referenceImage" name="image" type="file" accept="image/png,image/jpeg,image/webp">
+        <div class="preview" style="margin-top:11px"><img id="sourcePreview" alt="Reference image preview" hidden><div id="sourcePlaceholder" class="placeholder">Optional reference image</div></div>
+        <label for="prompt">Prompt</label><textarea id="prompt" name="prompt" maxlength="1200" required placeholder="photo of face_a1b2c3d4 person, editorial portrait, soft window light, realistic photography"></textarea>
+        <label for="negativePrompt">Negative prompt (optional)</label><textarea id="negativePrompt" name="negative_prompt" maxlength="600" style="min-height:58px" placeholder="blurry, distorted face, extra fingers, low quality"></textarea>
+        <div class="twocol">
+          <div><label for="strength">Edit strength: <span id="strengthValue">0.45</span></label><input id="strength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.45" style="width:100%"><div class="tiny">Used only with a reference image.</div></div>
+          <div><label for="steps">Inference steps</label><select id="steps" name="steps"><option value="5">5 · quick test</option><option value="10" selected>10 · start here</option><option value="15">15</option><option value="20">20</option><option value="25">25 · slower</option></select></div>
+        </div>
+        <button type="submit" id="generateButton">Generate photo locally</button>
+      </form>
+      <div id="generationStatus" class="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+      <div class="eyebrow">Generate · Video</div>
+      <h2>Animate the selected identity</h2>
+      <form id="videoForm">
+        <label for="videoProfile">Face identity</label><select id="videoProfile" name="face_profile_id"><option value="">Base model (no trained face)</option></select>
+        <label for="videoPrompt">Video prompt</label><textarea id="videoPrompt" name="prompt" maxlength="1000" required placeholder="face_a1b2c3d4 person slowly turns toward the camera, natural expression, cinematic lighting"></textarea>
+        <label for="videoNegative">Negative prompt (optional)</label><textarea id="videoNegative" name="negative_prompt" maxlength="600" style="min-height:58px" placeholder="flicker, distorted face, blurry, unstable background"></textarea>
+        <div class="twocol">
+          <div><label for="videoFrames">Frames</label><select id="videoFrames" name="frames"><option value="8">8 · shortest</option><option value="16" selected>16 · starting point</option><option value="24">24 · slower</option></select></div>
+          <div><label for="videoSteps">Inference steps</label><select id="videoSteps" name="steps"><option value="5">5</option><option value="8">8</option><option value="12" selected>12</option><option value="16">16</option><option value="20">20</option></select></div>
+        </div>
+        <button type="submit" id="videoButton">Generate video locally</button>
+      </form>
+      <div id="videoStatus" class="status" role="status" aria-live="polite"></div>
+      <div class="note">Video generation requires the local motion adapter plus CUDA, or a configured RunPod worker with the adapter installed. Facial identity can drift between frames.</div>
     </section>
   </div>
-  <p class="tiny">Privacy note: first-time setup downloads software and model files from the internet. After the model is installed, generation runs locally. This app binds to 127.0.0.1 and is not exposed to your network.</p>
+
+  <div class="stack">
+    <section class="panel">
+      <h2>Generated photo</h2>
+      <div class="preview"><img id="resultPreview" alt="Generated photo" hidden><div id="resultPlaceholder" class="placeholder">Your generated photo appears here.</div></div>
+      <a id="downloadImage" class="download" download="generated-image.png">Save generated image</a>
+      <p class="tiny">A local copy is saved under <code>data/outputs/</code>, even when generated on RunPod.</p>
+    </section>
+    <section class="panel">
+      <h2>Generated video</h2>
+      <div class="preview"><video id="videoPreview" controls hidden></video><div id="videoPlaceholder" class="placeholder">Your generated clip appears here.</div></div>
+      <a id="downloadVideo" class="download" download="generated-video.mp4">Save generated video</a>
+      <p class="tiny">A local copy is saved under <code>data/videos/</code>.</p>
+    </section>
+    <section class="panel">
+      <h3>Privacy and hardware</h3>
+      <p class="muted">Local-only mode sends no inference requests to RunPod. Enabling cloud mode sends only the data required for the requested task. Do not use another person's face without permission.</p>
+      <p class="tiny">Current local CPU mode can be slow on 8 GB RAM. RTX 3090 has 24 GB VRAM, but cloud use incurs charges while the Pod is running.</p>
+    </section>
+  </div>
+</div>
+<p class="tiny section">The GPU toggle routes requests only; it never creates, purchases, starts, stops, or terminates a RunPod Pod. Configure the remote worker and review billing/storage settings before use.</p>
 </main>
 <script>
-const fileInput = document.getElementById('image');
-const sourcePreview = document.getElementById('sourcePreview');
-const sourcePlaceholder = document.getElementById('sourcePlaceholder');
-const resultPreview = document.getElementById('resultPreview');
-const resultPlaceholder = document.getElementById('resultPlaceholder');
-const form = document.getElementById('form');
-const submit = document.getElementById('submit');
-const statusEl = document.getElementById('status');
-const download = document.getElementById('download');
-const strength = document.getElementById('strength');
-strength.addEventListener('input', () => document.getElementById('strengthValue').textContent = Number(strength.value).toFixed(2));
-fileInput.addEventListener('change', () => {
-  const file = fileInput.files[0];
-  if (!file) return;
-  sourcePreview.src = URL.createObjectURL(file);
-  sourcePreview.hidden = false;
-  sourcePlaceholder.hidden = true;
-});
-form.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (!fileInput.files.length) return;
-  submit.disabled = true;
-  submit.textContent = 'Generating… please keep this page open';
-  statusEl.textContent = 'Loading model if needed, then generating on your CPU. The first run may take a long time.';
-  resultPreview.hidden = true;
-  resultPlaceholder.hidden = false;
-  download.style.display = 'none';
-  try {
-    const response = await fetch('/generate', { method: 'POST', body: new FormData(form) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Generation failed.');
-    resultPreview.src = data.image_url + '?t=' + Date.now();
-    resultPreview.hidden = false;
-    resultPlaceholder.hidden = true;
-    download.href = data.image_url;
-    download.style.display = 'inline-flex';
-    statusEl.textContent = data.message + ' File: ' + data.filename;
-  } catch (err) {
-    statusEl.textContent = err.message || 'Something went wrong.';
-  } finally {
-    submit.disabled = false;
-    submit.textContent = 'Generate image locally';
+const useRunpod=document.getElementById('useRunpod');
+const computeBackendWrap=document.getElementById('computeBackendWrap');
+const computeBackend=document.getElementById('computeBackend');
+const gpuStatus=document.getElementById('gpuStatus');
+const gpuModePill=document.getElementById('gpuModePill');
+let computeAvailability=null;
+const createProfileForm=document.getElementById('createProfileForm');
+const createProfileButton=document.getElementById('createProfileButton');
+const createProfileStatus=document.getElementById('createProfileStatus');
+const addPhotosProfile=document.getElementById('addPhotosProfile');
+const morePhotos=document.getElementById('morePhotos');
+const addPhotosButton=document.getElementById('addPhotosButton');
+const addPhotosStatus=document.getElementById('addPhotosStatus');
+const profileList=document.getElementById('profileList');
+const trainForm=document.getElementById('trainForm');
+const trainButton=document.getElementById('trainButton');
+const trainStatus=document.getElementById('trainStatus');
+const generationForm=document.getElementById('generationForm');
+const generateButton=document.getElementById('generateButton');
+const generationStatus=document.getElementById('generationStatus');
+const videoForm=document.getElementById('videoForm');
+const videoButton=document.getElementById('videoButton');
+const videoStatus=document.getElementById('videoStatus');
+const referenceImage=document.getElementById('referenceImage');
+const sourcePreview=document.getElementById('sourcePreview');
+const sourcePlaceholder=document.getElementById('sourcePlaceholder');
+const resultPreview=document.getElementById('resultPreview');
+const resultPlaceholder=document.getElementById('resultPlaceholder');
+const downloadImage=document.getElementById('downloadImage');
+const videoPreview=document.getElementById('videoPreview');
+const videoPlaceholder=document.getElementById('videoPlaceholder');
+const downloadVideo=document.getElementById('downloadVideo');
+const strength=document.getElementById('strength');
+let profiles=[];
+
+function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+function addUseRunpod(formData){
+  formData.set('use_gpu',useRunpod.checked?'true':'false');
+  formData.set('compute_backend',useRunpod.checked?(computeBackend.value||'auto'):'cpu');
+  formData.delete('use_runpod');
+  return formData;
+}
+async function readJson(response){
+  let data={};try{data=await response.json();}catch(_){}
+  if(!response.ok)throw new Error(data.error||data.message||('Request failed: HTTP '+response.status));
+  return data;
+}
+function makeTag(text,ready){
+  const node=document.createElement('span');node.className='tag '+(ready?'ready':'pending');node.textContent=text;return node;
+}
+function buildProfileOptions(select,firstLabel,selected){
+  select.replaceChildren();const base=document.createElement('option');base.value='';base.textContent=firstLabel;select.appendChild(base);
+  profiles.forEach(p=>{
+    const option=document.createElement('option');option.value=p.id;
+    option.textContent=p.name+' · '+p.image_count+' photo(s)'+(p.local_model_ready?' · local trained':'')+(p.runpod_model_ready?' · RunPod trained':'');
+    select.appendChild(option);
+  });
+  if(profiles.some(p=>p.id===selected))select.value=selected;
+}
+function renderProfiles(){
+  const selections=[
+    [document.getElementById('trainProfile'),'Select a face profile',document.getElementById('trainProfile').value],
+    [document.getElementById('faceProfile'),'Base model (no trained face)',document.getElementById('faceProfile').value],
+    [document.getElementById('videoProfile'),'Base model (no trained face)',document.getElementById('videoProfile').value],
+    [addPhotosProfile,'Select a face profile',addPhotosProfile.value]
+  ];
+  selections.forEach(([select,label,previous])=>buildProfileOptions(select,label,previous));
+  profileList.replaceChildren();
+  if(!profiles.length){
+    const empty=document.createElement('div');empty.className='placeholder';empty.textContent='No face profiles yet. Create your first profile above.';profileList.appendChild(empty);return;
   }
+  profiles.forEach(p=>{
+    const card=document.createElement('article');card.className='profile-card';
+    const name=document.createElement('div');name.className='profile-name';name.textContent=p.name;card.appendChild(name);
+    const meta=document.createElement('div');meta.className='profile-meta';
+    meta.textContent=p.image_count+' photos · token: '+p.token+' · ID: '+p.id.slice(0,8);card.appendChild(meta);
+    const badges=document.createElement('div');badges.className='badge-row';
+    badges.appendChild(makeTag(p.local_model_ready?'Local model trained':'Local not trained',p.local_model_ready));
+    badges.appendChild(makeTag(p.runpod_model_ready?'RunPod model trained':'RunPod not trained',p.runpod_model_ready));
+    const localState=p.local_training_state||'not_trained';const remoteState=p.runpod_training_state||'not_trained';
+    if(localState==='running'||remoteState==='running')badges.appendChild(makeTag('Training in progress',true));
+    if(localState==='failed'||remoteState==='failed')badges.appendChild(makeTag('Training failed',false));
+    card.appendChild(badges);
+    const selectButton=document.createElement('button');selectButton.type='button';selectButton.className='secondary';selectButton.textContent='Select this face';
+    selectButton.addEventListener('click',()=>{
+      document.getElementById('trainProfile').value=p.id;document.getElementById('faceProfile').value=p.id;document.getElementById('videoProfile').value=p.id;addPhotosProfile.value=p.id;
+      trainStatus.textContent='Selected '+p.name+'. '+p.image_count+' photos available.';
+    });
+    card.appendChild(selectButton);profileList.appendChild(card);
+  });
+}
+async function refreshProfiles(){
+  const data=await readJson(await fetch('/api/face-profiles'));
+  profiles=data.profiles||[];renderProfiles();return profiles;
+}
+function backendLabel(key, options){
+  if(key==='cpu')return 'Local CPU (fallback)';
+  if(key==='local_gpu')return 'System GPU · '+(options.local_gpu.name||'CUDA GPU')+(options.local_gpu.vram_gb?' · '+options.local_gpu.vram_gb+' GB VRAM':'');
+  if(key==='runpod')return 'Cloud GPU · '+(options.cloud_gpu.name||'RunPod GPU')+(options.cloud_gpu.vram_gb?' · '+options.cloud_gpu.vram_gb+' GB VRAM':'');
+  return key;
+}
+function renderComputeOptions(options){
+  computeAvailability=options;
+  const previous=computeBackend.value;
+  computeBackend.replaceChildren();
+  (options.available_backends||['cpu']).forEach(key=>{
+    const option=document.createElement('option');option.value=key;option.textContent=backendLabel(key,options);computeBackend.appendChild(option);
+  });
+  const fallback=options.available_backends&&options.available_backends.includes(previous)?previous:options.auto_backend||'cpu';
+  computeBackend.value=fallback;
+  applyComputeStatus();
+}
+function applyComputeStatus(){
+  const selected=useRunpod.checked?(computeBackend.value||'cpu'):'cpu';
+  if(!useRunpod.checked){
+    gpuModePill.textContent='LOCAL · CPU';
+    gpuStatus.textContent='GPU acceleration is off. Requests use the local CPU; no cloud request is made.';
+    return;
+  }
+  const labels={cpu:'CPU FALLBACK',local_gpu:'SYSTEM GPU',runpod:'CLOUD GPU'};
+  gpuModePill.textContent=labels[selected]||'GPU ENABLED';
+  if(selected==='local_gpu'){
+    gpuStatus.textContent='Using detected local GPU: '+(computeAvailability?.local_gpu?.name||'CUDA GPU')+'. This avoids cloud compute charges.';
+  }else if(selected==='runpod'){
+    gpuStatus.textContent='Using connected RunPod GPU: '+(computeAvailability?.cloud_gpu?.name||'RunPod GPU')+'. This task will be sent to your configured cloud worker.';
+  }else{
+    gpuStatus.textContent='No supported GPU was selected; using local CPU. '+((computeAvailability?.cloud_error)||'You can choose a GPU if one is available.');
+  }
+  if(computeAvailability?.cloud_error && selected!=='runpod'){
+    gpuStatus.textContent+=' RunPod unavailable: '+computeAvailability.cloud_error;
+  }else if(useRunpod.checked && selected==='cpu' && !computeAvailability?.cloud_gpu?.available && !computeAvailability?.local_gpu?.available){
+    gpuStatus.textContent+=' No CUDA GPU was detected locally or remotely. Configure a running RunPod worker or continue on CPU.';
+  }
+}
+async function probeRunpod(){
+  computeBackendWrap.hidden=!useRunpod.checked;
+  if(!useRunpod.checked){
+    computeAvailability=null;
+    renderComputeOptions({available_backends:['cpu'],auto_backend:'cpu',local_gpu:{},cloud_gpu:{},cloud_error:null});
+    return;
+  }
+  gpuModePill.textContent='CHECKING GPUS…';
+  gpuStatus.textContent='Checking local CUDA support and testing the configured RunPod worker…';
+  computeBackend.disabled=true;
+  try{
+    const response=await fetch('/api/gpu-status?probe=1');
+    const data=await response.json();
+    if(!response.ok)throw new Error(data.message||'Could not inspect available GPUs.');
+    renderComputeOptions(data);
+  }catch(error){
+    renderComputeOptions({available_backends:['cpu'],auto_backend:'cpu',local_gpu:{available:false},cloud_gpu:{available:false},cloud_error:error.message});
+  }finally{
+    computeBackend.disabled=false;
+    updateButtonLabels();
+  }
+}
+useRunpod.addEventListener('change',()=>{
+  computeBackendWrap.hidden=!useRunpod.checked;
+  // Force auto-selection on each enable: local CUDA first, then connected RunPod, then CPU.
+  if(useRunpod.checked)computeBackend.value='auto';
+  else computeBackend.value='cpu';
+  updateButtonLabels();probeRunpod();
 });
+computeBackend.addEventListener('change',()=>{applyComputeStatus();updateButtonLabels();});
+function updateButtonLabels(){
+  const selected=useRunpod.checked?(computeBackend.value||'cpu'):'cpu';
+  const labels={cpu:'local CPU',local_gpu:'System GPU',runpod:'RunPod GPU'};
+  const mode=labels[selected]||'local CPU';
+  generateButton.textContent='Generate photo on '+mode;
+  videoButton.textContent='Generate video on '+mode;
+  trainButton.textContent='Train selected face on '+mode;
+}
+strength.addEventListener('input',()=>document.getElementById('strengthValue').textContent=Number(strength.value).toFixed(2));
+referenceImage.addEventListener('change',()=>{
+  const file=referenceImage.files[0];
+  if(!file){sourcePreview.hidden=true;sourcePlaceholder.hidden=false;sourcePreview.removeAttribute('src');return;}
+  sourcePreview.src=URL.createObjectURL(file);sourcePreview.hidden=false;sourcePlaceholder.hidden=true;
+});
+
+createProfileForm.addEventListener('submit',async event=>{
+  event.preventDefault();createProfileButton.disabled=true;createProfileButton.textContent='Saving face profile…';
+  createProfileStatus.textContent='Validating and saving profile metadata and photos locally…';
+  try{
+    const response=await fetch('/api/face-profiles',{method:'POST',body:new FormData(createProfileForm)});
+    const data=await readJson(response);createProfileForm.reset();await refreshProfiles();
+    document.getElementById('trainProfile').value=data.profile.id;document.getElementById('faceProfile').value=data.profile.id;
+    document.getElementById('videoProfile').value=data.profile.id;addPhotosProfile.value=data.profile.id;
+    createProfileStatus.textContent='Created profile “'+data.profile.name+'” with '+data.profile.image_count+' photo(s). Prompt token: '+data.profile.token+'.';
+  }catch(error){createProfileStatus.textContent=error.message;}
+  finally{createProfileButton.disabled=false;createProfileButton.textContent='Create profile and save photos locally';}
+});
+addPhotosButton.addEventListener('click',async()=>{
+  const id=addPhotosProfile.value;if(!id){addPhotosStatus.textContent='Select the profile that should receive these photos.';return;}
+  if(!morePhotos.files.length){addPhotosStatus.textContent='Choose one or more photos first.';return;}
+  addPhotosButton.disabled=true;addPhotosStatus.textContent='Saving additional photos to this profile…';
+  const data=new FormData();for(const file of morePhotos.files)data.append('photos',file);
+  try{
+    const response=await fetch('/api/face-profiles/'+id+'/photos',{method:'POST',body:data});const result=await readJson(response);
+    morePhotos.value='';await refreshProfiles();addPhotosStatus.textContent='Added '+result.added+' photo(s) to '+result.profile.name+'. Total: '+result.profile.image_count+'.';
+  }catch(error){addPhotosStatus.textContent=error.message;}
+  finally{addPhotosButton.disabled=false;}
+});
+async function pollTraining(profileId,backend){
+  const started=Date.now();let lastState='';
+  while(Date.now()-started<8*60*60*1000){
+    await sleep(4000);
+    try{
+      const response=await fetch('/api/face-profiles/'+profileId+'/train-status?backend='+backend);
+      const data=await response.json();
+      if(!response.ok&&response.status!==502)throw new Error(data.error||'Could not check training status.');
+      const state=data.status||'running';
+      if(state!==lastState){trainStatus.textContent='Training status: '+state+(data.error?'\n'+data.error:'');lastState=state;}
+      if(state==='completed'){trainStatus.textContent='Training completed successfully. Refreshing saved face profiles…';await refreshProfiles();return;}
+      if(state==='failed'){trainStatus.textContent='Training failed.\n'+(data.error||data.profile?.local_training_error||data.profile?.runpod_training_error||'No error details were returned.');await refreshProfiles();return;}
+    }catch(error){trainStatus.textContent='Training is still running, but status polling had an issue: '+error.message;}
+  }
+  trainStatus.textContent='Stopped polling after 8 hours. Check the worker logs and profile state.';
+}
+trainForm.addEventListener('submit',async event=>{
+  event.preventDefault();const id=document.getElementById('trainProfile').value;
+  if(!id){trainStatus.textContent='Create or select a face profile first.';return;}
+  const profile=profiles.find(p=>p.id===id);
+  if(!profile||profile.image_count<5){trainStatus.textContent='Add at least 5 good photos to this profile before training.';return;}
+  trainButton.disabled=true;trainStatus.textContent=useRunpod.checked?'Submitting this face dataset to the configured RunPod GPU…':'Checking local CUDA availability…';
+  try{
+    const response=await fetch('/api/face-profiles/'+id+'/train',{method:'POST',body:addUseRunpod(new FormData(trainForm))});
+    const data=await readJson(response);
+    trainStatus.textContent=data.message||'Training started.';
+    await refreshProfiles();
+    await pollTraining(id,useRunpod.checked?'runpod':'local');
+  }catch(error){trainStatus.textContent=error.message;}
+  finally{trainButton.disabled=false;await refreshProfiles().catch(()=>{});}
+});
+
+generationForm.addEventListener('submit',async event=>{
+  event.preventDefault();generateButton.disabled=true;generateButton.textContent=useRunpod.checked?'Generating on RunPod…':'Generating locally…';
+  generationStatus.textContent=useRunpod.checked?'Sending this request to the configured GPU worker…':'Loading the local model and generating. CPU inference may be slow.';
+  resultPreview.hidden=true;resultPlaceholder.hidden=false;downloadImage.style.display='none';
+  try{
+    const response=await fetch('/generate',{method:'POST',body:addUseRunpod(new FormData(generationForm))});
+    const data=await readJson(response);
+    resultPreview.src=data.image_url+'?t='+Date.now();resultPreview.hidden=false;resultPlaceholder.hidden=true;
+    downloadImage.href=data.image_url;downloadImage.style.display='inline-flex';
+    generationStatus.textContent=data.message+' Mode: '+data.mode+'. File: '+data.filename;
+  }catch(error){generationStatus.textContent='Generation failed: '+error.message;}
+  finally{generateButton.disabled=false;updateButtonLabels();}
+});
+videoForm.addEventListener('submit',async event=>{
+  event.preventDefault();videoButton.disabled=true;videoButton.textContent=useRunpod.checked?'Generating video on RunPod…':'Generating video locally…';
+  videoStatus.textContent=useRunpod.checked?'Sending video request to the configured GPU worker…':'Checking local CUDA and video model files…';
+  videoPreview.hidden=true;videoPreview.removeAttribute('src');videoPlaceholder.hidden=false;downloadVideo.style.display='none';
+  try{
+    const response=await fetch('/generate-video',{method:'POST',body:addUseRunpod(new FormData(videoForm))});
+    const data=await readJson(response);
+    videoPreview.src=data.video_url+'?t='+Date.now();videoPreview.hidden=false;videoPlaceholder.hidden=true;
+    downloadVideo.href=data.video_url;downloadVideo.style.display='inline-flex';
+    videoStatus.textContent=data.message+' File: '+data.filename;
+  }catch(error){videoStatus.textContent='Video generation failed: '+error.message;}
+  finally{videoButton.disabled=false;updateButtonLabels();}
+});
+
+async function loadStatus(){
+  try{
+    const response=await fetch('/health');const data=await readJson(response);
+    const gpu=data.local_gpu||{};
+    gpuStatus.textContent='GPU acceleration is off by default. '+(gpu.available?'System GPU detected: '+gpu.name+'.':'No local CUDA GPU is available to this PyTorch installation. ')+(data.runpod_configured?'RunPod is configured; toggle on to check cloud GPU availability.':'RunPod is not configured; you can still generate on local CPU.');
+  }catch(error){gpuStatus.textContent=error.message;}
+  computeBackendWrap.hidden=!useRunpod.checked;
+  await refreshProfiles().catch(error=>{profileList.textContent=error.message;});
+}
+updateButtonLabels();loadStatus();
 </script>
-</body>
-</html>
+</body></html>

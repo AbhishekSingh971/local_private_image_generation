@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Generated images' if asset_type == 'image' else 'Generated videos' }} · Private Face Studio{% endblock %}
+{% block page_heading %}{{ 'Generated images' if asset_type == 'image' else 'Generated videos' }}{% endblock %}
+{% block content %}
+<div class="page-intro"><div><div class="eyebrow">YOUR OUTPUTS · DATABASE BACKED</div><h1>{{ 'Image library' if asset_type == 'image' else 'Video library' }}</h1><p>Review, preview, rename, update generation details, download, or delete saved {{ 'images' if asset_type == 'image' else 'videos' }}. Changes are saved to PostgreSQL.</p></div><a class="button-link" href="{{ url_for('generate_image_page' if asset_type == 'image' else 'generate_video_page') }}">Create {{ 'image' if asset_type == 'image' else 'video' }} +</a></div>
+<div class="library-toolbar panel"><div><strong id="assetCount">Loading library…</strong><p class="field-help">Media bytes and metadata are stored in the database.</p></div><div class="toolbar-controls"><input type="search" id="assetSearch" placeholder="Search title or prompt" aria-label="Search library"><select id="assetSort" aria-label="Sort library"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="title">Title A–Z</option></select></div></div>
+<div id="assetGrid" class="asset-grid" aria-live="polite"><div class="empty-state panel">Loading saved media…</div></div>
+<div id="assetPagination" class="pagination-bar panel" hidden>
+  <button type="button" class="secondary-button" id="assetPrev" disabled>← Previous</button>
+  <span id="assetPageLabel">Page 1</span>
+  <button type="button" class="secondary-button" id="assetNext" disabled>Next →</button>
+</div>
+<div id="libraryStatus" class="status" role="status" aria-live="polite"></div>
+<dialog id="editAssetDialog" class="edit-dialog">
+  <form id="editAssetForm" method="dialog">
+    <div class="dialog-heading"><div><div class="eyebrow">ASSET DETAILS</div><h2>Edit saved media</h2></div><button type="button" class="icon-button" id="closeEditAsset" aria-label="Close">×</button></div>
+    <input type="hidden" id="editAssetId">
+    <label for="editAssetTitle">Title</label><input id="editAssetTitle" type="text" maxlength="160" required>
+    <label for="editAssetPrompt">Prompt</label><textarea id="editAssetPrompt" rows="3" maxlength="1200"></textarea>
+    <label for="editAssetNegative">Negative prompt</label><textarea id="editAssetNegative" rows="2" maxlength="600"></textarea>
+    <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelEditAsset">Cancel</button><button type="submit" id="saveAssetDetails">Save changes</button></div>
+    <div id="editAssetStatus" class="status" role="status" aria-live="polite"></div>
+  </form>
+</dialog>
+{% endblock %}
