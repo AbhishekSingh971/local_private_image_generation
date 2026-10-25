@@ -597,7 +597,7 @@
     if(source.size>8*1024*1024){if(status)status.textContent="The source image must be 8 MB or smaller.";return;}
     generateFaceAnglesButton.disabled=true;
     const originalText=generateFaceAnglesButton.textContent;
-    generateFaceAnglesButton.textContent="Generating angle set…";
+    generateFaceAnglesButton.textContent=activeVariationMode==="expressions"?"Generating expressions…":"Generating angle set…";
     if(retryFaceAngleButton)retryFaceAngleButton.hidden=true;
     if(status)status.textContent="Saving the source photo and creating a named dataset group…";
     setAngleProgress(0,"Preparing the source image.");
@@ -695,6 +695,8 @@
     }
   }
   $("#trainingPhotoUseBodyModel")?.addEventListener("change",event=>{event.target.dataset.userTouched="1";});
+  useRunpod?.addEventListener("change",()=>loadGlobalBodyStatus(false));
+  computeBackend?.addEventListener("change",()=>loadGlobalBodyStatus(false));
 
   const generateBodyDatasetButton=$("#generateBodyDatasetButton");
   generateBodyDatasetButton?.addEventListener("click",async()=>{
@@ -714,7 +716,8 @@
         method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({title,prompt:bodyPrompt})
       }))).group;
-      const info=globalBodyStatusCache||await loadGlobalBodyStatus();
+      const info=await loadGlobalBodyStatus();
+      if(!info?.profile_id)throw new Error("Could not load the shared body profile.");
       for(let index=0;index<5;index++){
         if(status)status.textContent="Generating body sample "+(index+1)+" of 5. No source photo is used."; 
         const taskId=newGenerationTaskId();
