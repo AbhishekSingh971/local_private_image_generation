@@ -168,3 +168,18 @@ button.danger-button{background:#3c1f2a;border-color:#643345;color:#ffd9df}
 @media(max-width:1180px){.app-shell{grid-template-columns:220px minmax(0,1fr)}.asset-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.recent-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.compute-panel{grid-template-columns:1fr}.compute-controls{justify-content:flex-start}}
 @media(max-width:860px){.app-shell{grid-template-columns:1fr}.sidebar{position:relative;top:auto;height:auto;min-height:0;padding:14px;border-right:0;border-bottom:1px solid #28354b}.brand{padding:2px 4px 13px}.nav-label{display:none}.nav-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}.nav-label-spaced{display:none}.nav-link{justify-content:center;padding:8px 5px;font-size:11px;gap:6px}.sidebar-foot{display:none}.main-area{padding:18px 13px 26px}.work-grid,.faces-layout{grid-template-columns:1fr}.result-panel{position:static}.stat-grid,.quick-grid{grid-template-columns:1fr 1fr}.recent-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.page-intro{align-items:flex-start;flex-direction:column}.quick-card p{min-height:0}}
 @media(max-width:540px){.nav-list{grid-template-columns:repeat(2,minmax(0,1fr))}.topbar{align-items:flex-start;flex-direction:column;gap:9px}.storage-chip{font-size:10px}.compute-controls{align-items:flex-start;flex-direction:column}.compute-controls>div:not([hidden]){max-width:none;width:100%}.stat-grid,.quick-grid,.asset-grid,.dataset-group-grid,.twocol{grid-template-columns:1fr}.recent-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.library-toolbar{align-items:stretch;flex-direction:column}.toolbar-controls input,.toolbar-controls select{width:100%}.toolbar-controls{flex-direction:column}.generated-photo-picker{grid-template-columns:repeat(2,minmax(0,1fr))}.result-preview{min-height:260px}.result-preview img,.result-preview video{max-height:400px}.result-actions{flex-direction:column;align-items:stretch}.hero-actions{align-items:stretch;flex-direction:column}.panel{padding:15px}}
+
+/* Typed datasets and non-destructive training-photo editing */
+.dataset-category-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:16px 0}
+.dataset-category-tab{width:auto;margin:0;background:#131d2f;border:1px solid #30415d;color:#aebbd2;padding:8px 12px}
+.dataset-category-tab.active{background:#253552;border-color:#8194c9;color:#f4f6ff}
+.dataset-category-tab:disabled{opacity:.45}
+.edit-photo-dialog{width:min(1000px,calc(100vw - 24px));max-width:1000px;max-height:calc(100vh - 24px);overflow:auto}
+.photo-edit-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:15px 0}
+.photo-edit-comparison figure{margin:0;min-width:0;border:1px solid #32425d;border-radius:12px;background:#0a1220;padding:9px}
+.photo-edit-comparison figcaption{font-size:12px;font-weight:850;color:#e5ebfa;margin:2px 3px 8px}
+.photo-edit-comparison img{display:block;width:100%;max-height:560px;min-height:180px;object-fit:contain;background:#080d17;border-radius:8px}
+.photo-edit-comparison .empty-state{min-height:180px;padding:15px}
+.dataset-group-photo .dataset-photo-actions{gap:4px}
+.dataset-group-photo .dataset-photo-actions button{flex:1 1 68px}
+@media(max-width:640px){.photo-edit-comparison{grid-template-columns:1fr}.photo-edit-comparison img{max-height:400px}.edit-photo-dialog{padding:14px}.edit-photo-dialog .dialog-actions{flex-wrap:wrap}}
