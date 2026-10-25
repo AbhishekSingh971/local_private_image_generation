@@ -2,30 +2,54 @@ import gc
 import io
 import os
 import re
+import subprocess
+import sys
+import threading
 import time
 import uuid
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
+# Keep basic CPU inference conservative; model download telemetry is disabled.
 os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.environ.setdefault("MKL_NUM_THREADS", "4")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("DO_NOT_TRACK", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-from flask import Flask, request, render_template, send_from_directory, jsonify
+from dotenv import load_dotenv
+APP_DIR = Path(__file__).resolve().parent
+load_dotenv(APP_DIR / ".env")
+
+import requests
+import torch
+from flask import Flask, request, send_from_directory, jsonify
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-APP_DIR = Path(__file__).resolve().parent
-INPUT_DIR = APP_DIR / "data" / "inputs"
-OUTPUT_DIR = APP_DIR / "data" / "outputs"
-DATASET_DIR = APP_DIR / "data" / "face_dataset"
-VIDEO_OUTPUT_DIR = APP_DIR / "data" / "videos"
+from face_profiles import (
+    DATA_DIR,
+    LORA_DIR,
+    PROFILES_DIR,
+    create_profile,
+    dataset_images,
+    dataset_dir,
+    get_profile,
+    list_profiles,
+    model_path,
+    profile_ready_for_backend,
+    save_profile_image,
+    update_profile,
+    validate_profile_id,
+)
+
+INPUT_DIR = DATA_DIR / "inputs"
+OUTPUT_DIR = DATA_DIR / "outputs"
+VIDEO_OUTPUT_DIR = DATA_DIR / "videos"
 MODEL_DIR = APP_DIR / "models" / "stable-diffusion-v1-5"
-LORA_DIR = APP_DIR / "models" / "face_loras"
 MOTION_DIR = APP_DIR / "models" / "animatediff-motion-adapter-v1-5-2"
-for directory in (INPUT_DIR, OUTPUT_DIR, DATASET_DIR, VIDEO_OUTPUT_DIR, MODEL_DIR, LORA_DIR):
-    directory.mkdir(parents=True, exist_ok=True)
+for folder in (INPUT_DIR, OUTPUT_DIR, VIDEO_OUTPUT_DIR, MODEL_DIR, LORA_DIR):
+    folder.mkdir(parents=True, exist_ok=True)
 
 Image.MAX_IMAGE_PIXELS = 40_000_000
 app = Flask(__name__)
@@ -39,55 +63,70 @@ model_error = None
 video_pipe = None
 active_video_lora = None
 video_model_error = None
-model_lock = threading.Lock()
+model_lock = threading.RLock()
 generation_lock = threading.Lock()
+TRAINING_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face-lora-train")
+LOCAL_TRAIN_JOBS = {}
+LOCAL_TRAIN_JOBS_LOCK = threading.Lock()
 
 
-def safe_model_name(value):
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def runpod_configured() -> bool:
+    return bool(
+        os.environ.get("RUNPOD_WORKER_URL", "").strip()
+        and os.environ.get("RUNPOD_WORKER_TOKEN", "").strip()
+    )
+
+
+def _runpod_url(path: str) -> str:
+    base_url = os.environ.get("RUNPOD_WORKER_URL", "").strip().rstrip("/")
+    token = os.environ.get("RUNPOD_WORKER_TOKEN", "").strip()
+    if not base_url or not token:
+        raise RuntimeError(
+            "RunPod is not configured. Set RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN in .env, "
+            "then restart the app. The GPU toggle does not create or purchase a Pod."
+        )
+    parsed = urlparse(base_url)
+    if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise RuntimeError("The RunPod worker URL must use HTTPS.")
+    return f"{base_url}{path}"
+
+
+def runpod_request(method: str, path: str, *, data=None, files=None, timeout=(15, 90)):
+    url = _runpod_url(path)
+    token = os.environ.get("RUNPOD_WORKER_TOKEN", "").strip()
+    try:
+        response = requests.request(
+            method, url, headers={"Authorization": f"Bearer {token}"},
+            data=data, files=files, timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Could not reach the configured RunPod worker at {urlparse(url).netloc}: {exc}"
+        ) from exc
+    if not response.ok:
+        try:
+            detail = response.json().get("error") or response.json().get("message") or response.text
+        except (ValueError, AttributeError):
+            detail = response.text
+        raise RuntimeError(f"RunPod worker returned HTTP {response.status_code}: {detail[:1200]}")
+    return response
+
+
+def _clean_prompt(value: str, field_name: str, limit: int) -> str:
     value = (value or "").strip()
-    if not value:
-        return None
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
-        raise ValueError("Invalid face model name.")
+    if len(value) > limit:
+        raise ValueError(f"{field_name} must be {limit} characters or fewer.")
     return value
 
 
-def list_face_models():
-    if not LORA_DIR.exists():
-        return []
-    result = []
-    for folder in sorted(LORA_DIR.iterdir()):
-        if folder.is_dir() and (
-            (folder / "pytorch_lora_weights.safetensors").is_file()
-            or (folder / "pytorch_lora_weights.bin").is_file()
-        ):
-            result.append(folder.name)
-    return result
-
-
-def dataset_count():
-    exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-    return sum(1 for p in DATASET_DIR.iterdir() if p.is_file() and p.suffix.lower() in exts)
-
-
-def save_input_image(file_storage):
-    if not file_storage or not file_storage.filename:
-        return None
-    try:
-        with Image.open(file_storage.stream) as source:
-            image = ImageOps.exif_transpose(source).convert("RGB")
-            image.load()
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
-        raise ValueError("Use a valid PNG, JPG, or WEBP image.")
-    return ImageOps.fit(image, (512, 512), method=Image.Resampling.LANCZOS)
-
-
-def store_dataset_images(files):
-    selected = [item for item in files if item and item.filename]
-    if not selected:
-        raise ValueError("Choose at least one face photo.")
-    if len(selected) > 30:
-        raise ValueError("Upload at most 30 photos per batch.")
+def _parse_uploads(file_storages, *, max_files=30):
+    selected = [item for item in file_storages if item and item.filename]
+    if len(selected) > max_files:
+        raise ValueError(f"Upload at most {max_files} photos at a time.")
     prepared = []
     for item in selected:
         raw = item.stream.read(8 * 1024 * 1024 + 1)
@@ -98,118 +137,61 @@ def store_dataset_images(files):
                 image = ImageOps.exif_transpose(source).convert("RGB")
                 image.load()
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
-            raise ValueError("A file was not a valid supported image.")
+            raise ValueError("One file is not a valid PNG, JPG or WEBP image.")
         if image.width < 128 or image.height < 128:
             raise ValueError("Each photo must be at least 128 × 128 pixels.")
-        prepared.append(image)
-    # Re-encode locally to strip EXIF metadata and ignore original filenames.
-    for image in prepared:
-        image.save(DATASET_DIR / f"face_{uuid.uuid4().hex}.jpg", "JPEG", quality=95, optimize=True)
-    return len(prepared)
+        prepared.append(image.copy())
+    return prepared
 
 
-def release_image_pipeline():
-    global pipe, pipeline_mode, active_lora
-    pipe = None
-    pipeline_mode = None
-    active_lora = None
-    gc.collect()
+def _save_generated_png(image) -> str:
+    filename = f"{uuid.uuid4().hex}.png"
+    image.save(OUTPUT_DIR / filename, format="PNG", optimize=True)
+    return filename
 
 
-def get_pipeline(mode, face_model):
-    global pipe, pipeline_mode, active_lora, model_error
-    global video_pipe, active_video_lora
-    import torch
-    from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
-
-    with model_lock:
-        if pipe is None or pipeline_mode != mode:
-            release_image_pipeline()
-            video_pipe = None
-            active_video_lora = None
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            local_model = MODEL_DIR if (MODEL_DIR / "model_index.json").is_file() else MODEL_ID
-            cls = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
-            kwargs = {
-                "torch_dtype": torch.float32,
-                "safety_checker": None,
-                "requires_safety_checker": False,
-            }
-            if local_model == MODEL_DIR:
-                kwargs["local_files_only"] = True
-            try:
-                loaded = cls.from_pretrained(local_model, **kwargs).to("cpu")
-                loaded.enable_attention_slicing("max")
-                try:
-                    loaded.enable_vae_slicing()
-                except Exception:
-                    pass
-                pipe, pipeline_mode, active_lora = loaded, mode, None
-                model_error = None
-            except Exception as exc:
-                model_error = str(exc)
-                raise
-
-        if active_lora != face_model:
-            if active_lora is not None:
-                pipe.unload_lora_weights()
-                active_lora = None
-            if face_model:
-                path = LORA_DIR / face_model
-                if not path.is_dir() or face_model not in list_face_models():
-                    raise ValueError("That face model is missing or is not a completed LoRA.")
-                pipe.load_lora_weights(str(path))
-                active_lora = face_model
-        return pipe
-
-
-def get_video_pipeline(face_model):
-    global video_pipe, active_video_lora, video_model_error
-    import torch
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "Video generation requires an NVIDIA GPU and CUDA-enabled PyTorch. "
-            "This CPU-only setup cannot run AnimateDiff."
+def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: str) -> None:
+    profile = get_profile(profile_id)
+    if not profile:
+        return
+    args = [
+        sys.executable, str(APP_DIR / "train_face_lora.py"),
+        "--profile-id", profile_id,
+        "--output-name", profile_id,
+        "--token", profile["token"],
+        "--steps", str(steps),
+        "--resolution", str(resolution),
+        "--mixed-precision", "fp16",
+    ]
+    try:
+        completed = subprocess.run(
+            args, cwd=APP_DIR, capture_output=True, text=True, timeout=8 * 60 * 60,
+            check=False,
         )
-    if not (MOTION_DIR / "config.json").is_file():
-        raise RuntimeError(
-            "The AnimateDiff motion adapter is missing. Review its model card and run "
-            "download_video_model.bat while online."
+        logs = (completed.stdout or "") + "\n" + (completed.stderr or "")
+        if completed.returncode != 0:
+            error = logs.strip()[-3500:] or f"Trainer exited with code {completed.returncode}."
+            update_profile(
+                profile_id, local_training_state="failed",
+                local_training_error=error, local_model_ready=False,
+            )
+            with LOCAL_TRAIN_JOBS_LOCK:
+                LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
+            return
+        update_profile(
+            profile_id, local_training_state="completed",
+            local_training_error=None, local_model_ready=True,
         )
-    if not (MODEL_DIR / "model_index.json").is_file():
-        raise RuntimeError("The local SD 1.5 model is missing. Run download_model.bat first.")
-
-    from diffusers import AnimateDiffPipeline, MotionAdapter
-    with model_lock:
-        release_image_pipeline()
-        adapter = None
-        if video_pipe is None:
-            adapter = MotionAdapter.from_pretrained(
-                str(MOTION_DIR), local_files_only=True, torch_dtype=torch.float16
-            )
-            loaded = AnimateDiffPipeline.from_pretrained(
-                str(MODEL_DIR), motion_adapter=adapter, local_files_only=True,
-                torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False,
-            )
-            loaded.enable_vae_slicing()
-            loaded.enable_model_cpu_offload()
-            video_pipe = loaded
-            active_video_lora = None
-            video_model_error = None
-
-        if active_video_lora != face_model:
-            if active_video_lora is not None:
-                video_pipe.unload_lora_weights()
-                active_video_lora = None
-            if face_model:
-                path = LORA_DIR / face_model
-                if not path.is_dir() or face_model not in list_face_models():
-                    raise ValueError("That face model is missing or is not a completed LoRA.")
-                video_pipe.load_lora_weights(str(path))
-                active_video_lora = face_model
-        return video_pipe
+        with LOCAL_TRAIN_JOBS_LOCK:
+            LOCAL_TRAIN_JOBS[job_id] = {"status": "completed", "message": "Face LoRA trained locally."}
+    except Exception as exc:
+        error = str(exc)
+        update_profile(
+            profile_id, local_training_state="failed",
+            local_training_error=error, local_model_ready=False,
+        )
+        with LOCAL_TRAIN_JOBS_LOCK:
+            LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
 
 
 @app.errorhandler(413)
@@ -219,6 +201,7 @@ def request_too_large(_error):
 
 @app.get("/")
 def index():
+    from flask import render_template
     return render_template("index.html")
 
 
@@ -228,119 +211,436 @@ def health():
         status="ok",
         image_model_loaded=pipe is not None,
         image_model_error=model_error,
-        face_dataset_images=dataset_count(),
-        face_models=list_face_models(),
+        face_profiles=len(list_profiles()),
         video_model_loaded=video_pipe is not None,
         video_adapter_ready=(MOTION_DIR / "config.json").is_file(),
-        video_model_error=video_model_error,
-        note="Inference stays local; video generation requires CUDA-enabled NVIDIA GPU.",
+        runpod_configured=runpod_configured(),
+        note="Local mode runs on this computer. RunPod requests are made only when the UI toggle is enabled.",
     )
 
 
-@app.get("/api/face-models")
-def api_face_models():
-    return jsonify(models=list_face_models(), dataset_images=dataset_count())
+@app.get("/api/gpu-status")
+def gpu_status():
+    configured = runpod_configured()
+    result = {
+        "configured": configured,
+        "connected": False,
+        "message": (
+            "RunPod is configured. Enable the GPU toggle to test the worker."
+            if configured else
+            "Not configured. Add RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN to .env. No Pod has been started."
+        ),
+    }
+    if _truthy(request.args.get("probe")):
+        if not configured:
+            return jsonify(result), 400
+        try:
+            payload = runpod_request("GET", "/api/remote/health", timeout=(8, 12)).json()
+            result.update({"connected": True, "worker": payload, "message": "RunPod worker is reachable."})
+        except RuntimeError as exc:
+            result["message"] = str(exc)
+            return jsonify(result), 502
+    return jsonify(result)
 
 
-@app.post("/api/face-dataset")
-def api_face_dataset():
+@app.get("/api/face-profiles")
+def api_face_profiles():
+    return jsonify(profiles=list_profiles())
+
+
+@app.post("/api/face-profiles")
+def api_create_face_profile():
     try:
-        added = store_dataset_images(request.files.getlist("photos"))
+        name = _clean_prompt(request.form.get("name"), "Profile name", 80)
+        token = (request.form.get("token") or "").strip() or None
+        images = _parse_uploads(request.files.getlist("photos"))
+        profile = create_profile(name, token=token)
+        for image in images:
+            save_profile_image(profile["id"], image)
+        profile = get_profile(profile["id"])
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
-    return jsonify(status="completed", added=added, total=dataset_count(),
-                   message="Photos saved locally. Review the dataset before training.")
+    except RuntimeError as exc:
+        return jsonify(error=str(exc)), 500
+    return jsonify(status="created", profile=profile), 201
+
+
+@app.post("/api/face-profiles/<profile_id>/photos")
+def api_add_face_photos(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+        if not get_profile(profile_id):
+            return jsonify(error="Face profile not found."), 404
+        images = _parse_uploads(request.files.getlist("photos"))
+        if not images:
+            return jsonify(error="Choose one or more photos to upload."), 400
+        for image in images:
+            save_profile_image(profile_id, image)
+        return jsonify(status="saved", profile=get_profile(profile_id), added=len(images))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/face-profiles/<profile_id>/train")
+def api_train_face_profile(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile not found."), 404
+    if profile["image_count"] < 5:
+        return jsonify(error=f"Add at least 5 clear photos to this face profile first. Currently: {profile['image_count']}. "), 400
+    try:
+        steps = int(request.form.get("steps", "800"))
+        resolution = int(request.form.get("resolution", "512"))
+    except (TypeError, ValueError):
+        return jsonify(error="Invalid training steps or resolution."), 400
+    if not 100 <= steps <= 3000 or resolution not in (384, 512):
+        return jsonify(error="Training steps must be 100–3000 and resolution must be 384 or 512."), 400
+
+    use_runpod = _truthy(request.form.get("use_runpod"))
+    if use_runpod:
+        if not runpod_configured():
+            return jsonify(error=(
+                "RunPod is not configured. Set RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN in .env, "
+                "deploy the worker on your RTX 3090 Pod, then restart the local app."
+            )), 400
+        opened_files = []
+        try:
+            for path in dataset_images(profile_id):
+                handle = path.open("rb")
+                opened_files.append(handle)
+            files = [
+                ("photos", (path.name, handle, "image/jpeg"))
+                for path, handle in zip(dataset_images(profile_id), opened_files)
+            ]
+            response = runpod_request(
+                "POST", "/api/remote/train-profile",
+                data={
+                    "profile_id": profile_id,
+                    "name": profile["name"],
+                    "token": profile["token"],
+                    "steps": str(steps),
+                    "resolution": str(resolution),
+                },
+                files=files, timeout=(15, 90),
+            )
+            job = response.json()
+        except (RuntimeError, ValueError) as exc:
+            return jsonify(error=str(exc)), 502
+        finally:
+            for handle in opened_files:
+                handle.close()
+        job_id = job.get("job_id")
+        if not job_id:
+            return jsonify(error="RunPod worker did not return a training job ID."), 502
+        update_profile(
+            profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
+            runpod_training_error=None, runpod_model_ready=False,
+        )
+        return jsonify(status="running", backend="runpod", job_id=job_id, message="RunPod face training has started."), 202
+
+    if not torch.cuda.is_available():
+        return jsonify(error=(
+            "Local LoRA training requires an NVIDIA GPU with CUDA. This machine is using CPU-only PyTorch. "
+            "Turn on the RunPod GPU toggle after configuring your running RTX 3090 worker."
+        )), 400
+
+    job_id = uuid.uuid4().hex
+    update_profile(
+        profile_id, local_training_state="running", local_training_job_id=job_id,
+        local_training_error=None, local_model_ready=False,
+    )
+    with LOCAL_TRAIN_JOBS_LOCK:
+        LOCAL_TRAIN_JOBS[job_id] = {"status": "running", "profile_id": profile_id}
+    TRAINING_POOL.submit(_run_local_training, profile_id, steps, resolution, job_id)
+    return jsonify(status="running", backend="local", job_id=job_id, message="Local face training has started."), 202
+
+
+@app.get("/api/face-profiles/<profile_id>/train-status")
+def api_face_train_status(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile not found."), 404
+    backend = request.args.get("backend", "local").strip().lower()
+    if backend == "local":
+        job_id = profile.get("local_training_job_id")
+        with LOCAL_TRAIN_JOBS_LOCK:
+            local_job = LOCAL_TRAIN_JOBS.get(job_id, {}) if job_id else {}
+        return jsonify(
+            status=profile.get("local_training_state", "not_trained"),
+            error=profile.get("local_training_error"),
+            job=local_job,
+            profile=get_profile(profile_id),
+        )
+    if backend != "runpod":
+        return jsonify(error="Backend must be local or runpod."), 400
+    job_id = profile.get("runpod_training_job_id")
+    if not job_id:
+        return jsonify(status=profile.get("runpod_training_state", "not_trained"), profile=profile)
+    try:
+        payload = runpod_request("GET", f"/api/remote/jobs/{job_id}", timeout=(10, 15)).json()
+    except RuntimeError as exc:
+        return jsonify(error=str(exc), status="running", profile=profile), 502
+    state = payload.get("status", "running")
+    if state == "completed":
+        update_profile(
+            profile_id, runpod_training_state="completed", runpod_training_error=None,
+            runpod_model_ready=True,
+        )
+    elif state == "failed":
+        update_profile(
+            profile_id, runpod_training_state="failed",
+            runpod_training_error=(payload.get("error") or "RunPod training failed")[-3500:],
+            runpod_model_ready=False,
+        )
+    updated_profile = get_profile(profile_id)
+    return jsonify(status=state, error=payload.get("error"), job=payload, profile=updated_profile)
+
+
+def _load_cpu_or_gpu_pipeline(mode, profile_id):
+    global pipe, pipeline_mode, active_lora, model_error
+    global video_pipe, active_video_lora
+    from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
+
+    with model_lock:
+        use_cuda = torch.cuda.is_available()
+        if pipe is None or pipeline_mode != mode:
+            pipe = None
+            pipeline_mode = None
+            active_lora = None
+            video_pipe = None
+            active_video_lora = None
+            gc.collect()
+            if use_cuda:
+                torch.cuda.empty_cache()
+            local_model = MODEL_DIR if (MODEL_DIR / "model_index.json").is_file() else MODEL_ID
+            pipeline_class = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
+            kwargs = {
+                "torch_dtype": torch.float16 if use_cuda else torch.float32,
+                "safety_checker": None,
+                "requires_safety_checker": False,
+            }
+            if local_model == MODEL_DIR:
+                kwargs["local_files_only"] = True
+            try:
+                loaded = pipeline_class.from_pretrained(local_model, **kwargs)
+                loaded = loaded.to("cuda" if use_cuda else "cpu")
+                if not use_cuda:
+                    loaded.enable_attention_slicing("max")
+                try:
+                    loaded.enable_vae_slicing()
+                except Exception:
+                    pass
+                pipe = loaded
+                pipeline_mode = mode
+                model_error = None
+            except Exception as exc:
+                model_error = str(exc)
+                raise
+        if active_lora != profile_id:
+            if active_lora is not None:
+                pipe.unload_lora_weights()
+                active_lora = None
+            if profile_id:
+                path = model_path(profile_id)
+                if not profile_ready_for_backend(profile_id, "local") or not path.is_dir():
+                    raise ValueError("This face profile has no locally trained LoRA. Train it locally or turn on RunPod.")
+                pipe.load_lora_weights(str(path))
+                active_lora = profile_id
+        return pipe
 
 
 @app.post("/generate")
 def generate():
-    prompt = (request.form.get("prompt") or "").strip()
-    negative_prompt = (request.form.get("negative_prompt") or "").strip()
+    prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1200)
+    negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
     try:
-        face_model = safe_model_name(request.form.get("face_model"))
+        profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = float(request.form.get("strength", "0.45"))
         steps = int(request.form.get("steps", "10"))
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt:
         return jsonify(error="Enter a prompt describing the image you want."), 400
-    if len(prompt) > 1200 or len(negative_prompt) > 600:
-        return jsonify(error="Prompt is too long."), 400
     if not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
         return jsonify(error="Strength must be 0.20–0.95 and steps must be 5–25."), 400
+    profile = get_profile(profile_id) if profile_id else None
+    if profile_id and not profile:
+        return jsonify(error="Face profile not found."), 404
+
+    use_runpod = _truthy(request.form.get("use_runpod"))
+    image_file = request.files.get("image")
     try:
-        image = save_input_image(request.files.get("image"))
-    except ValueError as exc:
-        return jsonify(error=str(exc)), 400
-    if face_model and face_model not in list_face_models():
-        return jsonify(error="Choose a completed face model from the list."), 400
+        init_image = None
+        if image_file and image_file.filename:
+            with Image.open(image_file.stream) as source:
+                init_image = ImageOps.exif_transpose(source).convert("RGB")
+                init_image.load()
+            init_image = ImageOps.fit(init_image, (512, 512), method=Image.Resampling.LANCZOS)
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
+
     if not generation_lock.acquire(blocking=False):
         return jsonify(error="Another generation is running. Please wait."), 429
     try:
-        try:
-            import torch
-            mode = "img2img" if image is not None else "txt2img"
-            pipeline = get_pipeline(mode, face_model)
-            kwargs = {
-                "prompt": prompt, "negative_prompt": negative_prompt or None,
-                "num_inference_steps": steps, "guidance_scale": 7.0,
-                "generator": torch.Generator(device="cpu").manual_seed(int(time.time_ns() % (2**31 - 1))),
+        if use_runpod:
+            if not runpod_configured():
+                return jsonify(error="RunPod is not configured. Set RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN in .env, then restart the app."), 400
+            if profile_id and not profile.get("runpod_model_ready"):
+                return jsonify(error="This face profile has not been trained on RunPod yet. Turn on RunPod and train this profile first."), 400
+            data = {
+                "prompt": prompt, "negative_prompt": negative_prompt,
+                "steps": str(steps), "strength": str(strength),
             }
-            if image is not None:
-                kwargs.update(image=image, strength=strength)
+            if profile_id:
+                data["face_profile_id"] = profile_id
+            files = None
+            if init_image is not None:
+                buffer = io.BytesIO()
+                init_image.save(buffer, format="PNG")
+                buffer.seek(0)
+                files = {"image": ("reference.png", buffer, "image/png")}
+            try:
+                response = runpod_request(
+                    "POST", "/api/remote/generate", data=data, files=files, timeout=(20, 600)
+                )
+            except RuntimeError as exc:
+                return jsonify(error=str(exc)), 502
+            filename = f"{uuid.uuid4().hex}.png"
+            (OUTPUT_DIR / filename).write_bytes(response.content)
+            return jsonify(
+                status="completed", image_url=f"/outputs/{filename}", filename=filename,
+                mode="img2img" if init_image is not None else "txt2img",
+                face_profile=profile["name"] if profile else None,
+                backend="runpod", message="Generated on the configured RunPod GPU and saved locally.",
+            )
+        if profile_id and not profile_ready_for_backend(profile_id, "local"):
+            return jsonify(error="This face profile has no local LoRA yet. Train it locally or enable the configured RunPod GPU toggle."), 400
+        try:
+            mode = "img2img" if init_image is not None else "txt2img"
+            pipeline = _load_cpu_or_gpu_pipeline(mode, profile_id)
+            kwargs = {
+                "prompt": prompt,
+                "negative_prompt": negative_prompt or None,
+                "num_inference_steps": steps,
+                "guidance_scale": 7.0,
+                "generator": torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(int(time.time_ns() % (2**31 - 1))),
+            }
+            if init_image is not None:
+                kwargs.update(image=init_image, strength=strength)
             result = pipeline(**kwargs).images[0]
         except Exception as exc:
             message = str(exc)
             if "out of memory" in message.lower() or "memory" in message.lower():
                 message = "The model ran out of memory. Close other apps and retry with fewer steps."
             return jsonify(error=f"Generation failed: {message}"), 500
-        filename = f"{uuid.uuid4().hex}.png"
-        result.save(OUTPUT_DIR / filename, format="PNG", optimize=True)
-        return jsonify(status="completed", image_url=f"/outputs/{filename}",
-                       filename=filename, mode=mode, face_model=face_model,
-                       message="Generated locally on this computer.")
+        filename = _save_generated_png(result)
+        return jsonify(
+            status="completed", image_url=f"/outputs/{filename}", filename=filename,
+            mode="img2img" if init_image is not None else "txt2img",
+            face_profile=profile["name"] if profile else None,
+            backend="local", message="Generated locally on this computer.",
+        )
     finally:
         generation_lock.release()
 
 
 @app.post("/generate-video")
 def generate_video():
-    prompt = (request.form.get("prompt") or "").strip()
-    negative_prompt = (request.form.get("negative_prompt") or "").strip()
+    prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1000)
+    negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
     try:
-        face_model = safe_model_name(request.form.get("face_model"))
+        profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid video settings."), 400
-    if not prompt or len(prompt) > 1000 or len(negative_prompt) > 600:
-        return jsonify(error="Enter a video prompt within the allowed length."), 400
+    if not prompt:
+        return jsonify(error="Enter a video prompt."), 400
     if not 5 <= steps <= 20 or frames not in (8, 16, 24):
         return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
-    if face_model and face_model not in list_face_models():
-        return jsonify(error="Choose a completed face model from the list."), 400
+    profile = get_profile(profile_id) if profile_id else None
+    if profile_id and not profile:
+        return jsonify(error="Face profile not found."), 404
+
+    use_runpod = _truthy(request.form.get("use_runpod"))
     if not generation_lock.acquire(blocking=False):
         return jsonify(error="Another generation is running. Please wait."), 429
     try:
+        if use_runpod:
+            if not runpod_configured():
+                return jsonify(error="RunPod is not configured. Set RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN in .env, then restart the app."), 400
+            if profile_id and not profile.get("runpod_model_ready"):
+                return jsonify(error="This face profile has not been trained on RunPod yet. Train it on RunPod first."), 400
+            data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames)}
+            if profile_id:
+                data["face_profile_id"] = profile_id
+            try:
+                response = runpod_request(
+                    "POST", "/api/remote/generate-video", data=data, timeout=(20, 1200)
+                )
+            except RuntimeError as exc:
+                return jsonify(error=str(exc)), 502
+            filename = f"{uuid.uuid4().hex}.mp4"
+            (VIDEO_OUTPUT_DIR / filename).write_bytes(response.content)
+            return jsonify(
+                status="completed", video_url=f"/videos/{filename}", filename=filename,
+                face_profile=profile["name"] if profile else None, backend="runpod",
+                message="Generated on the configured RunPod GPU and saved locally.",
+            )
+        if not torch.cuda.is_available():
+            return jsonify(error="Local video generation requires a CUDA-enabled NVIDIA GPU. Enable the configured RunPod GPU toggle to use your remote GPU."), 400
+        if profile_id and not profile_ready_for_backend(profile_id, "local"):
+            return jsonify(error="This face profile has no locally trained LoRA. Train it locally or enable the configured RunPod GPU toggle."), 400
+        if not (MOTION_DIR / "config.json").is_file():
+            return jsonify(error="AnimateDiff motion adapter is missing. Run download_video_model.bat first."), 400
         try:
-            import torch
+            from diffusers import AnimateDiffPipeline, MotionAdapter
             from diffusers.utils import export_to_video
-            pipeline = get_video_pipeline(face_model)
+            global video_pipe, active_video_lora, video_model_error
+            with model_lock:
+                if video_pipe is None:
+                    adapter = MotionAdapter.from_pretrained(str(MOTION_DIR), local_files_only=True, torch_dtype=torch.float16)
+                    video_pipe = AnimateDiffPipeline.from_pretrained(
+                        str(MODEL_DIR), motion_adapter=adapter, local_files_only=True,
+                        torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False,
+                    )
+                    video_pipe.enable_vae_slicing()
+                    video_pipe.to("cuda")
+                    active_video_lora = None
+                if active_video_lora != profile_id:
+                    if active_video_lora is not None:
+                        video_pipe.unload_lora_weights()
+                        active_video_lora = None
+                    if profile_id:
+                        video_pipe.load_lora_weights(str(model_path(profile_id)))
+                        active_video_lora = profile_id
             generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
-            result = pipeline(
+            result = video_pipe(
                 prompt=prompt, negative_prompt=negative_prompt or None,
-                num_frames=frames, num_inference_steps=steps, guidance_scale=7.0,
-                generator=generator,
+                num_frames=frames, num_inference_steps=steps,
+                guidance_scale=7.0, generator=generator,
             )
             filename = f"{uuid.uuid4().hex}.mp4"
             export_to_video(result.frames[0], str(VIDEO_OUTPUT_DIR / filename), fps=8)
         except Exception as exc:
+            video_model_error = str(exc)
             message = str(exc)
             if "out of memory" in message.lower():
                 message = "The GPU ran out of memory. Try fewer frames or a smaller workload."
             return jsonify(error=f"Video generation failed: {message}"), 500
-        return jsonify(status="completed", video_url=f"/videos/{filename}", filename=filename,
-                       face_model=face_model, message="Video generated locally.")
+        return jsonify(
+            status="completed", video_url=f"/videos/{filename}", filename=filename,
+            face_profile=profile["name"] if profile else None, backend="local",
+            message="Generated locally on this GPU.",
+        )
     finally:
         generation_lock.release()
 
