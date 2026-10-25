@@ -50,6 +50,7 @@ from studio_db import (
     database_status,
     database_url_configured,
     get_face_model_bundle,
+    list_asset_filenames,
     save_face_model_bundle,
     delete_asset,
     get_asset,
@@ -83,6 +84,8 @@ generation_lock = threading.Lock()
 TRAINING_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face-lora-train")
 LOCAL_TRAIN_JOBS = {}
 LOCAL_TRAIN_JOBS_LOCK = threading.Lock()
+LEGACY_MEDIA_MIGRATION_LOCK = threading.Lock()
+LEGACY_MEDIA_MIGRATED = False
 
 
 def _truthy(value) -> bool:
@@ -240,8 +243,55 @@ def _save_generated_png(image) -> str:
     return filename
 
 
+def _migrate_legacy_output_files():
+    """Import output files from earlier versions into the persistent asset library once."""
+    global LEGACY_MEDIA_MIGRATED
+    if LEGACY_MEDIA_MIGRATED:
+        return
+    with LEGACY_MEDIA_MIGRATION_LOCK:
+        if LEGACY_MEDIA_MIGRATED:
+            return
+        try:
+            for asset_type, folder, extensions, mime_type in (
+                ("image", OUTPUT_DIR, {".png", ".jpg", ".jpeg", ".webp"}, None),
+                ("video", VIDEO_OUTPUT_DIR, {".mp4", ".webm", ".mov"}, None),
+            ):
+                known = list_asset_filenames(asset_type)
+                for path in sorted(folder.iterdir()):
+                    if not path.is_file() or path.suffix.lower() not in extensions or path.name in known:
+                        continue
+                    if path.stat().st_size <= 0 or path.stat().st_size > 512 * 1024 * 1024:
+                        app.logger.warning("Skipped legacy media file outside the supported size range: %s", path.name)
+                        continue
+                    detected_mime = (
+                        "image/png" if path.suffix.lower() == ".png" else
+                        "image/jpeg" if path.suffix.lower() in {".jpg", ".jpeg"} else
+                        "image/webp" if path.suffix.lower() == ".webp" else
+                        "video/mp4" if path.suffix.lower() == ".mp4" else
+                        "video/webm" if path.suffix.lower() == ".webm" else
+                        "video/quicktime"
+                    )
+                    try:
+                        create_asset(
+                            asset_type=asset_type,
+                            title=f"Imported {asset_type} · {path.stem[:80]}",
+                            filename=path.name, mime_type=detected_mime,
+                            media_data=path.read_bytes(),
+                            prompt="", negative_prompt="", profile_id=None, profile_name=None,
+                            backend="legacy_import", generation_mode="legacy",
+                        )
+                        known.add(path.name)
+                    except Exception:
+                        app.logger.exception("Could not import legacy media file %s", path.name)
+                        return
+            LEGACY_MEDIA_MIGRATED = True
+        except Exception:
+            app.logger.exception("Could not inspect legacy output folders for database migration")
+
+
 def _safe_list_assets(asset_type=None, limit=200):
     try:
+        _migrate_legacy_output_files()
         return list_assets(asset_type, limit)
     except Exception:
         app.logger.exception("Media library is unavailable")
