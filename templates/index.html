@@ -5,132 +5,188 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Local Private Image AI</title>
   <style>
-    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a2c; --line:#29354d; --muted:#aab6ca; --accent:#8b9cff; }
-    * { box-sizing:border-box; }
-    body { margin:0; background:radial-gradient(ellipse at top,#172344 0,#0b1020 55%); color:#f5f7ff; font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
-    main { max-width:1000px; margin:0 auto; padding:28px 18px 56px; }
-    header { margin-bottom:24px; }
-    h1 { margin:0 0 8px; font-size:clamp(28px,5vw,42px); letter-spacing:-.04em; }
-    .sub, .muted { color:var(--muted); }
-    .privacy { display:inline-flex; gap:8px; align-items:center; border:1px solid #315c4b; background:#102a25; color:#b9f5d9; border-radius:999px; padding:6px 12px; font-size:13px; }
-    .layout { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
-    .panel { background:rgba(18,26,44,.92); border:1px solid var(--line); border-radius:18px; padding:20px; min-width:0; box-shadow:0 12px 36px #0002; }
-    label { display:block; font-weight:650; margin:14px 0 7px; }
-    textarea, input[type=file], select { width:100%; border:1px solid #35425c; background:#0d1424; color:#f5f7ff; border-radius:10px; padding:11px; font:inherit; }
-    textarea { resize:vertical; min-height:112px; }
-    input[type=range] { width:100%; accent-color:var(--accent); }
-    .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    button, .download { border:0; border-radius:11px; padding:12px 16px; background:var(--accent); color:#0a1020; font-weight:750; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
-    button { width:100%; margin-top:18px; font-size:16px; }
-    button:disabled { opacity:.55; cursor:wait; }
-    .preview { min-height:270px; display:flex; align-items:center; justify-content:center; border:1px dashed #3b4963; border-radius:13px; overflow:hidden; background:#0b1120; }
-    .preview img { max-width:100%; max-height:520px; object-fit:contain; display:block; }
-    .placeholder { color:#8290a8; padding:24px; text-align:center; }
-    .status { margin-top:14px; color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; }
-    .tiny { font-size:12px; color:#9aa8bf; margin-top:12px; }
-    .download { margin-top:12px; display:none; }
-    .warning { border-left:3px solid #e7b45d; padding:9px 12px; background:#302717; color:#f6dfb3; border-radius:7px; font-size:13px; margin-top:14px; }
-    @media (max-width:760px) { .layout { grid-template-columns:1fr; } main { padding:20px 12px 36px; } .panel { padding:15px; } }
+    :root{color-scheme:dark;--bg:#0b1020;--panel:#121a2c;--line:#29354d;--muted:#aab6ca;--accent:#a7b2ff}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#172344 0,#0b1020 55%);color:#f5f7ff;font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
+    main{max-width:1120px;margin:0 auto;padding:28px 18px 56px}header{margin-bottom:22px}h1{margin:0 0 7px;font-size:clamp(28px,5vw,42px);letter-spacing:-.04em}h2{margin:0 0 10px;font-size:21px}h3{margin:0 0 7px}
+    p{margin:8px 0}.sub,.muted,.tiny{color:var(--muted)}.privacy{display:inline-flex;border:1px solid #315c4b;background:#102a25;color:#b9f5d9;border-radius:999px;padding:6px 12px;font-size:13px;margin-bottom:12px}
+    .layout{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}.stack{display:grid;gap:18px}.panel{background:rgba(18,26,44,.94);border:1px solid var(--line);border-radius:18px;padding:20px;min-width:0;box-shadow:0 12px 36px #0002}
+    label{display:block;font-weight:650;margin:14px 0 7px}textarea,input[type=file],select{width:100%;border:1px solid #35425c;background:#0d1424;color:#f5f7ff;border-radius:10px;padding:11px;font:inherit}textarea{resize:vertical;min-height:88px}input[type=file]{padding:9px}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}button,.download{border:0;border-radius:11px;padding:12px 16px;background:var(--accent);color:#0a1020;font-weight:750;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+    button{width:100%;margin-top:16px;font-size:15px}button.secondary{background:#263550;color:#f5f7ff;border:1px solid #415371}button:disabled{opacity:.55;cursor:wait}
+    .preview{min-height:200px;display:flex;align-items:center;justify-content:center;border:1px dashed #3b4963;border-radius:13px;overflow:hidden;background:#0b1120}.preview img,.preview video{max-width:100%;max-height:440px;object-fit:contain;display:block}
+    .placeholder{color:#8290a8;padding:24px;text-align:center}.status{margin-top:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}.tiny{font-size:12px;margin-top:8px}.download{margin-top:12px;display:none}
+    .warning,.good{padding:10px 12px;border-radius:7px;font-size:13px;margin-top:13px}.warning{border-left:3px solid #e7b45d;background:#302717;color:#f6dfb3}.good{border-left:3px solid #5ec79a;background:#102a25;color:#c2f6df}
+    code{color:#d9e1ff;overflow-wrap:anywhere}.eyebrow{color:#b8c4ff;font-size:12px;text-transform:uppercase;letter-spacing:.12em;font-weight:750;margin-bottom:6px}
+    @media(max-width:760px){.layout{grid-template-columns:1fr}main{padding:20px 12px 36px}.panel{padding:15px}}
   </style>
 </head>
-<body>
-<main>
-  <header>
-    <div class="privacy">● Local-first · No login · No image API</div>
-    <h1>Private Image AI</h1>
-    <div class="sub">Upload an image, describe the edit, and generate on this computer.</div>
-  </header>
-  <div class="layout">
-    <section class="panel">
-      <form id="form">
-        <label for="image">Input image</label>
-        <input id="image" name="image" type="file" accept="image/png,image/jpeg,image/webp" required>
-        <div class="tiny">PNG, JPG or WEBP · max 12 MB · resized to at most 512 × 512 for lower memory use.</div>
-        <div class="preview" style="margin-top:12px"><img id="sourcePreview" alt="Selected input preview" hidden><div id="sourcePlaceholder" class="placeholder">Your selected image will appear here.</div></div>
+<body><main>
+<header>
+  <div class="privacy">● Local-first · No inference API · Files stay on this computer</div>
+  <h1>Private Image AI</h1>
+  <div class="sub">Train a reusable face identity with LoRA, generate portraits, and optionally create short AI videos.</div>
+</header>
 
-        <label for="prompt">Prompt</label>
-        <textarea id="prompt" name="prompt" maxlength="1200" required placeholder="Example: Turn this photo into a watercolor illustration while keeping the same composition."></textarea>
+<section class="panel" style="margin-bottom:18px">
+  <div class="eyebrow">Step 1 · Identity dataset</div><h2>Prepare one face</h2>
+  <p class="muted">Use your own photos or photos of a person who has consented. Choose clear images of the same person with varied angles, expressions and lighting. Avoid group photos, strong filters, sunglasses and near-duplicates.</p>
+  <form id="datasetForm">
+    <label for="photos">Face photos</label><input id="photos" name="photos" type="file" accept="image/png,image/jpeg,image/webp" multiple required>
+    <div class="tiny">Up to 30 photos per upload · max 8 MB each. Images are re-encoded to remove EXIF metadata.</div>
+    <div class="row"><button type="submit" id="datasetSubmit">Save photos locally</button><button type="button" class="secondary" id="refreshModels">Refresh face models</button></div>
+  </form>
+  <div id="datasetStatus" class="status" role="status" aria-live="polite">Checking saved dataset…</div>
+  <div class="warning">Aim for 15–30 good photos. This app stores them locally; it does not upload them to an inference service.</div>
+</section>
 
-        <label for="negative_prompt">Negative prompt (optional)</label>
-        <textarea id="negative_prompt" name="negative_prompt" maxlength="600" style="min-height:68px" placeholder="blurry, distorted, low quality"></textarea>
+<div class="layout">
+<div class="stack">
+  <section class="panel">
+    <div class="eyebrow">Step 2 · Train once</div><h2>Create your face LoRA</h2>
+    <p class="muted">Training reads the saved photos and the local Stable Diffusion 1.5 model, then saves an identity adapter for reuse.</p>
+    <label for="trainCommand">Windows / PowerShell command</label>
+    <textarea id="trainCommand" readonly style="min-height:72px">python train_face_lora.py --output-name my_face --token sks --steps 800 --mixed-precision fp16</textarea>
+    <div class="tiny">Run this in the project folder with its virtual environment activated. Training requires an NVIDIA GPU and CUDA-enabled PyTorch; the bundled installer installs CPU-only PyTorch.</div>
+    <div class="good">After training, click “Refresh face models” and select your saved model below. Include the trigger token in prompts, e.g. “photo of sks person”.</div>
+  </section>
 
-        <div class="row">
-          <div>
-            <label for="strength">Edit strength: <span id="strengthValue">0.65</span></label>
-            <input id="strength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.65">
-            <div class="tiny">Lower preserves more of the original.</div>
-          </div>
-          <div>
-            <label for="steps">Steps</label>
-            <select id="steps" name="steps">
-              <option value="5">5 · fastest test</option>
-              <option value="10">10</option>
-              <option value="15" selected>15 · recommended start</option>
-              <option value="20">20</option>
-              <option value="25">25 · slower</option>
-            </select>
-          </div>
-        </div>
-        <button id="submit" type="submit">Generate image locally</button>
-        <div class="warning">CPU generation can be very slow and may exceed 8 GB RAM. Close other apps before generating.</div>
-      </form>
-      <div id="status" class="status" role="status" aria-live="polite"></div>
-    </section>
+  <section class="panel">
+    <div class="eyebrow">Step 3 · Photo generation</div><h2>Generate a photo</h2>
+    <form id="generationForm">
+      <label for="faceModel">Face identity (optional)</label>
+      <select id="faceModel" name="face_model"><option value="">Base model (no trained face)</option></select>
+      <div class="tiny">Choose a trained face LoRA to reuse the identity in new scenes.</div>
+      <label for="image">Reference image (optional)</label><input id="image" name="image" type="file" accept="image/png,image/jpeg,image/webp">
+      <div class="tiny">No reference = text-to-image. With a reference = image-to-image edit.</div>
+      <div class="preview" style="margin-top:12px"><img id="sourcePreview" alt="Selected input preview" hidden><div id="sourcePlaceholder" class="placeholder">Reference image preview (optional)</div></div>
+      <label for="prompt">Prompt</label><textarea id="prompt" name="prompt" maxlength="1200" required placeholder="editorial portrait of sks person in a red coat, soft window light, realistic photography"></textarea>
+      <label for="negative_prompt">Negative prompt (optional)</label><textarea id="negative_prompt" name="negative_prompt" maxlength="600" style="min-height:62px" placeholder="blurry, distorted face, extra fingers, low quality"></textarea>
+      <div class="row">
+        <div><label for="strength">Edit strength: <span id="strengthValue">0.45</span></label><input id="strength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.45" style="width:100%"><div class="tiny">Only used with a reference image.</div></div>
+        <div><label for="steps">Steps</label><select id="steps" name="steps"><option value="5">5 · quick</option><option value="10" selected>10 · start here</option><option value="15">15</option><option value="20">20</option><option value="25">25 · slower</option></select></div>
+      </div>
+      <button id="generateSubmit" type="submit">Generate photo locally</button>
+    </form>
+    <div id="generationStatus" class="status" role="status" aria-live="polite"></div>
+  </section>
 
-    <section class="panel">
-      <h2 style="margin-top:0">Generated result</h2>
-      <div class="preview"><img id="resultPreview" alt="Generated image" hidden><div id="resultPlaceholder" class="placeholder">Your generated image will appear here.</div></div>
-      <a id="download" class="download" download="generated-image.png">Save generated image</a>
-      <p class="tiny">Results are saved in the local <code>data/outputs</code> folder. Nothing is uploaded by this app during inference.</p>
-    </section>
-  </div>
-  <p class="tiny">Privacy note: first-time setup downloads software and model files from the internet. After the model is installed, generation runs locally. This app binds to 127.0.0.1 and is not exposed to your network.</p>
+  <section class="panel">
+    <div class="eyebrow">Optional · Video generation</div><h2>Animate the trained identity</h2>
+    <p class="muted">Uses AnimateDiff with the local SD 1.5 model and selected face LoRA. Identity and motion consistency can vary by frame.</p>
+    <form id="videoForm">
+      <label for="videoFaceModel">Face identity</label><select id="videoFaceModel" name="face_model"><option value="">No trained face model</option></select>
+      <label for="videoPrompt">Video prompt</label><textarea id="videoPrompt" name="prompt" maxlength="1000" required placeholder="sks person slowly turns toward the camera, natural expression, cinematic soft lighting"></textarea>
+      <label for="videoNegative">Negative prompt (optional)</label><textarea id="videoNegative" name="negative_prompt" maxlength="600" style="min-height:60px" placeholder="flicker, distorted face, blurry, unstable background"></textarea>
+      <div class="row">
+        <div><label for="videoFrames">Frames</label><select id="videoFrames" name="frames"><option value="8">8 · shortest</option><option value="16" selected>16 · start here</option><option value="24">24 · slower</option></select></div>
+        <div><label for="videoSteps">Steps</label><select id="videoSteps" name="steps"><option value="5">5</option><option value="8">8</option><option value="12" selected>12</option><option value="16">16</option><option value="20">20</option></select></div>
+      </div>
+      <button id="videoSubmit" type="submit">Generate short video</button>
+    </form>
+    <div id="videoStatus" class="status" role="status" aria-live="polite"></div>
+    <div class="warning">Video needs an NVIDIA GPU, CUDA-enabled PyTorch and local motion-adapter weights. The current CPU-only laptop setup cannot run it.</div>
+  </section>
+</div>
+
+<div class="stack">
+  <section class="panel"><h2>Generated photo</h2>
+    <div class="preview"><img id="resultPreview" alt="Generated photo" hidden><div id="resultPlaceholder" class="placeholder">The generated photo appears here.</div></div>
+    <a id="download" class="download" download="generated-image.png">Save generated image</a>
+    <p class="tiny">Saved in data/outputs.</p>
+  </section>
+  <section class="panel"><h2>Generated video</h2>
+    <div class="preview"><video id="videoPreview" controls hidden></video><div id="videoPlaceholder" class="placeholder">The generated clip appears here.</div></div>
+    <a id="videoDownload" class="download" download="generated-video.mp4">Save generated video</a>
+    <p class="tiny">Saved in data/videos.</p>
+  </section>
+  <section class="panel"><h3>Local project status</h3><p id="systemStatus" class="muted">Checking local model status…</p>
+    <p class="tiny">This app binds to 127.0.0.1. Do not expose it to the internet or local network without access controls.</p>
+  </section>
+</div>
+</div>
+<p class="tiny" style="margin-top:18px">First-time setup downloads model files. Afterward, inference, face dataset, LoRAs and results stay on this computer. Review model licenses before use.</p>
 </main>
 <script>
-const fileInput = document.getElementById('image');
-const sourcePreview = document.getElementById('sourcePreview');
-const sourcePlaceholder = document.getElementById('sourcePlaceholder');
-const resultPreview = document.getElementById('resultPreview');
-const resultPlaceholder = document.getElementById('resultPlaceholder');
-const form = document.getElementById('form');
-const submit = document.getElementById('submit');
-const statusEl = document.getElementById('status');
-const download = document.getElementById('download');
-const strength = document.getElementById('strength');
-strength.addEventListener('input', () => document.getElementById('strengthValue').textContent = Number(strength.value).toFixed(2));
-fileInput.addEventListener('change', () => {
-  const file = fileInput.files[0];
-  if (!file) return;
-  sourcePreview.src = URL.createObjectURL(file);
-  sourcePreview.hidden = false;
-  sourcePlaceholder.hidden = true;
+const datasetForm=document.getElementById('datasetForm');
+const datasetSubmit=document.getElementById('datasetSubmit');
+const datasetStatus=document.getElementById('datasetStatus');
+const modelSelects=[document.getElementById('faceModel'),document.getElementById('videoFaceModel')];
+const generationForm=document.getElementById('generationForm');
+const generateSubmit=document.getElementById('generateSubmit');
+const generationStatus=document.getElementById('generationStatus');
+const videoForm=document.getElementById('videoForm');
+const videoSubmit=document.getElementById('videoSubmit');
+const videoStatus=document.getElementById('videoStatus');
+const fileInput=document.getElementById('image');
+const sourcePreview=document.getElementById('sourcePreview');
+const sourcePlaceholder=document.getElementById('sourcePlaceholder');
+const resultPreview=document.getElementById('resultPreview');
+const resultPlaceholder=document.getElementById('resultPlaceholder');
+const download=document.getElementById('download');
+const videoPreview=document.getElementById('videoPreview');
+const videoPlaceholder=document.getElementById('videoPlaceholder');
+const videoDownload=document.getElementById('videoDownload');
+const strength=document.getElementById('strength');
+strength.addEventListener('input',()=>document.getElementById('strengthValue').textContent=Number(strength.value).toFixed(2));
+fileInput.addEventListener('change',()=>{
+  const file=fileInput.files[0];
+  if(!file){sourcePreview.hidden=true;sourcePlaceholder.hidden=false;sourcePreview.removeAttribute('src');return;}
+  sourcePreview.src=URL.createObjectURL(file);sourcePreview.hidden=false;sourcePlaceholder.hidden=true;
 });
-form.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (!fileInput.files.length) return;
-  submit.disabled = true;
-  submit.textContent = 'Generating… please keep this page open';
-  statusEl.textContent = 'Loading model if needed, then generating on your CPU. The first run may take a long time.';
-  resultPreview.hidden = true;
-  resultPlaceholder.hidden = false;
-  download.style.display = 'none';
-  try {
-    const response = await fetch('/generate', { method: 'POST', body: new FormData(form) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Generation failed.');
-    resultPreview.src = data.image_url + '?t=' + Date.now();
-    resultPreview.hidden = false;
-    resultPlaceholder.hidden = true;
-    download.href = data.image_url;
-    download.style.display = 'inline-flex';
-    statusEl.textContent = data.message + ' File: ' + data.filename;
-  } catch (err) {
-    statusEl.textContent = err.message || 'Something went wrong.';
-  } finally {
-    submit.disabled = false;
-    submit.textContent = 'Generate image locally';
-  }
+async function refreshModels(){
+  const response=await fetch('/api/face-models');const data=await response.json();
+  if(!response.ok)throw new Error(data.error||'Could not load face models.');
+  const previous=modelSelects.map(s=>s.value);
+  modelSelects.forEach((select,index)=>{
+    select.replaceChildren();const base=document.createElement('option');base.value='';
+    base.textContent=index===0?'Base model (no trained face)':'No trained face model';select.appendChild(base);
+    data.models.forEach(name=>{const option=document.createElement('option');option.value=name;option.textContent=name;select.appendChild(option);});
+    if(data.models.includes(previous[index]))select.value=previous[index];
+  });
+  datasetStatus.textContent='Saved face photos: '+data.dataset_images+'. Trained face models: '+data.models.length+'.';
+  return data;
+}
+document.getElementById('refreshModels').addEventListener('click',async()=>{try{await refreshModels();}catch(e){datasetStatus.textContent=e.message;}});
+datasetForm.addEventListener('submit',async event=>{
+  event.preventDefault();if(!document.getElementById('photos').files.length)return;
+  datasetSubmit.disabled=true;datasetSubmit.textContent='Saving photos…';datasetStatus.textContent='Validating and saving locally…';
+  try{
+    const response=await fetch('/api/face-dataset',{method:'POST',body:new FormData(datasetForm)});const data=await response.json();
+    if(!response.ok)throw new Error(data.error||'Could not save photos.');
+    datasetStatus.textContent=data.message+' Added: '+data.added+'. Total: '+data.total+'.';datasetForm.reset();await refreshModels();
+  }catch(e){datasetStatus.textContent=e.message||'Something went wrong.';}
+  finally{datasetSubmit.disabled=false;datasetSubmit.textContent='Save photos locally';}
 });
+generationForm.addEventListener('submit',async event=>{
+  event.preventDefault();generateSubmit.disabled=true;generateSubmit.textContent='Generating… keep this page open';
+  generationStatus.textContent=fileInput.files.length?'Generating image-to-image edit on CPU…':'Generating text-to-image on CPU…';
+  resultPreview.hidden=true;resultPlaceholder.hidden=false;download.style.display='none';
+  try{
+    const response=await fetch('/generate',{method:'POST',body:new FormData(generationForm)});const data=await response.json();
+    if(!response.ok)throw new Error(data.error||'Generation failed.');
+    resultPreview.src=data.image_url+'?t='+Date.now();resultPreview.hidden=false;resultPlaceholder.hidden=true;
+    download.href=data.image_url;download.style.display='inline-flex';generationStatus.textContent=data.message+' Mode: '+data.mode+'. File: '+data.filename;
+  }catch(e){generationStatus.textContent=e.message||'Something went wrong.';}
+  finally{generateSubmit.disabled=false;generateSubmit.textContent='Generate photo locally';}
+});
+videoForm.addEventListener('submit',async event=>{
+  event.preventDefault();videoSubmit.disabled=true;videoSubmit.textContent='Generating video… keep this page open';
+  videoStatus.textContent='Checking CUDA and local motion-adapter weights…';videoPreview.hidden=true;videoPreview.removeAttribute('src');
+  videoPlaceholder.hidden=false;videoDownload.style.display='none';
+  try{
+    const response=await fetch('/generate-video',{method:'POST',body:new FormData(videoForm)});const data=await response.json();
+    if(!response.ok)throw new Error(data.error||'Video generation failed.');
+    videoPreview.src=data.video_url+'?t='+Date.now();videoPreview.hidden=false;videoPlaceholder.hidden=true;
+    videoDownload.href=data.video_url;videoDownload.style.display='inline-flex';videoStatus.textContent=data.message+' File: '+data.filename;
+  }catch(e){videoStatus.textContent=e.message||'Something went wrong.';}
+  finally{videoSubmit.disabled=false;videoSubmit.textContent='Generate short video';}
+});
+async function loadStatus(){
+  try{
+    const response=await fetch('/health');const data=await response.json();
+    document.getElementById('systemStatus').textContent='Face dataset: '+data.face_dataset_images+' photo(s). Trained identities: '+data.face_models.length+'. Video motion adapter: '+(data.video_adapter_ready?'installed':'not installed')+'.';
+  }catch(_){document.getElementById('systemStatus').textContent='Status unavailable.';}
+}
+refreshModels().catch(e=>{datasetStatus.textContent=e.message;});loadStatus();
 </script>
-</body>
-</html>
+</body></html>
