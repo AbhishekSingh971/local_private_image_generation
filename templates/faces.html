@@ -30,17 +30,17 @@
         <button type="button" class="secondary-button" id="addPhotosButton">Add selected local photos</button><div id="addPhotosStatus" class="status" role="status" aria-live="polite"></div>
       </div>
       <div class="photo-source" data-source-panel="variations">
-        <p id="variationModeDescription">Upload one clear source photo and create five labeled views of the same person. Only the viewpoint should change; the original is kept unchanged.</p>
+        <p id="variationModeDescription">Upload one source photo. Face angles creates 9 target poses; Expressions creates 10 facial expressions. The original remains unchanged.</p>
         <label for="angleGroupTitle">Dataset group name</label><input id="angleGroupTitle" type="text" maxlength="120" placeholder="e.g. Model A · first angle set">
         <label for="angleSourceImage">One source face photo</label><input id="angleSourceImage" type="file" accept="image/png,image/jpeg,image/webp">
         <p class="field-help">Use a clear photo of an adult who has consented. Angle and expression changes are approximate; review each result before training.</p>
-        <button type="button" id="generateFaceAnglesButton">Generate five angles and add to dataset</button>
-        <button type="button" id="retryFaceAngleButton" class="secondary-button" hidden>Retry failed angle once</button>
-        <p class="field-help">Each successful angle is saved to the image library and its dataset group immediately. If an angle fails, retry that same angle once without losing the completed views.</p>
+        <button type="button" id="generateFaceAnglesButton">Start 9 face angles</button>
+        <button type="button" id="retryFaceAngleButton" class="secondary-button" hidden>Retry failed target</button>
+        <p class="field-help">Generation runs on the server, so navigation does not stop the batch. Each image is saved immediately. Failed or mismatched outputs are marked for review.</p>
         <div id="faceAnglesStatus" class="status" role="status" aria-live="polite"></div>
         <div id="faceAnglesProgress" class="generation-progress" hidden aria-live="polite">
           <div class="progress-heading"><span id="faceAnglesProgressStage">Preparing dataset</span><strong id="faceAnglesProgressPercent">0%</strong></div>
-          <progress id="faceAnglesProgressBar" max="100" value="0" aria-label="Angle dataset generation progress"></progress>
+          <progress id="faceAnglesProgressBar" max="100" value="0" aria-label="Face dataset generation progress"></progress>
           <p id="faceAnglesProgressDetail" class="progress-detail">Waiting to start.</p>
         </div>
       </div>
