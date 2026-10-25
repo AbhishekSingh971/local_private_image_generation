@@ -1,9 +1,14 @@
 .venv/
 __pycache__/
 *.pyc
+.env
+.env.*
+!.env.example
 data/inputs/*
 data/outputs/*
 data/videos/*
 data/face_dataset/*
+data/face_profiles/*
+data/face_profiles.json
 models/*
 !models/.gitkeep
