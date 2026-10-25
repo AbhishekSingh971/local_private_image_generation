@@ -1179,7 +1179,12 @@
         const caption=document.createElement("p");caption.className="dataset-group-caption";
         const date=group.created_at?new Date(group.created_at).toLocaleString():"Saved";
         caption.textContent=(group.profile_name||"Face profile")+" · "+(group.photo_count||0)+" photo(s) · "+(group.generated_count||0)+"/"+(group.expected_count||5)+" generated · "+date;
-        headingCopy.append(caption);header.append(headingCopy,state);card.append(header);
+        headingCopy.append(caption);
+        if(group.prompt){
+          const promptNote=document.createElement("p");promptNote.className="dataset-group-prompt";
+          promptNote.textContent="Prompt: "+group.prompt;headingCopy.append(promptNote);
+        }
+        header.append(headingCopy,state);card.append(header);
         const photos=document.createElement("div");photos.className="dataset-group-photos";
         (group.photos||[]).forEach(photo=>{
           const figure=document.createElement("div");figure.className="dataset-group-photo";
