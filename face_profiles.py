@@ -105,11 +105,13 @@ def _public_record(record: dict) -> dict:
 
 def _restore_database_photos() -> None:
     """Recreate missing local training-cache files from PostgreSQL photo blobs."""
-    from studio_db import list_face_photo_records, list_face_profile_records
+    from studio_db import list_face_photo_names, list_face_photo_records, list_face_profile_records
 
     for profile in list_face_profile_records():
         folder = dataset_dir(profile["id"])
-        for photo in list_face_photo_records(profile["id"]):
+        existing_files = {item.name for item in folder.iterdir() if item.is_file()}
+        missing_names = list_face_photo_names(profile["id"]) - existing_files
+        for photo in list_face_photo_records(profile["id"], missing_names):
             filename = Path(photo["filename"]).name
             if not filename or filename in {".", ".."}:
                 continue
