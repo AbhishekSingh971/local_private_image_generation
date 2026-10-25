@@ -285,7 +285,6 @@ def generate():
                 "prompt": prompt, "negative_prompt": negative_prompt or None,
                 "num_inference_steps": steps, "guidance_scale": 7.0,
                 "generator": torch.Generator(device="cpu").manual_seed(int(time.time_ns() % (2**31 - 1))),
-                "height": 512, "width": 512,
             }
             if image is not None:
                 kwargs.update(image=image, strength=strength)
