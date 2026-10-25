@@ -51,7 +51,7 @@ textarea{resize:vertical;min-height:58px}
 input:focus,select:focus,textarea:focus{border-color:#9facff;box-shadow:0 0 0 3px #aab5ff17}
 input[type=range]{width:100%;accent-color:var(--accent);margin:13px 0}
 .optional{color:#8c9cb8;font-weight:600;font-size:11px}
-.field-help,.tiny{font-size:11px;line-height:1.55;color:#8f9fba;margin:7px 0 0}
+.field-help,.tiny{font-size:11px;line-height:1.55;color:#8f9fba;margin:7px 0 0}.field-help.over-limit{color:#f0a2a2}
 button,.button-link{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#13182b;padding:10px 14px;font-size:12px;font-weight:900;text-decoration:none;transition:filter .15s,transform .15s}
 button:hover,.button-link:hover{filter:brightness(1.07);transform:translateY(-1px)}
 button[type=submit]{width:100%;margin-top:17px}
