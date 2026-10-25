@@ -1328,13 +1328,18 @@ def api_train_face_profile(profile_id):
             )), 400
         opened_files = []
         try:
-            for path in dataset_images(profile_id):
+            dataset_paths = dataset_images(profile_id)
+            files = []
+            for path in dataset_paths:
                 handle = path.open("rb")
                 opened_files.append(handle)
-            files = [
-                ("photos", (path.name, handle, "image/jpeg"))
-                for path, handle in zip(dataset_images(profile_id), opened_files)
-            ]
+                files.append(("photos", (path.name, handle, "image/jpeg")))
+                caption_path = path.with_name(path.name + ".caption.txt")
+                if caption_path.is_file():
+                    caption_handle = caption_path.open("rb")
+                    opened_files.append(caption_handle)
+                    files.append(("captions", (path.name, caption_handle, "text/plain")))
+
             response = runpod_request(
                 "POST", "/api/remote/train-profile",
                 data={
