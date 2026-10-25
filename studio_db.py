@@ -103,6 +103,7 @@ class FacePhotoRow(Base):
     photo_kind: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
     validation_status: Mapped[str] = mapped_column(String(24), default="not_checked", nullable=False)
     validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    training_caption: Mapped[str] = mapped_column(Text, default="", nullable=False)
     target_yaw: Mapped[float | None] = mapped_column(Float, nullable=True)
     target_pitch: Mapped[float | None] = mapped_column(Float, nullable=True)
     actual_yaw: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -221,6 +222,8 @@ def ensure_schema() -> None:
                 connection.execute(text("ALTER TABLE face_photos ADD COLUMN validation_status VARCHAR(24) NOT NULL DEFAULT 'not_checked'"))
             if "validation_message" not in photo_columns:
                 connection.execute(text("ALTER TABLE face_photos ADD COLUMN validation_message TEXT"))
+            if "training_caption" not in photo_columns:
+                connection.execute(text("ALTER TABLE face_photos ADD COLUMN training_caption TEXT NOT NULL DEFAULT ''"))
             for column_name in ("target_yaw", "target_pitch", "actual_yaw", "actual_pitch"):
                 if column_name not in photo_columns:
                     connection.execute(text(f"ALTER TABLE face_photos ADD COLUMN {column_name} FLOAT"))
@@ -377,9 +380,9 @@ def add_face_photo(
     profile_id: str, filename: str, image_data: bytes, mime_type: str = "image/jpeg",
     group_id: str | None = None, angle_label: str | None = None,
     photo_kind: str = "manual", validation_status: str = "not_checked",
-    validation_message: str | None = None, target_yaw: float | None = None,
-    target_pitch: float | None = None, actual_yaw: float | None = None,
-    actual_pitch: float | None = None,
+    validation_message: str | None = None, training_caption: str = "",
+    target_yaw: float | None = None, target_pitch: float | None = None,
+    actual_yaw: float | None = None, actual_pitch: float | None = None,
 ) -> str:
     if photo_kind not in {"source", "angle", "expression", "body", "manual"}:
         raise ValueError("Photo kind must be source, angle, expression, body or manual.")
@@ -399,6 +402,7 @@ def add_face_photo(
             angle_label=(angle_label or "")[:80] or None, photo_kind=photo_kind,
             validation_status=validation_status,
             validation_message=(validation_message or "")[:1200] or None,
+            training_caption=(training_caption or "")[:1200],
             target_yaw=target_yaw, target_pitch=target_pitch,
             actual_yaw=actual_yaw, actual_pitch=actual_pitch,
         )
@@ -467,7 +471,7 @@ def list_face_dataset_group_photo_records(group_id: str) -> list[dict]:
                 "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
                 "group_id": row.group_id, "angle_label": row.angle_label,
                 "photo_kind": row.photo_kind, "validation_status": row.validation_status,
-                "validation_message": row.validation_message, "target_yaw": row.target_yaw,
+                "validation_message": row.validation_message, "training_caption": row.training_caption or "", "target_yaw": row.target_yaw,
                 "target_pitch": row.target_pitch, "actual_yaw": row.actual_yaw,
                 "actual_pitch": row.actual_pitch,
             }
@@ -761,6 +765,7 @@ def get_face_photo_bytes(photo_id: str) -> tuple[dict, bytes] | None:
 
 def update_face_photo(
     photo_id: str, *, angle_label: str | None = None,
+    training_caption: str | None = None,
     image_data: bytes | None = None, mime_type: str | None = None,
 ) -> dict | None:
     """Update a grouped training photo's label and/or encoded image bytes."""
@@ -778,6 +783,8 @@ def update_face_photo(
             return None
         if normalized_label is not None:
             row.angle_label = normalized_label
+        if training_caption is not None:
+            row.training_caption = str(training_caption or "").strip()[:1200]
         if image_data is not None:
             row.image_data = image_data
             row.byte_size = len(image_data)
@@ -789,6 +796,7 @@ def update_face_photo(
             "photo_kind": row.photo_kind,
             "validation_status": row.validation_status or "not_checked",
             "validation_message": row.validation_message,
+            "training_caption": row.training_caption or "",
             "target_yaw": row.target_yaw, "target_pitch": row.target_pitch,
             "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch,
             "mime_type": row.mime_type, "byte_size": row.byte_size,
