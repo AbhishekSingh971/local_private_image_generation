@@ -5,8 +5,11 @@ A local-first Windows/Flask application for generating photos, training separate
 ## Features
 
 - Local text-to-image and image-to-image generation with Stable Diffusion 1.5.
-- Persistent named face profiles in `data/face_profiles.json`.
-- Per-profile photo datasets under `data/face_profiles/<profile-id>/dataset/`; adding a second person's photos does not mix them with the first person's dataset.
+- Separate sidebar pages for overview, image generation, video generation, face model training, generated images and generated videos.
+- PostgreSQL persistence for face profiles, face-training photos, trained LoRA ZIP backups and generated media bytes plus prompts, backend, timestamps and titles.
+- Local working copies of per-profile photo datasets under `data/face_profiles/<profile-id>/dataset/`; adding a second person's photos does not mix them with the first person's dataset.
+- Image/video library CRUD: preview, search, edit title and prompts, download original media bytes, and delete from the database and local output copy.
+- Add model-training photos either by uploading local files or by selecting saved generated images from the image library.
 - Reusable LoRA adapters stored under `models/face_loras/<profile-id>/`.
 - Face selector for photo and video generation.
 - A GPU acceleration toggle that is OFF by default: OFF forces local CPU; ON checks actual local CUDA and RunPod GPU availability.
@@ -16,25 +19,37 @@ A local-first Windows/Flask application for generating photos, training separate
 
 Use your own face or images of a person who has given permission. A LoRA adapter is not a guarantee of perfect identity consistency, and identity may drift between video frames.
 
+## PostgreSQL configuration
+
+Create a PostgreSQL database before starting the app. Copy .env.example to .env if you do not already have a private .env, then set DATABASE_URL to the connection URI for your database. Supported examples are postgresql://USER:PASSWORD@HOST:5432/DATABASE and a provider URL that includes its required SSL options. The app normalizes the standard postgresql:// format to the psycopg 3 driver. If the password contains reserved URL characters, URL-encode them.
+
+Keep the real connection URL only in your local .env; never commit it or paste its credentials into an issue. The application creates the required tables when it connects. When DATABASE_URL is configured, it imports existing profiles and face photos from the previous JSON/filesystem layout into PostgreSQL the first time the profile store is read. The original files are left in place as a working cache.
+
+The database stores generated image/video file bytes in PostgreSQL binary columns, as well as media metadata. Profile photo bytes are stored in PostgreSQL and mirrored as working files for the training script. Trained LoRA model folders remain on the compute host so Diffusers can load them directly, and ZIP backups are saved in PostgreSQL after successful training when DATABASE_URL is configured. Binary storage can increase database size quickly, so monitor database storage and backups.
+
+If DATABASE_URL is empty, the app shows a storage warning and uses a local SQLite development database for media instead; this is not the intended PostgreSQL setup for persistent use.
+
 ## Local Windows setup
 
-Requirements: Windows 10/11 64-bit, Python 3.11 x64, and several GB of free disk. CPU inference can be very slow; 16 GB RAM is preferable to 8 GB for basic local generation.
+Requirements: Windows 10/11 64-bit, Python 3.11 x64, PostgreSQL reachable from the computer, and several GB of free disk. CPU inference can be very slow; 16 GB RAM is preferable to 8 GB for basic local generation.
 
 1. Review the Stable Diffusion 1.5 model card and license: https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5
-2. Run `install_windows.bat`.
+2. Set DATABASE_URL in .env before the first run. If you previously used a JSON profile registry, the app migrates it and its stored face photos to PostgreSQL.
+3. Run install_windows.bat.
 3. Run `download_model.bat` while online.
 4. Run `run_local.bat`.
 5. Open http://127.0.0.1:5000.
 
 The Windows installer installs CPU-only PyTorch. This is for local development and slow image generation; it does not enable CUDA training or local video generation. The local web app binds to 127.0.0.1 only.
 
-## Manage multiple faces
+## Use the multipage workspace
 
-1. Create a named profile (for example, “Studio Model A”) and optionally upload its photos.
-2. Add further photos only to that selected profile.
-3. Aim for 15–30 clear, varied photos of the same consenting person. At least 5 are required to start training.
-4. Select the face profile to train. Each training job reads only that profile's directory and writes an adapter to `models/face_loras/<profile-id>/`.
-5. Select that same face in the photo or video panel. Include its displayed prompt token in the prompt, such as `photo of face_a1b2c3d4 person, natural studio light`.
+- Image generation: open Generate image from the sidebar, select a trained face, optionally upload a reference image, enter prompts and save a title. Successful output is stored in PostgreSQL and appears in Generated images.
+- Video generation: open Generate video, select the face/profile trained on the selected backend, choose frame count and steps, and generate the clip. Successful output is stored in PostgreSQL and appears in Generated videos.
+- Face models: create isolated identity profiles, add photos from your computer, or use the Generated images picker to add previously saved outputs as training photos. At least 5 photos are required to start training; 15–30 varied photos are a better starting point.
+- Libraries: use the separate Generated images and Generated videos pages to search, preview, edit the title/prompt/negative prompt, download the original media bytes, or delete an item. Deletion removes the database record and the local output copy.
+- Each training job reads only its selected profile's local working dataset and writes an adapter to models/face_loras/<profile-id>/. When PostgreSQL is configured, successful local training also writes a ZIP backup of the adapter to the database. A completed RunPod training job is similarly backed up to the database when the local app polls its final status.
+- Select the same face in the image or video panel. Include the displayed prompt token in your prompt, such as photo of face_a1b2c3d4 person, natural studio light.
 
 Local LoRA training requires a CUDA-enabled NVIDIA GPU. Your local Windows venv will normally report `torch.cuda.is_available() == False`; on that machine, turn on RunPod after you configure a running GPU worker.
 
@@ -102,6 +117,8 @@ The worker stores the uploaded face datasets and generated LoRAs on the Pod's fi
 ## Security and privacy
 
 - The browser toggle defaults OFF every time the page loads. OFF means local CPU.
+- The sidebar separates Overview, Image generation, Video generation, Face models, Generated images and Generated videos.
+- PostgreSQL stores generated media bytes, training photos, face profile metadata and ZIP backups of trained LoRA bundles. Working LoRA folders stay on compute hosts for direct model loading.
 - When ON, actual availability is detected server-side. The automatic choice prefers a usable local CUDA GPU, then an authenticated RunPod GPU, then CPU fallback; an explicitly chosen unavailable GPU is rejected rather than silently used.
 - When local and cloud GPUs are both available, the UI lets you switch between them. A local GPU typically avoids cloud usage fees; a cloud RTX 3090 may be faster than a lower-powered local GPU.
 - The toggle never provisions a GPU or changes RunPod billing state; it only chooses where submitted requests run.
