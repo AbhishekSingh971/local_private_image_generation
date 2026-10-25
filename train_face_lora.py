@@ -20,7 +20,8 @@ from transformers import CLIPTextModel, CLIPTokenizer
 
 ROOT = Path(__file__).resolve().parent
 BASE_MODEL = ROOT / "models" / "stable-diffusion-v1-5"
-DATASET_DIR = ROOT / "data" / "face_dataset"
+LEGACY_DATASET_DIR = ROOT / "data" / "face_dataset"
+PROFILE_DATASET_ROOT = ROOT / "data" / "face_profiles"
 OUTPUT_ROOT = ROOT / "models" / "face_loras"
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -60,7 +61,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Train a reusable face LoRA from data/face_dataset using the local SD 1.5 model."
     )
-    parser.add_argument("--output-name", default="my_face")
+    parser.add_argument("--profile-id", default=None, help="Persistent face profile ID; uses that profile's dataset.")
+    parser.add_argument("--output-name", default=None)
     parser.add_argument("--token", default="sks")
     parser.add_argument("--class-name", default="person")
     parser.add_argument("--steps", type=int, default=800)
@@ -72,8 +74,14 @@ def parse_args():
     parser.add_argument("--mixed-precision", choices=("no", "fp16", "bf16"), default="fp16")
     parser.add_argument("--seed", type=int, default=1337)
     args = parser.parse_args()
+    if args.profile_id is not None and not re.fullmatch(r"[a-f0-9]{32}", args.profile_id):
+        parser.error("--profile-id must be a 32-character face profile ID.")
+    if args.output_name is None:
+        args.output_name = args.profile_id or "my_face"
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.output_name):
         parser.error("--output-name may contain only letters, numbers, underscores and hyphens.")
+    if args.profile_id and args.output_name != args.profile_id:
+        parser.error("For a named face profile, --output-name must match --profile-id.")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", args.token):
         parser.error("--token may contain only letters, numbers, underscores and hyphens.")
     if args.steps < 1 or args.batch_size < 1 or args.gradient_accumulation_steps < 1:
@@ -92,13 +100,17 @@ def main():
         )
     if not (BASE_MODEL / "model_index.json").is_file():
         raise SystemExit("Local SD 1.5 model missing. Run download_model.bat first.")
+    dataset_dir = (
+        PROFILE_DATASET_ROOT / args.profile_id / "dataset"
+        if args.profile_id else LEGACY_DATASET_DIR
+    )
     files = sorted(
-        p for p in DATASET_DIR.glob("*")
+        p for p in dataset_dir.glob("*")
         if p.is_file() and p.suffix.lower() in EXTENSIONS
-    ) if DATASET_DIR.is_dir() else []
+    ) if dataset_dir.is_dir() else []
     if len(files) < 5:
         raise SystemExit(
-            f"Found {len(files)} face photos. Add at least 5 good photos; 15–30 varied photos "
+            f"Found {len(files)} face photos in {dataset_dir}. Add at least 5 good photos; 15–30 varied photos "
             "usually provide a better starting point."
         )
 
