@@ -1265,7 +1265,10 @@ def api_face_train_status(profile_id):
     return jsonify(status=state, error=payload.get("error"), job=payload, profile=updated_profile)
 
 
-def _load_cpu_or_gpu_pipeline(mode, profile_id, compute_backend="cpu"):
+def _load_cpu_or_gpu_pipeline(
+    mode, profile_id, compute_backend="cpu", *, use_global_body_model=False
+):
+    """Load one face identity and optionally the reusable shared-body LoRA."""
     global pipe, pipeline_mode, pipeline_device, active_lora, model_error
     global video_pipe, active_video_lora
     from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
@@ -1287,8 +1290,6 @@ def _load_cpu_or_gpu_pipeline(mode, profile_id, compute_backend="cpu"):
             gc.collect()
             if use_cuda:
                 torch.cuda.empty_cache()
-            # Explicit model configuration takes priority over the bundled SD 1.5 folder.
-            # This lets the user select a compatible, properly licensed photorealistic checkpoint.
             if MODEL_PATH_OVERRIDE:
                 override_path = Path(MODEL_PATH_OVERRIDE).expanduser()
                 if not override_path.is_dir() or not (override_path / "model_index.json").is_file():
@@ -1324,16 +1325,31 @@ def _load_cpu_or_gpu_pipeline(mode, profile_id, compute_backend="cpu"):
             except Exception as exc:
                 model_error = str(exc)
                 raise
-        if active_lora != profile_id:
+
+        requested_loras = (profile_id or None, bool(use_global_body_model))
+        if active_lora != requested_loras:
             if active_lora is not None:
                 pipe.unload_lora_weights()
-                active_lora = None
+            adapter_names = []
+            adapter_weights = []
             if profile_id:
-                path = model_path(profile_id)
-                if not profile_ready_for_backend(profile_id, "local") or not path.is_dir():
+                identity_path = model_path(profile_id)
+                if not profile_ready_for_backend(profile_id, "local") or not identity_path.is_dir():
                     raise ValueError("This face profile has no locally trained LoRA. Train it locally or turn on RunPod.")
-                pipe.load_lora_weights(str(path))
-                active_lora = profile_id
+                pipe.load_lora_weights(str(identity_path), adapter_name="face_identity")
+                adapter_names.append("face_identity")
+                adapter_weights.append(1.0)
+            if use_global_body_model:
+                body_profile = ensure_global_body_profile()
+                body_path = model_path(GLOBAL_BODY_PROFILE_ID)
+                if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, "local") or not body_path.is_dir():
+                    raise ValueError("The shared body model has not been trained on this device. Train it from Training datasets first.")
+                pipe.load_lora_weights(str(body_path), adapter_name="global_body")
+                adapter_names.append("global_body")
+                adapter_weights.append(0.75)
+            if adapter_names:
+                pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
+            active_lora = requested_loras
         return pipe
 
 
