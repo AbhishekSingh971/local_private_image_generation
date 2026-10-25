@@ -183,3 +183,5 @@ button.danger-button{background:#3c1f2a;border-color:#643345;color:#ffd9df}
 .dataset-group-photo .dataset-photo-actions{gap:4px}
 .dataset-group-photo .dataset-photo-actions button{flex:1 1 68px}
 @media(max-width:640px){.photo-edit-comparison{grid-template-columns:1fr}.photo-edit-comparison img{max-height:400px}.edit-photo-dialog{padding:14px}.edit-photo-dialog .dialog-actions{flex-wrap:wrap}}
+
+.dataset-group-prompt{font-size:11px;line-height:1.5;color:#b7c4dc;margin:7px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
