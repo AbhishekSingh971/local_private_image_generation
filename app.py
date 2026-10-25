@@ -121,6 +121,7 @@ FACE_DATASET_JOB_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fa
 FACE_DATASET_JOB_LOCK = threading.RLock()
 FACE_DATASET_JOB_EVENTS: dict[str, threading.Event] = {}
 FACE_DATASET_JOB_FUTURES = {}
+FACE_DATASET_STARTING = False
 
 
 def _set_generation_progress(task_id, *, asset_type, backend, status, progress, current_step=0, total_steps=0, stage="", message=""):
@@ -862,6 +863,11 @@ def _create_face_dataset_job_payload(job: dict) -> dict:
 @app.post("/api/face-profiles/<profile_id>/dataset-jobs")
 def api_start_face_dataset_job(profile_id):
     """Create a durable dataset group and start its target sequence on a server worker thread."""
+    global FACE_DATASET_STARTING
+    with FACE_DATASET_JOB_LOCK:
+        if FACE_DATASET_STARTING or FACE_DATASET_JOB_EVENTS:
+            return jsonify(error="A face-angle or expression batch is already running. Cancel or finish it first."), 409
+        FACE_DATASET_STARTING = True
     group_id = None
     job_id = None
     try:
@@ -912,9 +918,7 @@ def api_start_face_dataset_job(profile_id):
         )
         cancel_event = threading.Event()
         with FACE_DATASET_JOB_LOCK:
-            # The single generation executor serializes access to the active image pipeline.
-            if any(not event.is_set() for event in FACE_DATASET_JOB_EVENTS.values()):
-                raise ValueError("A face-angle or expression batch is already running. Cancel or finish it first.")
+            # Register the job before returning so polling and cancellation work immediately.
             FACE_DATASET_JOB_EVENTS[job_id] = cancel_event
             future = FACE_DATASET_JOB_POOL.submit(_run_face_dataset_generation_job, job_id)
             FACE_DATASET_JOB_FUTURES[job_id] = future
@@ -934,6 +938,9 @@ def api_start_face_dataset_job(profile_id):
             except Exception:
                 pass
         return jsonify(error="Could not start the background generation job. Check database connectivity and the selected compute backend."), 503
+    finally:
+        with FACE_DATASET_JOB_LOCK:
+            FACE_DATASET_STARTING = False
 
 
 def _render_face_dataset_target(job: dict, target: dict, source_image, source_image_bytes: bytes, task_id: str, target_index: int):
@@ -1060,7 +1067,7 @@ def _run_face_dataset_generation_job(job_id: str) -> None:
         job = get_face_dataset_job(job_id)
         if not job:
             return
-        update_face_dataset_job(job_id, status="running", error=None if hasattr(job, "error") else "")
+        update_face_dataset_job(job_id, status="running", error="")
         source = get_face_photo_bytes(job["source_photo_id"])
         if not source:
             raise RuntimeError("The original source photo is missing from the database.")
