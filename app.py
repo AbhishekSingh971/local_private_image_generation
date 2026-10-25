@@ -1020,7 +1020,9 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
 
     pose_control_image = None
     if dataset_type == "face_angles":
-        pose_control_image = build_pose_control_image(yaw, pitch, width, height)
+        pose_control_image = build_pose_control_image(
+            yaw, pitch, width, height, source_image=source_image
+        )
 
     if backend == "runpod":
         while not generation_lock.acquire(timeout=0.5):
@@ -2144,8 +2146,8 @@ def _load_cpu_or_gpu_pipeline(
             if mode == "pose_img2img":
                 from diffusers import ControlNetModel, StableDiffusionControlNetImg2ImgPipeline
                 controlnet_id = os.environ.get(
-                    "FACE_POSE_CONTROLNET_ID", "lllyasviel/control_v11p_sd15_openpose"
-                ).strip() or "lllyasviel/control_v11p_sd15_openpose"
+                    "FACE_POSE_CONTROLNET_ID", "CrucibleAI/ControlNetMediaPipeFace"
+                ).strip() or "CrucibleAI/ControlNetMediaPipeFace"
                 controlnet = ControlNetModel.from_pretrained(controlnet_id, torch_dtype=dtype)
                 pipeline_class = StableDiffusionControlNetImg2ImgPipeline
             else:

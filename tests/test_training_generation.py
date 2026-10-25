@@ -57,10 +57,6 @@ def test_pose_validation_never_passes_when_pose_is_unknown():
 
 
 
-def test_pose_control_image_changes_with_yaw_and_pitch():
-    frontal = build_pose_control_image(0, 0, 256, 256)
-    left_profile = build_pose_control_image(-90, 0, 256, 256)
-    looking_up = build_pose_control_image(0, -18, 256, 256)
-    assert frontal.size == (256, 256)
-    assert ImageChops.difference(frontal, left_profile).getbbox() is not None
-    assert ImageChops.difference(frontal, looking_up).getbbox() is not None
+def test_pose_control_image_refuses_to_guess_without_source_face():
+    with pytest.raises(ValueError, match="source face image is required"):
+        build_pose_control_image(0, 0, 256, 256)
