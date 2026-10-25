@@ -378,7 +378,7 @@
       const item=document.createElement("label");
       item.className="face-target-option";
       const checkbox=document.createElement("input");
-      checkbox.type="checkbox";checkbox.value=label;checkbox.checked=selected.size?selected.has(label):true;
+      checkbox.type="checkbox";checkbox.value=label;checkbox.checked=true;
       checkbox.setAttribute("aria-label","Generate "+label);
       const text=document.createElement("span");
       text.textContent=label;
