@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -182,6 +183,31 @@ def remote_job_status(job_id):
     if not task:
         return jsonify(error="Training job not found. The GPU worker may have restarted; check the profile model files."), 404
     return jsonify(task)
+
+
+@worker.get("/api/remote/models/<profile_id>")
+def remote_download_model(profile_id):
+    """Return the selected profile's LoRA weights as an authenticated ZIP bundle."""
+    profile_id = _valid_profile(profile_id)
+    if not profile_id:
+        return jsonify(error="Face profile not found."), 404
+    folder = model_path(profile_id)
+    if not folder.is_dir():
+        return jsonify(error="Trained model files were not found on this worker."), 404
+    files = [item for item in folder.rglob("*") if item.is_file()]
+    if not files:
+        return jsonify(error="Trained model files were not found on this worker."), 404
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for item in files:
+            archive.write(item, arcname=item.relative_to(folder).as_posix())
+    output.seek(0)
+    response = send_file(
+        output, mimetype="application/zip", as_attachment=True,
+        download_name=f"{profile_id}-lora.zip",
+    )
+    response.headers["X-Model-File-Count"] = str(len(files))
+    return response
 
 
 @worker.post("/api/remote/generate")
