@@ -389,21 +389,28 @@
   async function attachPendingAngleToGroup(session,index) {
     if(!session.pendingAssetId)throw new Error("There is no saved generated image to attach.");
     const angle=faceAnglesLabels[index];
-    await readJson(await fetch("/api/face-profiles/"+session.profileId+"/photos/from-assets",{
-      method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({
-        asset_ids:[session.pendingAssetId],
-        group_id:session.groupId,
-        angle_labels:[angle.label]
-      })
-    }));
-    session.generatedCount+=1;
+    if(!session.pendingAssetAttached){
+      await readJson(await fetch("/api/face-profiles/"+session.profileId+"/photos/from-assets",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          asset_ids:[session.pendingAssetId],
+          group_id:session.groupId,
+          angle_labels:[angle.label]
+        })
+      }));
+      session.pendingAssetAttached=true;
+    }
+    // Do not clear the pending asset until both the photo and group counter are saved.
+    // If the status update fails, retry the status update instead of generating another image.
+    const nextCount=session.generatedCount+1;
+    await updateFaceDatasetGroup(session.groupId,{
+      status:"generating",generated_count:nextCount,error:""
+    });
+    session.generatedCount=nextCount;
     session.nextIndex=index+1;
     session.pendingAssetId=null;
     session.pendingAssetIndex=null;
-    await updateFaceDatasetGroup(session.groupId,{
-      status:"generating",generated_count:session.generatedCount,error:""
-    });
+    session.pendingAssetAttached=false;
     setAngleProgressPercent(
       session.nextIndex*20,"Saved "+angle.label,
       "This view is saved in both Generated images and this group's training photos."
@@ -453,6 +460,7 @@
     // Keep its ID until it is linked into the profile group; retry then reuses it.
     session.pendingAssetId=generated.asset_id;
     session.pendingAssetIndex=index;
+    session.pendingAssetAttached=false;
     await attachPendingAngleToGroup(session,index);
   }
   async function handleFaceAngleFailure(session,index,error) {
@@ -467,7 +475,9 @@
     }).catch(()=>{});
     if(session.retryUsed){
       const savedNote=session.pendingAssetId
-        ? " The rendered image is saved in Generated images but could not be attached to the training group."
+        ? (session.pendingAssetAttached
+          ? " The rendered image and training photo are saved; the group status could not be updated after retry."
+          : " The rendered image is saved in Generated images but could not be attached to the training group.")
         : "";
       const finalMessage="The "+angle.label+" could not be processed after one retry. This angle will not be retried again. The original and "+session.generatedCount+" successful view(s) are preserved."+savedNote;
       if($("#faceAnglesStatus"))$("#faceAnglesStatus").textContent=finalMessage;
@@ -549,7 +559,7 @@
         profileId,sourceFile:source,title,groupId:created.group.id,
         selectedBackend:useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu",
         nextIndex:0,generatedCount:0,failedIndex:null,retryUsed:false,
-        pendingAssetId:null,pendingAssetIndex:null,lastError:""
+        pendingAssetId:null,pendingAssetIndex:null,pendingAssetAttached:false,lastError:""
       };
       pendingAngleSession=session;
       await processFaceAngleSequence(session);
