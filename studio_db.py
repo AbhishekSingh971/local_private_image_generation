@@ -791,6 +791,10 @@ def update_face_photo(
             row.image_data = image_data
             row.byte_size = len(image_data)
             row.mime_type = (mime_type or "image/jpeg")[:100]
+            row.validation_status = "needs_review"
+            row.validation_message = "The image was replaced; review its identity, pose and expression before training."
+            row.actual_yaw = None
+            row.actual_pitch = None
         session.commit()
         return {
             "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
