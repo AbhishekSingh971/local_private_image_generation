@@ -138,7 +138,8 @@ def database_status() -> dict:
             "engine": "postgresql" if url.startswith("postgresql") else "sqlite",
             "configured_postgresql": database_url_configured(),
             "message": "PostgreSQL connected." if url.startswith("postgresql") else
-                "DATABASE_URL is not set; using the local SQLite development database.",
+                ("Connected to an explicitly configured SQLite database." if database_url_configured()
+                 else "DATABASE_URL is not set; using the local SQLite development database."),
         }
     except Exception:
         # Do not return SQLAlchemy exceptions here: they may contain connection details.
