@@ -374,7 +374,7 @@
     const stageNames = {
       starting:"Getting ready", connecting:"Connecting to GPU", loading_model:"Loading model",
       denoising:"Generating "+(type==="video"?"video":"image"), finalizing:"Finalizing result",
-      encoding:"Encoding video", saving:"Saving to library", completed:"Complete",
+      encoding:"Encoding video", transferring:"Receiving result", saving:"Saving to library", completed:"Complete",
       failed:"Generation failed", busy:"GPU busy"
     };
     if(stageLabel)stageLabel.textContent=stageNames[data.stage]||"Generation in progress";
