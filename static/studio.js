@@ -554,24 +554,46 @@
     if(source.size>8*1024*1024){if(status)status.textContent="The source image must be 8 MB or smaller.";return;}
     if(activeFaceDatasetJobs.some(job=>["queued","running","cancelling"].includes(job.status))){if(status)status.textContent="A batch is already running. Cancel it or wait for it to finish.";return;}
     startingFaceDatasetJob=true;syncFaceDatasetStartButton();
-    if(status)status.textContent="Saving the source photo and starting the server-managed background job…";
-    setAngleProgressPercent(0,"Queueing background job","The server will continue generating if you navigate to another page.");
+    const localProgress=$("#faceAnglesProgress");
+    const localProgressBar=$("#faceAnglesProgressBar");
+    const localProgressPercent=$("#faceAnglesProgressPercent");
+    const localProgressStage=$("#faceAnglesProgressStage");
+    const localProgressDetail=$("#faceAnglesProgressDetail");
+    if(localProgress)localProgress.hidden=false;
+    if(localProgressBar)localProgressBar.value=0;
+    if(localProgressPercent)localProgressPercent.textContent="0%";
+    if(localProgressStage)localProgressStage.textContent="Uploading source photo";
+    if(localProgressDetail)localProgressDetail.textContent="Saving the source photo and registering a server-managed job. Image generation has not been confirmed yet.";
+    if(status)status.textContent="Uploading the source photo and creating the background job…";
     try{
       const formData=new FormData();
       formData.set("title",title);
       formData.set("dataset_type",activeVariationMode);
       formData.append("source_image",source,source.name);
       addComputeData(formData);
-      const created=await readJson(await fetch("/api/face-profiles/"+encodeURIComponent(profileId)+"/dataset-jobs",{method:"POST",body:formData}));
+      const response=await fetch("/api/face-profiles/"+encodeURIComponent(profileId)+"/dataset-jobs",{method:"POST",body:formData});
+      const created=await readJson(response);
+      if(!created.job||!created.job.id)throw new Error("The server response did not include a background job ID.");
       trackedFaceDatasetJobId=created.job.id;
       sessionStorage.setItem("privateFaceStudioActiveDatasetJob",created.job.id);
+      activeFaceDatasetJobs=[created.job];
+      lastFaceDatasetTerminalJob=null;
       if(titleInput)titleInput.value=title;
-      if(status)status.textContent="Background job started. You can change pages; completed images are saved one at a time.";
+      renderBackgroundFaceDatasetJob(created.job);
+      if(status)status.textContent="Background job queued. You can change pages; completed images will be saved one at a time.";
+      if(localProgressStage)localProgressStage.textContent="Background job queued";
+      if(localProgressDetail)localProgressDetail.textContent="Job ID: "+created.job.id+". Waiting for the worker to process the first target.";
       await refreshBackgroundFaceDatasetJobs();
     }catch(error){
-      if(status)status.textContent=error.message;
+      if(status)status.textContent="Could not start background generation: "+error.message;
+      if(localProgressStage)localProgressStage.textContent="Job start failed";
+      if(localProgressDetail)localProgressDetail.textContent=error.message+" Check the Flask terminal for the server-side traceback.";
+      if(localProgressPercent)localProgressPercent.textContent="—";
       const banner=$("#backgroundTrainingJobBanner");
       if(banner)banner.hidden=true;
+      sessionStorage.removeItem("privateFaceStudioActiveDatasetJob");
+      trackedFaceDatasetJobId="";
+      activeFaceDatasetJobs=[];
     }finally{
       startingFaceDatasetJob=false;
       syncFaceDatasetStartButton();
