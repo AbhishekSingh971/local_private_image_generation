@@ -266,6 +266,7 @@ def remote_generate():
         width, height = resolve_image_dimensions(aspect_ratio)
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         seed = resolve_generation_seed(request.form.get("seed"))
+        use_global_body_model = str(request.form.get("use_global_body_model") or "").strip().lower() in {"1", "true", "yes", "on"}
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
@@ -282,6 +283,11 @@ def remote_generate():
         profile = get_profile(profile_id)
         if not profile or not profile.get("local_model_ready"):
             return jsonify(error="The selected face LoRA is not trained on this GPU worker."), 400
+    if use_global_body_model:
+        body_profile = local_engine.ensure_global_body_profile()
+        if not local_engine.profile_ready_for_backend(local_engine.GLOBAL_BODY_PROFILE_ID, "local"):
+            return jsonify(error="The shared body-type LoRA is not trained on this RunPod worker. Train it using the global body model first."), 400
+        prompt = local_engine.GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
     image = None
     uploaded = request.files.get("image")
     if uploaded and uploaded.filename:
@@ -298,7 +304,9 @@ def remote_generate():
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
         mode = "img2img" if image is not None else "txt2img"
-        pipeline = local_engine._load_cpu_or_gpu_pipeline(mode, profile_id, "local_gpu")
+        pipeline = local_engine._load_cpu_or_gpu_pipeline(
+            mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model
+        )
         _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on RunPod…")
         def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
             scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
