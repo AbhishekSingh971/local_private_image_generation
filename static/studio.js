@@ -330,10 +330,10 @@
   $("#generatedPhotoNext")?.addEventListener("click",()=>{if(generatedPhotoOffset+generatedPhotoLimit<generatedPhotoTotal){generatedPhotoOffset+=generatedPhotoLimit;loadGeneratedPhotoPicker();}});
   let activeVariationMode="face_angles";
   function activateTrainingSourceTab(tab) {
-    $(".source-tab").forEach(item=>item.classList.toggle("active",item===tab));
+    $$(".source-tab").forEach(item=>item.classList.toggle("active",item===tab));
     const key=tab.dataset.sourceTab;
     if(key==="angles"||key==="expressions")activeVariationMode=key==="expressions"?"expressions":"face_angles";
-    $("[data-source-panel]").forEach(panel=>{
+    $$("[data-source-panel]").forEach(panel=>{
       panel.hidden=panel.dataset.sourcePanel==="variations"
         ? !(key==="angles"||key==="expressions")
         : panel.dataset.sourcePanel!==key;
@@ -349,7 +349,7 @@
     if(title&&!(title.value||"").trim())title.placeholder=activeVariationMode==="expressions"
       ?"e.g. Model A · expression set":"e.g. Model A · first angle set";
   }
-  $(".source-tab").forEach(tab=>tab.addEventListener("click",()=>activateTrainingSourceTab(tab)));
+  $$(".source-tab").forEach(tab=>tab.addEventListener("click",()=>activateTrainingSourceTab(tab)));
   const initialTrainingTab=$('.source-tab[data-source-tab="angles"]');
   if(initialTrainingTab)activateTrainingSourceTab(initialTrainingTab);
   $("#addGeneratedPhotosButton")?.addEventListener("click",async()=>{
@@ -759,7 +759,7 @@
       if(status)status.textContent="Created shared body-type dataset “"+title+"” with five prompt-generated samples. Train the shared body model to reuse it with any face.";
       if(titleInput)titleInput.value=title;
       activeDatasetType="body_type";
-      $(".dataset-category-tab").forEach(tab=>tab.classList.toggle("active",tab.dataset.datasetFilter===activeDatasetType));
+      $$(".dataset-category-tab").forEach(tab=>tab.classList.toggle("active",tab.dataset.datasetFilter===activeDatasetType));
       await loadDatasetGroups();
       await loadGlobalBodyStatus();
     } catch(error) {
@@ -1083,9 +1083,9 @@
   }
   let activeDatasetType="face_angles";
   const datasetTypeLabels={face_angles:"Face angles",expressions:"Expressions",body_type:"Body type · global"};
-  $(".dataset-category-tab").forEach(tab=>tab.addEventListener("click",()=>{
+  $$(".dataset-category-tab").forEach(tab=>tab.addEventListener("click",()=>{
     activeDatasetType=tab.dataset.datasetFilter||"face_angles";
-    $(".dataset-category-tab").forEach(item=>item.classList.toggle("active",item===tab));
+    $$(".dataset-category-tab").forEach(item=>item.classList.toggle("active",item===tab));
     loadDatasetGroups();
   }));
   let editingTrainingPhoto=null;
@@ -1152,7 +1152,7 @@
       const data=await readJson(await fetch("/api/face-dataset-groups",{cache:"no-store"}));
       const allGroups=data.groups||[];
       const groups=allGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
-      $(".dataset-category-tab").forEach(tab=>{
+      $$(".dataset-category-tab").forEach(tab=>{
         const amount=allGroups.filter(group=>(group.dataset_type||"face_angles")===tab.dataset.datasetFilter).length;
         tab.textContent=(datasetTypeLabels[tab.dataset.datasetFilter]||tab.dataset.datasetFilter)+" ("+amount+")";
       });
