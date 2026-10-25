@@ -29,6 +29,8 @@
         <label for="angleSourceImage">One source face photo</label><input id="angleSourceImage" type="file" accept="image/png,image/jpeg,image/webp">
         <p class="field-help">Use a clear image of an adult who has consented. Angle changes are approximate with SD 1.5 and may alter identity; review the results before training.</p>
         <button type="button" id="generateFaceAnglesButton">Generate five angles and add to dataset</button>
+        <button type="button" id="retryFaceAngleButton" class="secondary-button" hidden>Retry failed angle once</button>
+        <p class="field-help">Each successful angle is saved to the image library and its dataset group immediately. If an angle fails, retry that same angle once without losing the completed views.</p>
         <div id="faceAnglesStatus" class="status" role="status" aria-live="polite"></div>
         <div id="faceAnglesProgress" class="generation-progress" hidden aria-live="polite">
           <div class="progress-heading"><span id="faceAnglesProgressStage">Preparing dataset</span><strong id="faceAnglesProgressPercent">0%</strong></div>
