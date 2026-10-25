@@ -202,15 +202,31 @@
   }
 
   const createProfileForm = $("#createProfileForm");
+  const profileDescriptionInput = $("#profileDescription");
+  const profileDescriptionCount = $("#profileDescriptionCount");
+  function updateProfileDescriptionCount() {
+    if (!profileDescriptionCount) return;
+    const words = (profileDescriptionInput?.value || "").trim().split(/\s+/).filter(Boolean).length;
+    profileDescriptionCount.textContent = words + "/200 words";
+    profileDescriptionCount.classList.toggle("over-limit", words > 200);
+  }
+  profileDescriptionInput?.addEventListener("input", updateProfileDescriptionCount);
+  updateProfileDescriptionCount();
   createProfileForm?.addEventListener("submit", async event => {
     event.preventDefault();
     const button = $("#createProfileButton");
     const status = $("#createProfileStatus");
+    const descriptionWords = (profileDescriptionInput?.value || "").trim().split(/\s+/).filter(Boolean).length;
+    if (descriptionWords > 200) {
+      if (status) status.textContent = "Keep the face description to 200 words or fewer.";
+      return;
+    }
     if (button) {button.disabled=true;button.textContent="Creating profile…";}
     if (status) status.textContent="Validating photos and saving face profile…";
     try {
       const data = await readJson(await fetch("/api/face-profiles", {method:"POST", body:new FormData(createProfileForm)}));
       createProfileForm.reset();
+      updateProfileDescriptionCount();
       await refreshProfiles();
       ["trainProfile","faceProfile","videoProfile","addPhotosProfile"].forEach(id => {const node=$("#"+id);if(node)node.value=data.profile.id;});
       if (status) status.textContent="Created “"+data.profile.name+"” with "+data.profile.image_count+" photo(s). Prompt token: "+data.profile.token+".";
@@ -412,6 +428,7 @@
     }
   }
 
+  const generationForm = $("#generationForm");
   generationForm?.addEventListener("submit",async event=>{
     event.preventDefault();
     const button=$("#generateButton");const status=$("#generationStatus");
