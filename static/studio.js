@@ -411,7 +411,9 @@
     const sub=job.generation_progress;
     const subProgress=sub&&["running","cancelling"].includes(sub.status)
       ?Math.max(0,Math.min(99,Number(sub.progress||0))):0;
-    const percent=terminal?100:Math.max(0,Math.min(100,Math.round(100*(done+subProgress/100)/Math.max(1,expected))));
+    const percent=terminal
+      ?(job.status==="completed"?100:Math.max(0,Math.min(100,Math.round(100*done/Math.max(1,expected)))))
+      :Math.max(0,Math.min(100,Math.round(100*(done+subProgress/100)/Math.max(1,expected))));
     const title=$("#backgroundTrainingJobTitle");
     const state=$("#backgroundTrainingJobState");
     const status=$("#backgroundTrainingJobStatus");
@@ -502,7 +504,7 @@
             const finished=response.job;
             if(!["queued","running","cancelling"].includes(finished.status)){
               lastFaceDatasetTerminalJob=finished;
-              terminalFaceDatasetVisibleUntil=Date.now()+12000;
+              terminalFaceDatasetVisibleUntil=Date.now()+((finished.failed_targets||[]).length?24*60*60*1000:12000);
               renderBackgroundFaceDatasetJob(finished,{terminal:true});
               sessionStorage.removeItem("privateFaceStudioActiveDatasetJob");
               if($("#faceAnglesStatus"))$("#faceAnglesStatus").textContent=(finished.error||(
@@ -522,7 +524,9 @@
             sessionStorage.removeItem("privateFaceStudioActiveDatasetJob");
             trackedFaceDatasetJobId="";
           }
-        }else if(lastFaceDatasetTerminalJob&&Date.now()<terminalFaceDatasetVisibleUntil){
+        }else if(lastFaceDatasetTerminalJob&&(
+          Date.now()<terminalFaceDatasetVisibleUntil||(lastFaceDatasetTerminalJob.failed_targets||[]).length
+        )){
           renderBackgroundFaceDatasetJob(lastFaceDatasetTerminalJob,{terminal:true});
         }else{
           const banner=$("#backgroundTrainingJobBanner");
