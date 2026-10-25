@@ -97,6 +97,7 @@ class FacePhotoRow(Base):
     image_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     group_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     angle_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    photo_kind: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -172,6 +173,8 @@ def ensure_schema() -> None:
                 connection.execute(text("ALTER TABLE face_photos ADD COLUMN group_id VARCHAR(32)"))
             if "angle_label" not in photo_columns:
                 connection.execute(text("ALTER TABLE face_photos ADD COLUMN angle_label VARCHAR(80)"))
+            if "photo_kind" not in photo_columns:
+                connection.execute(text("ALTER TABLE face_photos ADD COLUMN photo_kind VARCHAR(16) NOT NULL DEFAULT 'manual'"))
         _SCHEMA_READY.add(url)
 
 
@@ -324,7 +327,10 @@ def delete_face_profile_record(profile_id: str) -> bool:
 def add_face_photo(
     profile_id: str, filename: str, image_data: bytes, mime_type: str = "image/jpeg",
     group_id: str | None = None, angle_label: str | None = None,
+    photo_kind: str = "manual",
 ) -> str:
+    if photo_kind not in {"source", "angle", "manual"}:
+        raise ValueError("Photo kind must be source, angle or manual.")
     ensure_schema()
     with _session_factory()() as session:
         if not session.get(FaceProfileRow, profile_id):
@@ -336,7 +342,7 @@ def add_face_photo(
         row = FacePhotoRow(
             id=uuid.uuid4().hex, profile_id=profile_id, filename=filename, mime_type=mime_type,
             byte_size=len(image_data), image_data=image_data, group_id=group_id,
-            angle_label=(angle_label or "")[:80] or None,
+            angle_label=(angle_label or "")[:80] or None, photo_kind=photo_kind,
         )
         session.add(row)
         session.commit()
@@ -460,6 +466,7 @@ def list_face_dataset_groups(profile_id: str | None = None, limit: int = 200) ->
                 {
                     "id": photo.id, "filename": photo.filename,
                     "angle_label": photo.angle_label or "Training photo",
+                    "photo_kind": photo.photo_kind,
                     "mime_type": photo.mime_type, "byte_size": photo.byte_size,
                     "created_at": photo.created_at.isoformat() if photo.created_at else None,
                 }
@@ -514,6 +521,7 @@ def list_face_photo_records(profile_id: str, filenames: set[str] | None = None) 
                 "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
                 "mime_type": row.mime_type, "byte_size": row.byte_size,
                 "group_id": row.group_id, "angle_label": row.angle_label,
+                "photo_kind": row.photo_kind,
                 "image_data": bytes(row.image_data),
             }
             for row in rows
@@ -528,7 +536,8 @@ def get_face_photo_bytes(photo_id: str) -> tuple[dict, bytes] | None:
             return None
         return ({"id": row.id, "profile_id": row.profile_id, "filename": row.filename,
                  "mime_type": row.mime_type, "byte_size": row.byte_size,
-                 "group_id": row.group_id, "angle_label": row.angle_label}, bytes(row.image_data))
+                 "group_id": row.group_id, "angle_label": row.angle_label,
+                 "photo_kind": row.photo_kind}, bytes(row.image_data))
 
 
 def update_face_photo(
@@ -558,6 +567,7 @@ def update_face_photo(
         return {
             "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
             "group_id": row.group_id, "angle_label": row.angle_label or "Training photo",
+            "photo_kind": row.photo_kind,
             "mime_type": row.mime_type, "byte_size": row.byte_size,
         }
 
@@ -572,6 +582,7 @@ def delete_face_photo(photo_id: str) -> dict | None:
         result = {
             "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
             "group_id": row.group_id, "angle_label": row.angle_label,
+            "photo_kind": row.photo_kind,
         }
         session.delete(row)
         session.commit()
