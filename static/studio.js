@@ -316,10 +316,30 @@
   $("#generatedPhotoSearch")?.addEventListener("input",()=>{generatedPhotoOffset=0;loadGeneratedPhotoPicker();});
   $("#generatedPhotoPrev")?.addEventListener("click",()=>{generatedPhotoOffset=Math.max(0,generatedPhotoOffset-generatedPhotoLimit);loadGeneratedPhotoPicker();});
   $("#generatedPhotoNext")?.addEventListener("click",()=>{if(generatedPhotoOffset+generatedPhotoLimit<generatedPhotoTotal){generatedPhotoOffset+=generatedPhotoLimit;loadGeneratedPhotoPicker();}});
-  $$(".source-tab").forEach(tab=>tab.addEventListener("click",()=>{
-    $$(".source-tab").forEach(item=>item.classList.toggle("active",item===tab));
-    $$("[data-source-panel]").forEach(panel=>panel.hidden=panel.dataset.sourcePanel!==tab.dataset.sourceTab);
-  }));
+  let activeVariationMode="face_angles";
+  function activateTrainingSourceTab(tab) {
+    $(".source-tab").forEach(item=>item.classList.toggle("active",item===tab));
+    const key=tab.dataset.sourceTab;
+    if(key==="angles"||key==="expressions")activeVariationMode=key==="expressions"?"expressions":"face_angles";
+    $("[data-source-panel]").forEach(panel=>{
+      panel.hidden=panel.dataset.sourcePanel==="variations"
+        ? !(key==="angles"||key==="expressions")
+        : panel.dataset.sourcePanel!==key;
+    });
+    const generateButton=$("#generateFaceAnglesButton");
+    const description=$("#variationModeDescription");
+    const title=$("#angleGroupTitle");
+    if(generateButton)generateButton.textContent=activeVariationMode==="expressions"
+      ?"Generate five expressions and add to dataset":"Generate five angles and add to dataset";
+    if(description)description.textContent=activeVariationMode==="expressions"
+      ?"Upload one clear source photo and create five natural facial expressions while keeping the same person, hairstyle, and head angle."
+      :"Upload one clear source photo and create five labeled views of the same person. Only the viewpoint should change; the original is kept unchanged.";
+    if(title&&!(title.value||"").trim())title.placeholder=activeVariationMode==="expressions"
+      ?"e.g. Model A · expression set":"e.g. Model A · first angle set";
+  }
+  $(".source-tab").forEach(tab=>tab.addEventListener("click",()=>activateTrainingSourceTab(tab)));
+  const initialTrainingTab=$('.source-tab[data-source-tab="angles"]');
+  if(initialTrainingTab)activateTrainingSourceTab(initialTrainingTab);
   $("#addGeneratedPhotosButton")?.addEventListener("click",async()=>{
     const id=$("#addPhotosProfile")?.value;
     const selected=[...selectedGeneratedAssetIds];
@@ -349,15 +369,24 @@
 
   const generateFaceAnglesButton=$("#generateFaceAnglesButton");
   const retryFaceAngleButton=$("#retryFaceAngleButton");
-  // Lower img2img strength preserves more of the source identity. Side profiles
-  // need a little more denoising, but stay far below the previous 0.78 setting.
-  const faceAnglesLabels=[
-    {label:"Front view", prompt:"front-facing straight toward the camera, both eyes visible, face centered", strength:0.24},
-    {label:"Three-quarter left", prompt:"three-quarter view turned about 45 degrees toward the subject's left, both eyes still partly visible", strength:0.36},
-    {label:"Three-quarter right", prompt:"three-quarter view turned about 45 degrees toward the subject's right, both eyes still partly visible", strength:0.36},
-    {label:"Left profile", prompt:"clear left-facing side profile, approximately 90-degree head turn, one eye visible", strength:0.48},
-    {label:"Right profile", prompt:"clear right-facing side profile, approximately 90-degree head turn, one eye visible", strength:0.48}
-  ];
+  // Each generated photo is captioned so the face LoRA can associate the
+  // trigger token with a viewpoint or expression rather than an unlabeled face.
+  const faceVariationSets={
+    face_angles:[
+      {label:"Front view",prompt:"front-facing straight toward the camera, both eyes visible, face centered",strength:0.24},
+      {label:"Three-quarter left",prompt:"three-quarter view turned about 45 degrees toward the subject's left, both eyes still partly visible",strength:0.36},
+      {label:"Three-quarter right",prompt:"three-quarter view turned about 45 degrees toward the subject's right, both eyes still partly visible",strength:0.36},
+      {label:"Left profile",prompt:"clear left-facing side profile, approximately 90-degree head turn, one eye visible",strength:0.48},
+      {label:"Right profile",prompt:"clear right-facing side profile, approximately 90-degree head turn, one eye visible",strength:0.48}
+    ],
+    expressions:[
+      {label:"Neutral expression",prompt:"calm natural neutral facial expression, relaxed mouth and brows, same head angle",strength:0.24},
+      {label:"Gentle smile",prompt:"subtle closed-mouth friendly smile, lifted mouth corners, same head angle",strength:0.28},
+      {label:"Laughing expression",prompt:"natural genuine laugh with softly open mouth and smiling eyes, same head angle",strength:0.32},
+      {label:"Serious expression",prompt:"serious composed expression, relaxed closed lips and slightly focused eyes, same head angle",strength:0.28},
+      {label:"Surprised expression",prompt:"mild natural surprise, slightly raised brows and gently parted lips, same head angle",strength:0.32}
+    ]
+  };
   let pendingAngleSession=null;
 
   function setAngleProgressPercent(percent, stageText, message, failed=false) {
@@ -405,7 +434,7 @@
   }
   async function attachPendingAngleToGroup(session,index) {
     if(!session.pendingAssetId)throw new Error("There is no saved generated image to attach.");
-    const angle=faceAnglesLabels[index];
+    const angle=session.variationLabels[index];
     if(!session.pendingAssetAttached){
       await readJson(await fetch("/api/face-profiles/"+session.profileId+"/photos/from-assets",{
         method:"POST",headers:{"Content-Type":"application/json"},
@@ -440,11 +469,14 @@
       await attachPendingAngleToGroup(session,index);
       return;
     }
-    const angle=faceAnglesLabels[index];
+    const angle=session.variationLabels[index];
     const formData=new FormData();
+    const variationInstruction=session.datasetType==="expressions"
+      ?"Keep the same head angle, hair, face shape, clothing and lighting; change only the facial expression to: "
+      :"Keep the same person, age, hairstyle, clothing and lighting; change only the head viewing angle to: ";
     formData.set("prompt",
-      "Photorealistic reference-guided edit of the exact same adult person in the uploaded source photo; preserve identity and recognizable facial proportions, same apparent age, ethnicity, eye shape and color, nose, lips, jawline, skin tone, and hairstyle. Change only the head viewing angle: "+angle.prompt+
-      ". Natural neutral expression, realistic skin texture and eyes, soft even studio daylight, plain neutral background, real DSLR photograph, no beauty filter, no illustration.");
+      "Photorealistic reference-guided edit of the exact same adult person in the uploaded source photo; preserve identity and recognizable facial proportions, same apparent age, ethnicity, eye shape and color, nose, lips, jawline, skin tone, and hairstyle. "+variationInstruction+angle.prompt+
+      ". Natural realistic skin texture and eyes, soft even studio daylight, plain neutral background, real DSLR photograph, no beauty filter, no illustration.");
     formData.set("negative_prompt","different person, identity drift, changed apparent age, child, elderly face, changed ethnicity, different face shape, different eyes, different nose, different lips, changed hairstyle, face morphing, doll, anime, cartoon, illustration, CGI, 3D render, plastic skin, airbrushed skin, distorted features, asymmetrical eyes, blur, watermark, text");
     formData.set("strength",String(angle.strength));
     formData.set("steps","22");
@@ -482,7 +514,7 @@
     await attachPendingAngleToGroup(session,index);
   }
   async function handleFaceAngleFailure(session,index,error) {
-    const angle=faceAnglesLabels[index];
+    const angle=session.variationLabels[index];
     const detail=String(error?.message||error||"Unknown generation error");
     session.failedIndex=index;
     session.lastError=detail;
@@ -524,8 +556,8 @@
     await loadDatasetGroups();
   }
   async function processFaceAngleSequence(session) {
-    for(let index=session.nextIndex;index<faceAnglesLabels.length;){
-      const angle=faceAnglesLabels[index];
+    for(let index=session.nextIndex;index<session.variationLabels.length;){
+      const angle=session.variationLabels[index];
       const status=$("#faceAnglesStatus");
       if(status)status.textContent="Generating "+angle.label+" ("+(index+1)+" of 5). Each completed view is saved immediately.";
       try{
@@ -544,7 +576,7 @@
     pendingAngleSession=null;
     if(retryFaceAngleButton)retryFaceAngleButton.hidden=true;
     if($("#faceAnglesStatus")){
-      $("#faceAnglesStatus").textContent="Completed: the original and five labeled angle views are saved in “"+session.title+"”. Review the group on Training datasets, then retrain the face profile to use these photos.";
+      $("#faceAnglesStatus").textContent="Completed: the original and five "+(session.datasetType==="expressions"?"expression variations":"angle views")+" are saved in “"+session.title+"”. Review the group on Training datasets, then retrain the face profile to use these photos.";
     }
     setAngleProgressPercent(100,"Dataset group ready","Original source + 5 generated views saved to the group.");
     await refreshProfiles();
@@ -554,7 +586,7 @@
     const profileId=$("#addPhotosProfile")?.value;
     const source=$("#angleSourceImage")?.files?.[0];
     const titleInput=$("#angleGroupTitle");
-    const title=(titleInput?.value||"").trim()||("Face angles · "+new Date().toLocaleString());
+    const title=(titleInput?.value||"").trim()||((activeVariationMode==="expressions"?"Face expressions · ":"Face angles · ")+new Date().toLocaleString());
     const status=$("#faceAnglesStatus");
     if(pendingAngleSession?.failedIndex!==null&&pendingAngleSession){
       if(status)status.textContent="Retry the failed angle in the existing group before starting another group.";
@@ -573,12 +605,15 @@
     try{
       const createData=new FormData();
       createData.set("title",title);
+      createData.set("dataset_type",activeVariationMode);
       createData.append("source_image",source,source.name);
       const created=await readJson(await fetch("/api/face-profiles/"+profileId+"/dataset-groups",{method:"POST",body:createData}));
       session={
         profileId,sourceFile:source,title,groupId:created.group.id,
+        datasetType:activeVariationMode,
+        variationLabels:faceVariationSets[activeVariationMode],
         selectedBackend:useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu",
-        // Share one seed across all five angles; Retry reuses it too.
+        // Share one seed across this set; Retry reuses it too.
         seed:Math.floor(Math.random()*2147483648),
         nextIndex:0,generatedCount:0,failedIndex:null,retryUsed:false,
         pendingAssetId:null,pendingAssetIndex:null,pendingAssetAttached:false,lastError:""
@@ -608,7 +643,7 @@
     const session=pendingAngleSession;
     if(!session||session.failedIndex===null||session.retryUsed)return;
     const index=session.failedIndex;
-    const angle=faceAnglesLabels[index];
+    const angle=session.variationLabels[index];
     retryFaceAngleButton.disabled=true;
     retryFaceAngleButton.textContent="Retrying "+angle.label+"…";
     retryFaceAngleButton.hidden=true;
@@ -630,7 +665,7 @@
     }finally{
       retryFaceAngleButton.disabled=false;
       if(!retryFaceAngleButton.hidden&&pendingAngleSession?.failedIndex!==null){
-        retryFaceAngleButton.textContent="Retry "+faceAnglesLabels[pendingAngleSession.failedIndex].label+" once";
+        retryFaceAngleButton.textContent="Retry "+pendingAngleSession.variationLabels[pendingAngleSession.failedIndex].label+" once";
       }
     }
   });
