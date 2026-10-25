@@ -25,6 +25,8 @@ Create a PostgreSQL database before starting the app. Copy .env.example to .env 
 
 Keep the real connection URL only in your local .env; never commit it or paste its credentials into an issue. The application creates the required tables when it connects. When DATABASE_URL is configured, it imports existing profiles and face photos from the previous JSON/filesystem layout into PostgreSQL the first time the profile store is read. The original files are left in place as a working cache.
 
+On first library access, existing generated files already present under `data/outputs/` and `data/videos/` are imported into the library when missing from the database, so older locally generated files can appear alongside new results. Their old prompts may not be recoverable, so those records use an imported/unknown metadata label.
+
 The database stores generated image/video file bytes in PostgreSQL binary columns, as well as media metadata. Profile photo bytes are stored in PostgreSQL and mirrored as working files for the training script. Trained LoRA model folders remain on the compute host so Diffusers can load them directly, and ZIP backups are saved in PostgreSQL after successful training when DATABASE_URL is configured. Binary storage can increase database size quickly, so monitor database storage and backups.
 
 If DATABASE_URL is empty, the app shows a storage warning and uses a local SQLite development database for media instead; this is not the intended PostgreSQL setup for persistent use.
