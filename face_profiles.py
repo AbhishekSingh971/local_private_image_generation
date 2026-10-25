@@ -160,6 +160,7 @@ def update_profile(profile_id: str, **fields) -> dict:
         "local_training_state",
         "runpod_training_state",
         "local_training_error",
+        "local_training_job_id",
         "runpod_training_error",
         "runpod_training_job_id",
         "token",
