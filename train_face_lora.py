@@ -62,7 +62,16 @@ class FaceDataset(Dataset):
         pixels = torch.from_numpy(pixels).permute(2, 0, 1).contiguous()
         pixels = pixels / 127.5 - 1.0
         description_chunk = random.choice(self.description_chunks)
-        training_prompt = self.prompt + (", " + description_chunk if description_chunk else "")
+        caption_path = path.with_name(path.name + ".caption.txt")
+        try:
+            photo_caption = caption_path.read_text(encoding="utf-8").strip() if caption_path.is_file() else ""
+        except OSError:
+            photo_caption = ""
+        training_prompt = self.prompt
+        if photo_caption:
+            training_prompt += ", " + photo_caption[:1200]
+        if description_chunk:
+            training_prompt += ", " + description_chunk
         input_ids = self.tokenizer(
             training_prompt, padding="max_length", truncation=True,
             max_length=self.tokenizer.model_max_length, return_tensors="pt",
