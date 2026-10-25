@@ -11,6 +11,13 @@
   let computeAvailability = null;
   let profiles = [];
   const assetCache = new Map();
+  const selectedGeneratedAssetIds = new Set();
+  const generatedPhotoLimit = 18;
+  let generatedPhotoOffset = 0;
+  let generatedPhotoTotal = 0;
+  const assetPageSize = 30;
+  let assetOffset = 0;
+  let assetTotal = 0;
 
   async function readJson(response) {
     let data = {};
@@ -230,46 +237,76 @@
     finally {addPhotosButton.disabled=false;}
   });
 
+  function updateGeneratedPhotoSelectionCount() {
+    const label=$("#generatedSelectionCount");
+    if(label)label.textContent=selectedGeneratedAssetIds.size+" image(s) selected across all pages.";
+  }
   async function loadGeneratedPhotoPicker() {
     const picker=$("#generatedPhotoPicker");
     if(!picker) return;
+    const previous=$("#generatedPhotoPrev");const next=$("#generatedPhotoNext");
+    const pageLabel=$("#generatedPhotoPageLabel");
+    const search=$("#generatedPhotoSearch");
+    if(previous)previous.disabled=true;if(next)next.disabled=true;
     try {
-      const data=await readJson(await fetch("/api/assets?type=image&limit=100"));
+      const params=new URLSearchParams({
+        type:"image",limit:String(generatedPhotoLimit),offset:String(generatedPhotoOffset),
+        q:search?.value||"",sort:"newest"
+      });
+      const data=await readJson(await fetch("/api/assets?"+params.toString()));
       const assets=data.assets||[];
+      generatedPhotoTotal=Number(data.total||0);
       picker.replaceChildren();
+      const pages=Math.max(1,Math.ceil(generatedPhotoTotal/generatedPhotoLimit));
+      if(pageLabel)pageLabel.textContent="Page "+(Math.floor(generatedPhotoOffset/generatedPhotoLimit)+1)+" of "+pages;
+      if(previous)previous.disabled=generatedPhotoOffset<=0;
+      if(next)next.disabled=generatedPhotoOffset+generatedPhotoLimit>=generatedPhotoTotal;
       if(!assets.length) {
-        const empty=document.createElement("div");empty.className="empty-state";empty.textContent="No generated images saved yet. Generate an image first.";picker.appendChild(empty);return;
+        const empty=document.createElement("div");empty.className="empty-state";
+        empty.textContent=(search?.value||"").trim()?"No saved images match that search.":"No generated images saved yet. Generate an image first.";
+        picker.appendChild(empty);updateGeneratedPhotoSelectionCount();return;
       }
       assets.forEach(asset=>{
         const label=document.createElement("label");label.className="generated-photo-option";
-        const checkbox=document.createElement("input");checkbox.type="checkbox";checkbox.name="generatedAsset";checkbox.value=asset.id;checkbox.setAttribute("aria-label","Select "+asset.title);
+        const checkbox=document.createElement("input");checkbox.type="checkbox";checkbox.name="generatedAsset";checkbox.value=asset.id;checkbox.checked=selectedGeneratedAssetIds.has(asset.id);checkbox.setAttribute("aria-label","Select "+asset.title);
+        checkbox.addEventListener("change",()=>{
+          if(checkbox.checked)selectedGeneratedAssetIds.add(asset.id);
+          else selectedGeneratedAssetIds.delete(asset.id);
+          updateGeneratedPhotoSelectionCount();
+        });
         const image=document.createElement("img");image.src="/assets/"+asset.id+"/content";image.alt=asset.title;image.loading="lazy";
         const title=document.createElement("span");title.textContent=asset.title;
         label.append(checkbox,image,title);picker.appendChild(label);
       });
+      updateGeneratedPhotoSelectionCount();
     } catch(error) {
       picker.replaceChildren();
       const empty=document.createElement("div");empty.className="empty-state";empty.textContent="Could not load images: "+error.message;picker.appendChild(empty);
     }
   }
+  $("#generatedPhotoSearch")?.addEventListener("input",()=>{generatedPhotoOffset=0;loadGeneratedPhotoPicker();});
+  $("#generatedPhotoPrev")?.addEventListener("click",()=>{generatedPhotoOffset=Math.max(0,generatedPhotoOffset-generatedPhotoLimit);loadGeneratedPhotoPicker();});
+  $("#generatedPhotoNext")?.addEventListener("click",()=>{if(generatedPhotoOffset+generatedPhotoLimit<generatedPhotoTotal){generatedPhotoOffset+=generatedPhotoLimit;loadGeneratedPhotoPicker();}});
   $$(".source-tab").forEach(tab=>tab.addEventListener("click",()=>{
     $$(".source-tab").forEach(item=>item.classList.toggle("active",item===tab));
     $$("[data-source-panel]").forEach(panel=>panel.hidden=panel.dataset.sourcePanel!==tab.dataset.sourceTab);
   }));
   $("#addGeneratedPhotosButton")?.addEventListener("click",async()=>{
     const id=$("#addPhotosProfile")?.value;
-    const selected=$$("input[name='generatedAsset']:checked").map(node=>node.value);
+    const selected=[...selectedGeneratedAssetIds];
     const status=$("#generatedPhotosStatus");const button=$("#addGeneratedPhotosButton");
     if(!id){if(status)status.textContent="Select the face profile that should receive the images.";return;}
     if(!selected.length){if(status)status.textContent="Select at least one generated image.";return;}
+    if(selected.length>30){if(status)status.textContent="Select at most 30 generated images per batch.";return;}
     button.disabled=true;if(status)status.textContent="Copying selected database images into the face dataset…";
     try{
       const result=await readJson(await fetch("/api/face-profiles/"+id+"/photos/from-assets",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({asset_ids:selected})}));
+      selected.forEach(assetId=>selectedGeneratedAssetIds.delete(assetId));
       await refreshProfiles();
-      $$("input[name='generatedAsset']:checked").forEach(node=>node.checked=false);
+      await loadGeneratedPhotoPicker();
       if(status)status.textContent="Added "+result.added+" generated image(s) to "+result.profile.name+". Total: "+result.profile.image_count+".";
     }catch(error){if(status)status.textContent=error.message;}
-    finally{button.disabled=false;}
+    finally{button.disabled=false;updateGeneratedPhotoSelectionCount();}
   });
 
   const trainForm=$("#trainForm");
