@@ -46,6 +46,7 @@ from face_profiles import (
     validate_profile_id,
 )
 from studio_db import (
+    count_assets,
     create_asset,
     database_status,
     database_url_configured,
@@ -298,6 +299,15 @@ def _safe_list_assets(asset_type=None, limit=200):
         return []
 
 
+def _safe_asset_count(asset_type):
+    try:
+        _migrate_legacy_output_files()
+        return count_assets(asset_type)
+    except Exception:
+        app.logger.exception("Media count is unavailable")
+        return 0
+
+
 def _safe_profile_count():
     try:
         return len(list_profiles())
@@ -415,11 +425,10 @@ def index():
 
 @app.get("/dashboard")
 def dashboard():
-    images = _safe_list_assets("image", 500)
-    videos = _safe_list_assets("video", 500)
+    _migrate_legacy_output_files()
     return render_template(
         "dashboard.html", page_key="dashboard", active_page="dashboard",
-        image_count=len(images), video_count=len(videos),
+        image_count=_safe_asset_count("image"), video_count=_safe_asset_count("video"),
         profile_count=_safe_profile_count(), recent_assets=_safe_list_assets(limit=8),
     )
 
@@ -455,12 +464,25 @@ def api_list_assets():
     if asset_type and asset_type not in {"image", "video"}:
         return jsonify(error="Asset type must be image or video."), 400
     try:
-        limit = int(request.args.get("limit", "200"))
+        limit = int(request.args.get("limit", "30"))
+        offset = int(request.args.get("offset", "0"))
+        sort = (request.args.get("sort") or "newest").strip().lower()
+        search = (request.args.get("q") or "").strip()[:160]
+        if not 1 <= limit <= 500:
+            return jsonify(error="Limit must be between 1 and 500."), 400
+        if offset < 0:
+            return jsonify(error="Offset must be zero or greater."), 400
+        if sort not in {"newest", "oldest", "title"}:
+            return jsonify(error="Sort must be newest, oldest or title."), 400
         _migrate_legacy_output_files()
-        assets = list_assets(asset_type or None, limit)
+        assets = list_assets(asset_type or None, limit, offset, search, sort)
+        total = count_assets(asset_type or None, search)
         for asset in assets:
             asset["content_url"] = url_for("asset_content", asset_id=asset["id"])
-        return jsonify(assets=assets)
+        return jsonify(
+            assets=assets, total=total, limit=limit, offset=offset,
+            has_more=offset + len(assets) < total,
+        )
     except (TypeError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
     except Exception:
