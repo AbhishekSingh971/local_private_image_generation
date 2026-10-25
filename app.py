@@ -659,6 +659,8 @@ def api_delete_face_profile(profile_id):
         profile_id = validate_profile_id(profile_id)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+    if is_global_body_profile(profile_id):
+        return jsonify(error="The shared body model is global and cannot be deleted as a face profile."), 409
     profile = get_profile(profile_id)
     if not profile:
         return jsonify(error="Face profile not found."), 404
