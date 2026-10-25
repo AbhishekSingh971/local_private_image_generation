@@ -367,7 +367,7 @@
   const faceTargetChecklist=$("#faceTargetChecklist");
   const selectAllFaceTargets=$("#selectAllFaceTargets");
   function selectedFaceTargetLabels(){
-    return $(".face-target-option input[type=checkbox]:checked",faceTargetChecklist||document).map(input=>input.value);
+    return Array.from((faceTargetChecklist||document).querySelectorAll(".face-target-option input[type=checkbox]:checked"), input => input.value);
   }
   function renderFaceTargetChecklist(){
     if(!faceTargetChecklist)return;
