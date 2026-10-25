@@ -1,6 +1,7 @@
 import pytest
+from PIL import ImageChops
 
-from pose_validation import HeadPose, validate_pose_target
+from pose_validation import HeadPose, build_pose_control_image, validate_pose_target
 from training_generation import FACE_ANGLE_TARGETS, FACE_EXPRESSION_TARGETS, targets_for_dataset_type
 
 
@@ -53,3 +54,13 @@ def test_pose_validation_never_passes_when_pose_is_unknown():
     status, message = validate_pose_target(None, 90.0, 0.0)
     assert status == "needs_review"
     assert "could not be verified" in message
+
+
+
+def test_pose_control_image_changes_with_yaw_and_pitch():
+    frontal = build_pose_control_image(0, 0, 256, 256)
+    left_profile = build_pose_control_image(-90, 0, 256, 256)
+    looking_up = build_pose_control_image(0, -18, 256, 256)
+    assert frontal.size == (256, 256)
+    assert ImageChops.difference(frontal, left_profile).getbbox() is not None
+    assert ImageChops.difference(frontal, looking_up).getbbox() is not None
