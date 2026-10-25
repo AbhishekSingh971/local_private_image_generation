@@ -2144,8 +2144,8 @@ def _load_cpu_or_gpu_pipeline(
             if mode == "pose_img2img":
                 from diffusers import ControlNetModel, StableDiffusionControlNetImg2ImgPipeline
                 controlnet_id = os.environ.get(
-                    "FACE_POSE_CONTROLNET_ID", "lllyasviel/control_v11p_sd15_openpose"
-                ).strip() or "lllyasviel/control_v11p_sd15_openpose"
+                    "FACE_POSE_CONTROLNET_ID", "CrucibleAI/ControlNetMediaPipeFace"
+                ).strip() or "CrucibleAI/ControlNetMediaPipeFace"
                 controlnet = ControlNetModel.from_pretrained(controlnet_id, torch_dtype=dtype)
                 pipeline_class = StableDiffusionControlNetImg2ImgPipeline
             else:
