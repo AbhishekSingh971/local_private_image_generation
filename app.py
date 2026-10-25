@@ -2148,7 +2148,17 @@ def _load_cpu_or_gpu_pipeline(
                 controlnet_id = os.environ.get(
                     "FACE_POSE_CONTROLNET_ID", "CrucibleAI/ControlNetMediaPipeFace"
                 ).strip() or "CrucibleAI/ControlNetMediaPipeFace"
-                controlnet = ControlNetModel.from_pretrained(controlnet_id, torch_dtype=dtype)
+                # The default app model is Stable Diffusion 1.5 (CLIP hidden size 768).
+                # CrucibleAI/ControlNetMediaPipeFace at the repository root is SD 2.1
+                # (cross-attention size 1024); its SD 1.5 weights are in diffusion_sd15.
+                # Allow an explicit override for users intentionally pairing a different base.
+                controlnet_subfolder = os.environ.get(
+                    "FACE_POSE_CONTROLNET_SUBFOLDER", "diffusion_sd15"
+                ).strip()
+                controlnet_kwargs = {"torch_dtype": dtype}
+                if controlnet_subfolder and controlnet_subfolder.lower() not in {"none", "root", "/"}:
+                    controlnet_kwargs["subfolder"] = controlnet_subfolder
+                controlnet = ControlNetModel.from_pretrained(controlnet_id, **controlnet_kwargs)
                 pipeline_class = StableDiffusionControlNetImg2ImgPipeline
             else:
                 pipeline_class = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
@@ -2165,6 +2175,17 @@ def _load_cpu_or_gpu_pipeline(
                 kwargs["local_files_only"] = True
             try:
                 loaded = pipeline_class.from_pretrained(local_model, **kwargs)
+                if controlnet is not None:
+                    control_dim = getattr(controlnet.config, "cross_attention_dim", None)
+                    text_encoder = getattr(loaded, "text_encoder", None)
+                    text_dim = getattr(getattr(text_encoder, "config", None), "hidden_size", None)
+                    if isinstance(control_dim, int) and isinstance(text_dim, int) and control_dim != text_dim:
+                        raise RuntimeError(
+                            "Face-pose ControlNet is incompatible with the selected base model: "
+                            f"ControlNet cross_attention_dim={control_dim}, text encoder hidden_size={text_dim}. "
+                            "For Stable Diffusion 1.5, use FACE_POSE_CONTROLNET_SUBFOLDER=diffusion_sd15; "
+                            "for a compatible SD 2.1 base, use FACE_POSE_CONTROLNET_SUBFOLDER=none."
+                        )
                 loaded = loaded.to("cuda" if use_cuda else "cpu")
                 if not use_cuda:
                     loaded.enable_attention_slicing("max")
