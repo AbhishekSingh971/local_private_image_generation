@@ -52,6 +52,9 @@ from face_profiles import (
     update_profile,
     validate_profile_id,
 )
+from pose_validation import estimate_head_pose, validate_pose_target
+from training_generation import targets_for_dataset_type
+
 from studio_db import (
     count_assets,
     create_asset,
@@ -69,6 +72,11 @@ from studio_db import (
     list_face_dataset_groups,
     update_face_dataset_group,
     update_face_photo,
+    update_face_dataset_job,
+    get_face_dataset_job,
+    create_face_dataset_job,
+    list_face_dataset_jobs,
+    update_face_photo_validation,
     get_face_model_bundle,
     list_asset_filenames,
     save_face_model_bundle,
@@ -109,6 +117,10 @@ LEGACY_MEDIA_MIGRATION_LOCK = threading.Lock()
 LEGACY_MEDIA_MIGRATED = False
 GENERATION_PROGRESS = {}
 GENERATION_PROGRESS_LOCK = threading.RLock()
+FACE_DATASET_JOB_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face-dataset-generation")
+FACE_DATASET_JOB_LOCK = threading.RLock()
+FACE_DATASET_JOB_EVENTS: dict[str, threading.Event] = {}
+FACE_DATASET_JOB_FUTURES = {}
 
 
 def _set_generation_progress(task_id, *, asset_type, backend, status, progress, current_step=0, total_steps=0, stage="", message=""):
