@@ -7,6 +7,10 @@
   <section class="panel form-panel">
     <form id="generationForm">
       <label for="faceProfile">Face identity</label><select id="faceProfile" name="face_profile_id"><option value="">Base model (no trained face)</option></select>
+      <div class="twocol">
+        <div><label for="faceAngle">Face angle <span class="optional">optional</span></label><select id="faceAngle" name="face_angle"><option value="">Use prompt / default</option><option value="front">Front view</option><option value="three_quarter_left">Three-quarter left</option><option value="three_quarter_right">Three-quarter right</option><option value="left_profile">Left profile</option><option value="right_profile">Right profile</option></select></div>
+        <div><label for="faceExpression">Expression <span class="optional">optional</span></label><select id="faceExpression" name="face_expression"><option value="">Use prompt / default</option><option value="neutral">Neutral</option><option value="smile">Gentle smile</option><option value="laugh">Laughing</option><option value="serious">Serious</option><option value="surprised">Surprised</option></select></div>
+      </div>
       <label class="switchline" for="useGlobalBodyModel"><input id="useGlobalBodyModel" name="use_global_body_model" type="checkbox" value="true"> Apply shared body-type model</label>
       <p id="globalBodyGenerationStatus" class="field-help">Optional. Generate body samples and train the shared model from Training datasets before using it.</p>
       <label for="referenceImage">Reference image <span class="optional">optional</span></label><input id="referenceImage" name="image" type="file" accept="image/png,image/jpeg,image/webp">
