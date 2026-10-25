@@ -6,6 +6,7 @@ through RunPod's Pod proxy. This worker does not create, start, or stop Pods.
 import hmac
 import io
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -39,6 +40,32 @@ worker.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 TOKEN = os.environ.get("REMOTE_API_TOKEN", "").strip()
 TASKS = {}
 TASKS_LOCK = threading.RLock()
+GENERATION_PROGRESS = {}
+GENERATION_PROGRESS_LOCK = threading.RLock()
+
+
+def _set_generation_progress(task_id, *, asset_type, status, progress, current_step=0, total_steps=0, stage="", message=""):
+    if not re.fullmatch(r"[a-f0-9]{32}", str(task_id or "")):
+        return
+    now = time.time()
+    record = {
+        "task_id": task_id, "asset_type": asset_type, "backend": "runpod",
+        "status": status, "progress": max(0, min(100, int(progress))),
+        "current_step": max(0, int(current_step or 0)),
+        "total_steps": max(0, int(total_steps or 0)),
+        "stage": str(stage or "")[:80], "message": str(message or "")[:300],
+        "updated_at": now,
+    }
+    with GENERATION_PROGRESS_LOCK:
+        previous = GENERATION_PROGRESS.get(task_id, {})
+        record["created_at"] = previous.get("created_at", now)
+        GENERATION_PROGRESS[task_id] = record
+        while len(GENERATION_PROGRESS) > 200:
+            oldest = next(iter(GENERATION_PROGRESS))
+            if oldest == task_id and len(GENERATION_PROGRESS) > 1:
+                oldest = next(key for key in GENERATION_PROGRESS if key != task_id)
+            GENERATION_PROGRESS.pop(oldest, None)
+
 TRAIN_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="runpod-face-train")
 VIDEO_PIPE = None
 VIDEO_ACTIVE_LORA = None
@@ -54,6 +81,21 @@ def require_worker_token():
     if not supplied.startswith("Bearer ") or not hmac.compare_digest(supplied[7:].strip(), expected):
         return jsonify(error="Unauthorized."), 401
     return None
+
+
+@worker.get("/api/remote/generation-progress/<task_id>")
+def remote_generation_progress(task_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", task_id or ""):
+        return jsonify(error="Invalid generation task ID."), 400
+    with GENERATION_PROGRESS_LOCK:
+        progress = GENERATION_PROGRESS.get(task_id)
+        if progress:
+            return jsonify(dict(progress))
+    return jsonify(
+        task_id=task_id, asset_type="unknown", backend="runpod", status="starting",
+        progress=0, current_step=0, total_steps=0, stage="starting",
+        message="Waiting for the GPU worker…",
+    )
 
 
 @worker.errorhandler(413)
