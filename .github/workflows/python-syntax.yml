@@ -15,4 +15,4 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile application and trainer
-        run: python -m py_compile app.py train_face_lora.py
+        run: python -m py_compile app.py face_profiles.py gpu_worker.py train_face_lora.py
