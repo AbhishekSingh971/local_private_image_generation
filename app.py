@@ -2,6 +2,7 @@ import base64
 from datetime import datetime, timezone
 import gc
 import io
+import json
 import os
 import re
 import subprocess
@@ -888,7 +889,26 @@ def api_start_face_dataset_job(profile_id):
         if not profile:
             return jsonify(error="Face profile not found."), 404
         dataset_type = (request.form.get("dataset_type") or "face_angles").strip().lower()
-        targets = targets_for_dataset_type(dataset_type)
+        all_targets = targets_for_dataset_type(dataset_type)
+        selected_targets_raw = (request.form.get("selected_targets") or "").strip()
+        if selected_targets_raw:
+            try:
+                selected_labels = json.loads(selected_targets_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Selected targets must be a valid JSON list.") from exc
+            if not isinstance(selected_labels, list) or not selected_labels:
+                raise ValueError("Select at least one face angle or expression.")
+            if any(not isinstance(label, str) for label in selected_labels):
+                raise ValueError("Each selected target must be a target label.")
+            available = {target["label"]: target for target in all_targets}
+            unknown = [label for label in selected_labels if label not in available]
+            if unknown:
+                raise ValueError("Unsupported target selection: " + ", ".join(unknown[:3]))
+            # Preserve the manifest's canonical order regardless of checkbox order.
+            selected_set = set(selected_labels)
+            targets = [dict(target) for target in all_targets if target["label"] in selected_set]
+        else:
+            targets = all_targets
         title = _clean_prompt(request.form.get("title"), "Dataset group title", 120)
         backend = _resolve_compute_backend(request.form)
         uploads = request.files.getlist("source_image")
@@ -1142,8 +1162,9 @@ def _run_face_dataset_generation_job(job_id: str) -> None:
             )
             _set_generation_progress(
                 current_task_id, asset_type="image", backend=job["backend"], status="running",
-                progress=1, total_steps=22, stage="starting",
-                message="Preparing target " + target["label"] + " (" + str(index + 1) + "/" + str(len(targets)) + ").",
+                progress=1, total_steps=22, stage="model_loading",
+                message=("Preparing the image model and starting " + target["label"] + " (" + str(index + 1) + "/" + str(len(targets)) + "). "
+                         "The first target may take several minutes while model weights and the image pipeline load; then the image is generated, pose-checked, and saved to the dataset."),
             )
             try:
                 result, backend, prompt, negative_prompt, target_yaw, target_pitch = _render_face_dataset_target(
