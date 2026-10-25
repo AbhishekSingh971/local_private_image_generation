@@ -525,19 +525,27 @@ def api_asset_detail(asset_id):
             return jsonify(error="Saved media not found."), 404
         return jsonify(status="updated", asset=asset)
     try:
-        asset = delete_asset(asset_id)
+        existing = get_asset(asset_id)
     except Exception:
-        app.logger.exception("Could not delete media from database")
-        return jsonify(error="Could not delete media from the database."), 503
-    if not asset:
+        app.logger.exception("Could not read media before deletion")
+        return jsonify(error="Could not read the media record from the database."), 503
+    if not existing:
         return jsonify(error="Saved media not found."), 404
-    folder = OUTPUT_DIR if asset["asset_type"] == "image" else VIDEO_OUTPUT_DIR
-    local_copy = folder / Path(asset["filename"]).name
+    folder = OUTPUT_DIR if existing["asset_type"] == "image" else VIDEO_OUTPUT_DIR
+    local_copy = folder / Path(existing["filename"]).name
     try:
         if local_copy.is_file():
             local_copy.unlink()
     except OSError:
-        app.logger.warning("Deleted database asset %s but could not delete its local copy", asset_id)
+        app.logger.exception("Could not remove local copy of media before deletion")
+        return jsonify(error="Could not remove the local media copy. The database record was not deleted."), 500
+    try:
+        asset = delete_asset(asset_id)
+    except Exception:
+        app.logger.exception("Could not delete media from database")
+        return jsonify(error="The local copy was removed, but database deletion failed. The saved media remains in the database."), 503
+    if not asset:
+        return jsonify(error="Saved media not found."), 404
     return jsonify(status="deleted", id=asset_id)
 
 
