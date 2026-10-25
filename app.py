@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
@@ -47,6 +48,9 @@ from face_profiles import (
 from studio_db import (
     create_asset,
     database_status,
+    database_url_configured,
+    get_face_model_bundle,
+    save_face_model_bundle,
     delete_asset,
     get_asset,
     list_assets,
@@ -260,6 +264,29 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
         ) from exc
 
 
+def _persist_face_model_bundle(profile_id: str, backend: str, bundle_data: bytes | None = None, file_count: int | None = None):
+    """Back up a trained LoRA into PostgreSQL when DATABASE_URL is configured."""
+    if not database_url_configured():
+        return None
+    if bundle_data is None:
+        folder = model_path(profile_id)
+        if not folder.is_dir():
+            raise RuntimeError("Trained LoRA output folder is missing.")
+        files = [item for item in folder.rglob("*") if item.is_file()]
+        if not files:
+            raise RuntimeError("No trained LoRA files were produced.")
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for item in files:
+                archive.write(item, arcname=item.relative_to(folder).as_posix())
+        bundle_data = buffer.getvalue()
+        file_count = len(files)
+    return save_face_model_bundle(
+        profile_id, backend, f"{profile_id}-{backend}-lora.zip",
+        bundle_data, int(file_count or 1),
+    )
+
+
 def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: str) -> None:
     profile = get_profile(profile_id)
     if not profile:
@@ -288,6 +315,7 @@ def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: st
             with LOCAL_TRAIN_JOBS_LOCK:
                 LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
             return
+        _persist_face_model_bundle(profile_id, "local")
         update_profile(
             profile_id, local_training_state="completed",
             local_training_error=None, local_model_ready=True,
@@ -676,6 +704,15 @@ def api_face_train_status(profile_id):
         return jsonify(error=str(exc), status="running", profile=profile), 502
     state = payload.get("status", "running")
     if state == "completed":
+        if database_url_configured() and get_face_model_bundle(profile_id, "runpod") is None:
+            try:
+                model_response = runpod_request(
+                    "GET", f"/api/remote/models/{profile_id}", timeout=(15, 120)
+                )
+                file_count = int(model_response.headers.get("X-Model-File-Count", "1"))
+                _persist_face_model_bundle(profile_id, "runpod", model_response.content, file_count)
+            except Exception as exc:
+                app.logger.warning("Could not back up RunPod LoRA bundle to PostgreSQL: %s", type(exc).__name__)
         update_profile(
             profile_id, runpod_training_state="completed", runpod_training_error=None,
             runpod_model_ready=True,
