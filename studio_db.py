@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, event, func, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, event, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -56,6 +56,7 @@ class FaceProfileRow(Base):
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     name_key: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     token: Mapped[str] = mapped_column(String(48), unique=True, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
     local_model_ready: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     runpod_model_ready: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -139,7 +140,14 @@ def ensure_schema() -> None:
     with _SCHEMA_LOCK:
         if url in _SCHEMA_READY:
             return
-        Base.metadata.create_all(_engine_for_url(url))
+        engine = _engine_for_url(url)
+        Base.metadata.create_all(engine)
+        # create_all does not add columns to a table created by an earlier version.
+        # Add this column in-place so existing SQLite and PostgreSQL databases keep working.
+        profile_columns = {column["name"] for column in inspect(engine).get_columns("face_profiles")}
+        if "description" not in profile_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE face_profiles ADD COLUMN description TEXT NOT NULL DEFAULT ''"))
         _SCHEMA_READY.add(url)
 
 
@@ -169,7 +177,7 @@ def database_status() -> dict:
 
 def _profile_dict(row: FaceProfileRow) -> dict:
     return {
-        "id": row.id, "name": row.name, "token": row.token, "created_at": row.created_at,
+        "id": row.id, "name": row.name, "token": row.token, "description": row.description or "", "created_at": row.created_at,
         "local_model_ready": bool(row.local_model_ready), "runpod_model_ready": bool(row.runpod_model_ready),
         "local_training_state": row.local_training_state, "runpod_training_state": row.runpod_training_state,
         "local_training_error": row.local_training_error, "local_training_job_id": row.local_training_job_id,
@@ -208,7 +216,7 @@ def insert_face_profile_record(record: dict) -> dict:
     ensure_schema()
     values = {
         "id": record["id"], "name": record["name"], "name_key": record["name"].casefold(),
-        "token": record["token"], "created_at": record["created_at"],
+        "token": record["token"], "description": record.get("description", "") or "", "created_at": record["created_at"],
         "local_model_ready": bool(record.get("local_model_ready", False)),
         "runpod_model_ready": bool(record.get("runpod_model_ready", False)),
         "local_training_state": record.get("local_training_state", "not_trained"),
@@ -241,7 +249,7 @@ def create_face_profile_record(record: dict) -> dict:
                 return _profile_dict(existing)
             row = FaceProfileRow(
                 id=record["id"], name=record["name"], name_key=record["name"].casefold(),
-                token=record["token"], created_at=record["created_at"],
+                token=record["token"], description=record.get("description", "") or "", created_at=record["created_at"],
                 local_model_ready=False, runpod_model_ready=False,
                 local_training_state="not_trained", runpod_training_state="not_trained",
                 local_training_error=None, local_training_job_id=None,
@@ -259,7 +267,7 @@ def update_face_profile_record(profile_id: str, fields: dict) -> dict:
     ensure_schema()
     allowed = {
         "local_model_ready", "runpod_model_ready", "local_training_state", "runpod_training_state",
-        "local_training_error", "local_training_job_id", "runpod_training_error", "runpod_training_job_id", "token",
+        "local_training_error", "local_training_job_id", "runpod_training_error", "runpod_training_job_id", "token", "description",
     }
     unknown = set(fields) - allowed
     if unknown:
