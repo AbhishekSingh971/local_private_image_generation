@@ -59,6 +59,17 @@ def test_local_and_runpod_readiness_are_independent(isolated_store):
     assert profiles.profile_ready_for_backend(profile["id"], "runpod")
 
 
+def test_profile_description_accepts_200_words_and_rejects_201(isolated_store):
+    description = " ".join(f"feature{index}" for index in range(200))
+    profile = profiles.create_profile("Described Model", description=description)
+
+    assert profile["description"] == description
+    assert len(profile["description"].split()) == 200
+
+    with pytest.raises(ValueError, match="200 words or fewer"):
+        profiles.create_profile("Too Many Words", description=" ".join(["feature"] * 201))
+
+
 def test_profile_id_validation_rejects_paths(isolated_store):
     with pytest.raises(ValueError):
         profiles.validate_profile_id("../../outside")
