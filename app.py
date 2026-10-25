@@ -135,16 +135,23 @@ def api_generation_progress(task_id):
             )
             remote_progress = response.json()
             if remote_progress.get("task_id") == task_id:
-                # Do not let a remote task update a different local task or asset type.
-                remote_progress["backend"] = "runpod"
+                # Remote completion means the GPU finished; the local app still needs
+                # to persist the returned bytes in PostgreSQL before the task is complete.
+                remote_status = remote_progress.get("status", "running")
+                remote_percent = remote_progress.get("progress", 0)
+                remote_stage = remote_progress.get("stage", "")
+                remote_message = remote_progress.get("message", "")
+                if remote_status == "completed":
+                    remote_status = "running"
+                    remote_percent = 94
+                    remote_stage = "saving"
+                    remote_message = "GPU work finished; saving media to the database library…"
                 _set_generation_progress(
                     task_id, asset_type=progress["asset_type"], backend="runpod",
-                    status=remote_progress.get("status", "running"),
-                    progress=remote_progress.get("progress", 0),
+                    status=remote_status, progress=remote_percent,
                     current_step=remote_progress.get("current_step", 0),
                     total_steps=remote_progress.get("total_steps", 0),
-                    stage=remote_progress.get("stage", ""),
-                    message=remote_progress.get("message", ""),
+                    stage=remote_stage, message=remote_message,
                 )
                 progress = _get_generation_progress(task_id) or progress
         except Exception:
@@ -1099,6 +1106,10 @@ def generate():
                 message = "The selected device ran out of memory. Try fewer steps or switch to another available compute backend."
             return jsonify(error=f"Generation failed: {message}"), 500
         filename = _save_generated_png(result)
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="running", progress=97,
+            current_step=steps, total_steps=steps, stage="saving", message="Saving image bytes and generation details to the database…",
+        )
         try:
             asset = _persist_generated_asset(
                 "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
@@ -1281,6 +1292,10 @@ def generate_video():
             if "out of memory" in message.lower():
                 message = "The GPU ran out of memory. Try fewer frames or use the RunPod GPU."
             return jsonify(error=f"Video generation failed: {message}"), 500
+        _set_generation_progress(
+            task_id, asset_type="video", backend="local_gpu", status="running", progress=97,
+            current_step=steps, total_steps=steps, stage="saving", message="Saving video bytes and generation details to the database…",
+        )
         try:
             asset = _persist_generated_asset(
                 "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
