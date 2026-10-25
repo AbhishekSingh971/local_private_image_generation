@@ -21,6 +21,9 @@ PROFILES_DIR = DATA_DIR / "face_profiles"
 LORA_DIR = ROOT / "models" / "face_loras"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 PROFILE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+GLOBAL_BODY_PROFILE_ID = "ffffffffffffffffffffffffffffffff"
+GLOBAL_BODY_PROFILE_NAME = "Shared body model"
+GLOBAL_BODY_PROFILE_TOKEN = "globalbody"
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 MAX_DESCRIPTION_WORDS = 200
 _LOCK = threading.RLock()
@@ -176,12 +179,16 @@ def list_profiles() -> list[dict]:
         _ensure_database_migrated()
         from studio_db import list_face_profile_records
         records = list_face_profile_records()
-        return [_public_record(record) for record in records]
+        return [
+            _public_record(record) for record in records
+            if record.get("id") != GLOBAL_BODY_PROFILE_ID
+        ]
     with _LOCK:
         registry = _load_registry()
         return [
             _public_record(record)
             for record in sorted(registry["profiles"], key=lambda item: item.get("created_at", ""))
+            if record.get("id") != GLOBAL_BODY_PROFILE_ID
         ]
 
 
@@ -344,6 +351,14 @@ def save_profile_image(
             profile_id, destination.name, destination.read_bytes(), "image/jpeg",
             group_id=group_id, angle_label=angle_label, photo_kind=photo_kind,
         )
+    # Training captions let the LoRA associate a pose/expression/body description
+    # with the shared trigger token instead of treating every image as identical.
+    caption_path = destination.with_name(destination.name + ".caption.txt")
+    caption = (angle_label or "").strip()
+    if caption and photo_kind not in {"source", "manual"}:
+        caption_path.write_text(caption[:1200], encoding="utf-8")
+    else:
+        caption_path.unlink(missing_ok=True)
     return destination
 
 
@@ -360,3 +375,24 @@ def profile_ready_for_backend(profile_id: str, backend: str) -> bool:
     if backend == "local":
         return bool(profile.get("local_model_ready"))
     return False
+
+def ensure_global_body_profile() -> dict:
+    """Create or return the hidden, shared profile used only for global body-type training."""
+    profile = get_profile(GLOBAL_BODY_PROFILE_ID)
+    if profile:
+        if profile.get("name") != GLOBAL_BODY_PROFILE_NAME:
+            raise RuntimeError("The reserved shared-body profile ID is already used by another profile.")
+        return profile
+    return create_profile(
+        GLOBAL_BODY_PROFILE_NAME,
+        profile_id=GLOBAL_BODY_PROFILE_ID,
+        token=GLOBAL_BODY_PROFILE_TOKEN,
+        description=(
+            "Shared body silhouette and physique conditioning used across all face identities. "
+            "Train with captions describing adult body proportions, build, pose and clothing."
+        ),
+    )
+
+
+def is_global_body_profile(profile_id: str | None) -> bool:
+    return str(profile_id or "").strip().lower() == GLOBAL_BODY_PROFILE_ID
