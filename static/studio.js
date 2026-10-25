@@ -11,6 +11,7 @@
   let computeAvailability = null;
   let profiles = [];
   const assetCache = new Map();
+  const generatedPhotoAssetCache = new Map();
   const selectedGeneratedAssetIds = new Set();
   const generatedPhotoLimit = 18;
   let generatedPhotoOffset = 0;
@@ -198,7 +199,8 @@
     const data = await readJson(response);
     profiles = data.profiles || [];
     renderProfiles();
-    const requestedProfileId = new URLSearchParams(window.location.search).get("profile_id");
+    const query = new URLSearchParams(window.location.search);
+    const requestedProfileId = query.get("profile_id");
     if (requestedProfileId && profiles.some(profile => profile.id === requestedProfileId)) {
       ["trainProfile", "addPhotosProfile", "faceProfile", "videoProfile"].forEach(id => {
         const select = $("#"+id);
@@ -246,16 +248,19 @@
     const id = $("#addPhotosProfile")?.value;
     const files = $("#morePhotos")?.files;
     const status = $("#addPhotosStatus");
+    const requestedGroupId = new URLSearchParams(window.location.search).get("group_id");
     if (!id) {if(status)status.textContent="Select the profile that should receive these photos.";return;}
     if (!files?.length) {if(status)status.textContent="Choose one or more local photos first.";return;}
     addPhotosButton.disabled=true;
     if(status)status.textContent="Saving selected local photos…";
     const data=new FormData();[...files].forEach(file=>data.append("photos",file));
+    if(requestedGroupId)data.set("group_id",requestedGroupId);
     try {
       const result=await readJson(await fetch("/api/face-profiles/"+id+"/photos",{method:"POST",body:data}));
       $("#morePhotos").value="";
       await refreshProfiles();
-      if(status)status.textContent="Added "+result.added+" photo(s) to "+result.profile.name+". Total: "+result.profile.image_count+".";
+      await loadDatasetGroups();
+      if(status)status.textContent="Added "+result.added+" photo(s) to "+result.profile.name+(result.group_id?" and the selected dataset group.":"." )+" Total: "+result.profile.image_count+".";
     } catch(error) {if(status)status.textContent=error.message;}
     finally {addPhotosButton.disabled=false;}
   });
@@ -290,6 +295,7 @@
         picker.appendChild(empty);updateGeneratedPhotoSelectionCount();return;
       }
       assets.forEach(asset=>{
+        generatedPhotoAssetCache.set(asset.id,asset);
         const label=document.createElement("label");label.className="generated-photo-option";
         const checkbox=document.createElement("input");checkbox.type="checkbox";checkbox.name="generatedAsset";checkbox.value=asset.id;checkbox.checked=selectedGeneratedAssetIds.has(asset.id);checkbox.setAttribute("aria-label","Select "+asset.title);
         checkbox.addEventListener("change",()=>{
@@ -317,17 +323,26 @@
   $("#addGeneratedPhotosButton")?.addEventListener("click",async()=>{
     const id=$("#addPhotosProfile")?.value;
     const selected=[...selectedGeneratedAssetIds];
+    const requestedGroupId=new URLSearchParams(window.location.search).get("group_id");
     const status=$("#generatedPhotosStatus");const button=$("#addGeneratedPhotosButton");
     if(!id){if(status)status.textContent="Select the face profile that should receive the images.";return;}
     if(!selected.length){if(status)status.textContent="Select at least one generated image.";return;}
     if(selected.length>30){if(status)status.textContent="Select at most 30 generated images per batch.";return;}
     button.disabled=true;if(status)status.textContent="Copying selected database images into the face dataset…";
     try{
-      const result=await readJson(await fetch("/api/face-profiles/"+id+"/photos/from-assets",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({asset_ids:selected})}));
+      const angleLabels=selected.map((assetId,index)=>{
+        const asset=generatedPhotoAssetCache.get(assetId);
+        return String(asset?.title||("Additional photo "+(index+1))).slice(0,80);
+      });
+      const payload={asset_ids:selected};
+      if(requestedGroupId){payload.group_id=requestedGroupId;payload.angle_labels=angleLabels;}
+      const result=await readJson(await fetch("/api/face-profiles/"+id+"/photos/from-assets",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}));
       selected.forEach(assetId=>selectedGeneratedAssetIds.delete(assetId));
       await refreshProfiles();
       await loadGeneratedPhotoPicker();
-      if(status)status.textContent="Added "+result.added+" generated image(s) to "+result.profile.name+". Total: "+result.profile.image_count+".";
+      await loadDatasetGroups();
+      if(status)status.textContent="Added "+result.added+" generated image(s) to "+result.profile.name+(requestedGroupId?" and the selected dataset group.":"." )+" Total: "+result.profile.image_count+".";
+
     }catch(error){if(status)status.textContent=error.message;}
     finally{button.disabled=false;updateGeneratedPhotoSelectionCount();}
   });
