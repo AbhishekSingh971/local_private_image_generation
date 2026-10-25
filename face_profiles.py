@@ -86,7 +86,7 @@ def _public_record(record: dict) -> dict:
     profile_id = record["id"]
     result = dict(record)
     result["image_count"] = _image_count(profile_id)
-    result["local_model_ready"] = bool(record.get("local_model_ready")) or _local_lora_ready(profile_id)
+    result["local_model_ready"] = _local_lora_ready(profile_id)
     result["runpod_model_ready"] = bool(record.get("runpod_model_ready"))
     # This is a local filesystem path; it is useful in server logs but not in the browser.
     result.pop("dataset_dir", None)
@@ -133,6 +133,8 @@ def create_profile(name: str, profile_id: str | None = None, token: str | None =
         # Do not let two profiles share a display name: the picker should be unambiguous.
         if any(item.get("name", "").casefold() == name.casefold() for item in registry["profiles"]):
             raise ValueError("A face profile with that name already exists. Choose a different name.")
+        if any(item.get("token") == token for item in registry["profiles"]):
+            raise ValueError("That prompt token is already assigned to another profile. Choose a unique token.")
         record = {
             "id": profile_id,
             "name": name,
@@ -143,6 +145,7 @@ def create_profile(name: str, profile_id: str | None = None, token: str | None =
             "local_training_state": "not_trained",
             "runpod_training_state": "not_trained",
             "local_training_error": None,
+            "local_training_job_id": None,
             "runpod_training_error": None,
             "runpod_training_job_id": None,
         }
