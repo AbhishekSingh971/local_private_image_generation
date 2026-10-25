@@ -1060,6 +1060,67 @@
     });
     return readJson(response);
   }
+  let activeDatasetType="face_angles";
+  const datasetTypeLabels={face_angles:"Face angles",expressions:"Expressions",body_type:"Body type · global"};
+  $(".dataset-category-tab").forEach(tab=>tab.addEventListener("click",()=>{
+    activeDatasetType=tab.dataset.datasetFilter||"face_angles";
+    $(".dataset-category-tab").forEach(item=>item.classList.toggle("active",item===tab));
+    loadDatasetGroups();
+  }));
+  let editingTrainingPhoto=null;
+  let latestTrainingPhotoPreview=null;
+  const trainingPhotoDialog=$("#editTrainingPhotoDialog");
+  function openTrainingPhotoEdit(photo,group) {
+    editingTrainingPhoto={photo,group};latestTrainingPhotoPreview=null;
+    $("#trainingPhotoOldPreview").src=photo.content_url;
+    const next=$("#trainingPhotoNewPreview");next.removeAttribute("src");next.hidden=true;
+    $("#trainingPhotoNewPlaceholder").hidden=false;
+    $("#trainingPhotoEditPrompt").value="";
+    $("#trainingPhotoEditNegative").value="different person, changed hairstyle, changed apparent age, cartoon, CGI, blur, watermark";
+    $("#trainingPhotoEditStrength").value=group.dataset_type==="expressions"?"0.30":"0.35";
+    $("#trainingPhotoEditSteps").value="20";$("#saveNewTrainingPhoto").disabled=true;
+    $("#trainingPhotoEditStatus").textContent="";$("#trainingPhotoUseBodyModel").checked=false;
+    if(trainingPhotoDialog&&!trainingPhotoDialog.open)trainingPhotoDialog.showModal();
+  }
+  function closeTrainingPhotoEdit(){if(trainingPhotoDialog?.open)trainingPhotoDialog.close();}
+  $("#closeTrainingPhotoEdit")?.addEventListener("click",closeTrainingPhotoEdit);
+  $("#keepOriginalTrainingPhoto")?.addEventListener("click",closeTrainingPhotoEdit);
+  $("#editTrainingPhotoForm")?.addEventListener("submit",async event=>{
+    event.preventDefault();if(!editingTrainingPhoto)return;
+    const status=$("#trainingPhotoEditStatus"),button=$("#generateTrainingPhotoPreview");
+    button.disabled=true;if(status)status.textContent="Generating preview. The saved photo will not change yet…";
+    try{
+      const formData=new FormData();
+      formData.set("prompt",$("#trainingPhotoEditPrompt").value);
+      formData.set("negative_prompt",$("#trainingPhotoEditNegative").value);
+      formData.set("strength",$("#trainingPhotoEditStrength").value);
+      formData.set("steps",$("#trainingPhotoEditSteps").value);
+      formData.set("image_preset","photorealistic");formData.set("aspect_ratio","square");
+      formData.set("seed",String(Math.floor(Math.random()*2147483648)));formData.set("task_id",newGenerationTaskId());
+      if($("#trainingPhotoUseBodyModel").checked)formData.set("use_global_body_model","true");
+      addComputeData(formData);
+      const result=await readJson(await fetch("/api/face-photos/"+encodeURIComponent(editingTrainingPhoto.photo.id)+"/edit-preview",{method:"POST",body:formData}));
+      latestTrainingPhotoPreview=result.image_data_url;
+      const next=$("#trainingPhotoNewPreview");next.src=latestTrainingPhotoPreview;next.hidden=false;
+      $("#trainingPhotoNewPlaceholder").hidden=true;$("#saveNewTrainingPhoto").disabled=false;
+      if(status)status.textContent="Preview ready. Compare both photos, then choose Keep original or Save new photo.";
+    }catch(error){if(status)status.textContent=error.message;}
+    finally{button.disabled=false;}
+  });
+  $("#saveNewTrainingPhoto")?.addEventListener("click",async()=>{
+    if(!editingTrainingPhoto||!latestTrainingPhotoPreview)return;
+    const status=$("#trainingPhotoEditStatus"),button=$("#saveNewTrainingPhoto");button.disabled=true;
+    if(status)status.textContent="Updating only this training photo…";
+    try{
+      const blob=await (await fetch(latestTrainingPhotoPreview)).blob();
+      const formData=new FormData();formData.append("photo",blob,"edited-training-photo.png");
+      await readJson(await fetch("/api/face-photos/"+encodeURIComponent(editingTrainingPhoto.photo.id),{method:"PUT",body:formData}));
+      if(status)status.textContent="Saved. Only this selected training photo was replaced; every other photo remains unchanged.";
+      await loadDatasetGroups();await refreshProfiles();closeTrainingPhotoEdit();
+    }catch(error){if(status)status.textContent="Could not save the edited photo: "+error.message;}
+    finally{button.disabled=false;}
+  });
+
   async function loadDatasetGroups() {
     const container=$("#datasetGroups");
     if(!container)return;
@@ -1068,13 +1129,23 @@
     if(countLabel)countLabel.textContent="Loading training datasets…";
     try{
       const data=await readJson(await fetch("/api/face-dataset-groups",{cache:"no-store"}));
-      const groups=data.groups||[];
+      const allGroups=data.groups||[];
+      const groups=allGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
+      $(".dataset-category-tab").forEach(tab=>{
+        const amount=allGroups.filter(group=>(group.dataset_type||"face_angles")===tab.dataset.datasetFilter).length;
+        tab.textContent=(datasetTypeLabels[tab.dataset.datasetFilter]||tab.dataset.datasetFilter)+" ("+amount+")";
+      });
       container.replaceChildren();
-      if(countLabel)countLabel.textContent=groups.length+" dataset group(s)";
+      if(countLabel)countLabel.textContent=groups.length+" "+(datasetTypeLabels[activeDatasetType]||"")+" dataset group(s) · "+allGroups.length+" total";
       if(!groups.length){
         const empty=document.createElement("div");empty.className="empty-state panel";
-        const title=document.createElement("h3");title.textContent="No grouped datasets yet";
-        const note=document.createElement("p");note.textContent="Open Face models → Add training photos → Auto-generate 5 angles to create your first group.";
+        const title=document.createElement("h3");title.textContent="No "+(datasetTypeLabels[activeDatasetType]||"")+" datasets yet";
+        const note=document.createElement("p");
+        note.textContent=activeDatasetType==="body_type"
+          ?"Open Face models → Body type · global to generate prompt-based samples without uploading a reference photo."
+          :activeDatasetType==="expressions"
+          ?"Open Face models → Expressions to upload a source face and generate expression variations."
+          :"Open Face models → Face angles to upload a source face and generate viewpoint variations.";
         empty.append(title,note);container.appendChild(empty);return;
       }
       groups.forEach(group=>{
@@ -1131,14 +1202,16 @@
               await refreshProfiles();
             }catch(error){if(status)status.textContent=error.message;deletePhoto.disabled=false;}
           });
-          photoActions.append(renamePhoto,replacePhoto,deletePhoto);
+          const editWithPrompt=document.createElement("button");editWithPrompt.type="button";editWithPrompt.className="secondary-button";editWithPrompt.textContent="Edit with prompt";editWithPrompt.disabled=busy;editWithPrompt.addEventListener("click",()=>openTrainingPhotoEdit(photo,group));
+          photoActions.append(editWithPrompt,renamePhoto,replacePhoto,deletePhoto);
           figure.append(image,label,photoActions,replaceInput);photos.appendChild(figure);
         });
         card.appendChild(photos);
         if(group.error){const error=document.createElement("p");error.className="dataset-group-error";error.textContent=group.error;card.appendChild(error);}
         if(busy){const warning=document.createElement("p");warning.className="field-help";warning.textContent="Generation is still in progress. Group edits are temporarily disabled.";card.appendChild(warning);}
         const actions=document.createElement("div");actions.className="dataset-group-actions";
-        const addPhotos=document.createElement("a");addPhotos.className="button-link secondary-link";addPhotos.href="/faces?profile_id="+encodeURIComponent(group.profile_id)+"&group_id="+encodeURIComponent(group.id);addPhotos.textContent="Add photos";
+        const isGlobalBody=group.dataset_type==="body_type";
+        const addPhotos=document.createElement("a");addPhotos.className="button-link secondary-link";addPhotos.href="/faces?profile_id="+encodeURIComponent(group.profile_id)+"&group_id="+encodeURIComponent(group.id);addPhotos.textContent="Add photos";addPhotos.hidden=isGlobalBody;
         const renameGroup=document.createElement("button");renameGroup.type="button";renameGroup.className="secondary-button";renameGroup.textContent="Rename group";renameGroup.disabled=busy;
         renameGroup.addEventListener("click",async()=>{
           const next=window.prompt("Dataset group name",group.title);
@@ -1151,8 +1224,8 @@
             await loadDatasetGroups();
           }catch(error){if(status)status.textContent=error.message;}
         });
-        const faceLink=document.createElement("a");faceLink.className="button-link secondary-link";faceLink.href="/faces?profile_id="+encodeURIComponent(group.profile_id);faceLink.textContent="Train this profile";
-        const imageLink=document.createElement("a");imageLink.className="button-link";imageLink.href="/generate/image?profile_id="+encodeURIComponent(group.profile_id);imageLink.textContent="Generate with face";
+        const faceLink=document.createElement("a");faceLink.className="button-link secondary-link";faceLink.href="/faces?profile_id="+encodeURIComponent(group.profile_id);faceLink.textContent="Train this profile";faceLink.hidden=isGlobalBody;
+        const imageLink=document.createElement("a");imageLink.className="button-link";imageLink.href="/generate/image?profile_id="+encodeURIComponent(group.profile_id);imageLink.textContent="Generate with face";imageLink.hidden=isGlobalBody;
         const deleteGroup=document.createElement("button");deleteGroup.type="button";deleteGroup.className="secondary-button danger-button";deleteGroup.textContent="Delete entire group";deleteGroup.disabled=busy;
         deleteGroup.addEventListener("click",async()=>{
           const confirmText="Delete the dataset group “"+group.title+"” and all "+(group.photo_count||0)+" grouped training photo(s)? This will not delete the original images from Generated images or the face profile itself.";
