@@ -87,6 +87,70 @@ LOCAL_TRAIN_JOBS = {}
 LOCAL_TRAIN_JOBS_LOCK = threading.Lock()
 LEGACY_MEDIA_MIGRATION_LOCK = threading.Lock()
 LEGACY_MEDIA_MIGRATED = False
+GENERATION_PROGRESS = {}
+GENERATION_PROGRESS_LOCK = threading.RLock()
+
+
+def _set_generation_progress(task_id, *, asset_type, backend, status, progress, current_step=0, total_steps=0, stage="", message=""):
+    if not re.fullmatch(r"[a-f0-9]{32}", str(task_id or "")):
+        return
+    now = time.time()
+    record = {
+        "task_id": task_id, "asset_type": asset_type, "backend": backend,
+        "status": status, "progress": max(0, min(100, int(progress))),
+        "current_step": max(0, int(current_step or 0)),
+        "total_steps": max(0, int(total_steps or 0)),
+        "stage": str(stage or "")[:80], "message": str(message or "")[:300],
+        "updated_at": now,
+    }
+    with GENERATION_PROGRESS_LOCK:
+        previous = GENERATION_PROGRESS.get(task_id, {})
+        record["created_at"] = previous.get("created_at", now)
+        GENERATION_PROGRESS[task_id] = record
+        while len(GENERATION_PROGRESS) > 200:
+            oldest = next(iter(GENERATION_PROGRESS))
+            if oldest == task_id and len(GENERATION_PROGRESS) > 1:
+                oldest = next(key for key in GENERATION_PROGRESS if key != task_id)
+            GENERATION_PROGRESS.pop(oldest, None)
+
+
+def _get_generation_progress(task_id):
+    with GENERATION_PROGRESS_LOCK:
+        progress = GENERATION_PROGRESS.get(task_id)
+        return dict(progress) if progress else None
+
+
+@app.get("/api/generation-progress/<task_id>")
+def api_generation_progress(task_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", task_id or ""):
+        return jsonify(error="Invalid generation task ID."), 400
+    progress = _get_generation_progress(task_id)
+    if not progress:
+        return jsonify(task_id=task_id, status="starting", progress=0, current_step=0,
+                       total_steps=0, stage="starting", message="Waiting for the generation worker…")
+    if progress.get("backend") == "runpod" and progress.get("status") not in {"completed", "failed"}:
+        try:
+            response = runpod_request(
+                "GET", f"/api/remote/generation-progress/{task_id}", timeout=(3, 5)
+            )
+            remote_progress = response.json()
+            if remote_progress.get("task_id") == task_id:
+                # Do not let a remote task update a different local task or asset type.
+                remote_progress["backend"] = "runpod"
+                _set_generation_progress(
+                    task_id, asset_type=progress["asset_type"], backend="runpod",
+                    status=remote_progress.get("status", "running"),
+                    progress=remote_progress.get("progress", 0),
+                    current_step=remote_progress.get("current_step", 0),
+                    total_steps=remote_progress.get("total_steps", 0),
+                    stage=remote_progress.get("stage", ""),
+                    message=remote_progress.get("message", ""),
+                )
+                progress = _get_generation_progress(task_id) or progress
+        except Exception:
+            # Generation remains active even if a status poll fails momentarily.
+            pass
+    return jsonify(progress)
 
 
 def _truthy(value) -> bool:
