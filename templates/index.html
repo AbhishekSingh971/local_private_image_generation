@@ -38,13 +38,20 @@
   <div class="gpurow">
     <div>
       <div class="eyebrow gpuhead">Compute mode</div>
-      <label class="switchline" for="useRunpod"><input id="useRunpod" type="checkbox"> Use RunPod GPU (RTX 3090)</label>
-      <div class="tiny">Off by default: use this computer. Turn on to route training/generation to your configured GPU worker.</div>
+      <label class="switchline" for="useRunpod"><input id="useRunpod" type="checkbox"> Enable GPU acceleration</label>
+      <div class="tiny">Off by default: force local CPU. When on, detect available GPUs and select System GPU or RunPod GPU.</div>
     </div>
     <div class="pill" id="gpuModePill">LOCAL · CPU</div>
   </div>
-  <div id="gpuStatus" class="status" role="status" aria-live="polite">RunPod is optional and not connected. No Pod will be created or purchased by this toggle.</div>
-  <div class="note">Turning this on sends the selected face photos during training, and prompts/reference images during generation, to your configured RunPod worker. It does not start or stop a Pod; a running Pod can incur charges. Set the worker URL and shared secret in your local <code>.env</code> first.</div>
+  <div id="computeBackendWrap" hidden>
+    <label for="computeBackend">Use available compute device</label>
+    <select id="computeBackend">
+      <option value="cpu">Local CPU (fallback)</option>
+    </select>
+    <div class="tiny">On toggle enable: prefer a supported local CUDA GPU, otherwise choose a reachable RunPod GPU. You can switch to any other detected option here.</div>
+  </div>
+  <div id="gpuStatus" class="status" role="status" aria-live="polite">GPU acceleration is off. Requests run on the local CPU; no cloud request is made.</div>
+  <div class="note">The toggle only routes tasks. It never purchases, starts or stops a RunPod Pod. If you select RunPod, that task's face photos, prompts and optional reference image are sent to your configured worker. A running Pod can incur charges.</div>
 </section>
 
 <section class="panel section">
@@ -156,8 +163,11 @@
 </main>
 <script>
 const useRunpod=document.getElementById('useRunpod');
+const computeBackendWrap=document.getElementById('computeBackendWrap');
+const computeBackend=document.getElementById('computeBackend');
 const gpuStatus=document.getElementById('gpuStatus');
 const gpuModePill=document.getElementById('gpuModePill');
+let computeAvailability=null;
 const createProfileForm=document.getElementById('createProfileForm');
 const createProfileButton=document.getElementById('createProfileButton');
 const createProfileStatus=document.getElementById('createProfileStatus');
@@ -188,7 +198,12 @@ const strength=document.getElementById('strength');
 let profiles=[];
 
 function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
-function addUseRunpod(formData){formData.set('use_runpod',useRunpod.checked?'true':'false');return formData;}
+function addUseRunpod(formData){
+  formData.set('use_gpu',useRunpod.checked?'true':'false');
+  formData.set('compute_backend',useRunpod.checked?(computeBackend.value||'auto'):'cpu');
+  formData.delete('use_runpod');
+  return formData;
+}
 async function readJson(response){
   let data={};try{data=await response.json();}catch(_){}
   if(!response.ok)throw new Error(data.error||data.message||('Request failed: HTTP '+response.status));
@@ -242,25 +257,76 @@ async function refreshProfiles(){
   const data=await readJson(await fetch('/api/face-profiles'));
   profiles=data.profiles||[];renderProfiles();return profiles;
 }
-async function probeRunpod(){
-  if(!useRunpod.checked){gpuModePill.textContent='LOCAL · CPU';gpuStatus.textContent='RunPod is off. Generation uses this computer; no cloud request is made.';return;}
-  gpuModePill.textContent='RUNPOD · CHECKING';
-  gpuStatus.textContent='Checking the configured RunPod GPU worker…';
-  try{
-    const response=await fetch('/api/gpu-status?probe=1');const data=await response.json();
-    if(!response.ok)throw new Error(data.message||'RunPod worker is not reachable.');
-    const w=data.worker||{};gpuModePill.textContent='RUNPOD · '+(w.gpu_name||'CONNECTED');
-    gpuStatus.textContent='Connected: '+(w.gpu_name||'GPU worker')+(w.vram_gb?' · '+w.vram_gb+' GB VRAM':'')+'. Only requests submitted while the toggle is on will use this worker.';
-  }catch(error){
-    gpuModePill.textContent='RUNPOD · NOT READY';gpuStatus.textContent=error.message||'Could not connect to RunPod.';
+function backendLabel(key, options){
+  if(key==='cpu')return 'Local CPU (fallback)';
+  if(key==='local_gpu')return 'System GPU · '+(options.local_gpu.name||'CUDA GPU')+(options.local_gpu.vram_gb?' · '+options.local_gpu.vram_gb+' GB VRAM':'');
+  if(key==='runpod')return 'Cloud GPU · '+(options.cloud_gpu.name||'RunPod GPU')+(options.cloud_gpu.vram_gb?' · '+options.cloud_gpu.vram_gb+' GB VRAM':'');
+  return key;
+}
+function renderComputeOptions(options){
+  computeAvailability=options;
+  const previous=computeBackend.value;
+  computeBackend.replaceChildren();
+  (options.available_backends||['cpu']).forEach(key=>{
+    const option=document.createElement('option');option.value=key;option.textContent=backendLabel(key,options);computeBackend.appendChild(option);
+  });
+  const fallback=options.available_backends&&options.available_backends.includes(previous)?previous:options.auto_backend||'cpu';
+  computeBackend.value=fallback;
+  applyComputeStatus();
+}
+function applyComputeStatus(){
+  const selected=useRunpod.checked?(computeBackend.value||'cpu'):'cpu';
+  if(!useRunpod.checked){
+    gpuModePill.textContent='LOCAL · CPU';
+    gpuStatus.textContent='GPU acceleration is off. Requests use the local CPU; no cloud request is made.';
+    return;
+  }
+  const labels={cpu:'CPU FALLBACK',local_gpu:'SYSTEM GPU',runpod:'CLOUD GPU'};
+  gpuModePill.textContent=labels[selected]||'GPU ENABLED';
+  if(selected==='local_gpu'){
+    gpuStatus.textContent='Using detected local GPU: '+(computeAvailability?.local_gpu?.name||'CUDA GPU')+'. This avoids cloud compute charges.';
+  }else if(selected==='runpod'){
+    gpuStatus.textContent='Using connected RunPod GPU: '+(computeAvailability?.cloud_gpu?.name||'RunPod GPU')+'. This task will be sent to your configured cloud worker.';
+  }else{
+    gpuStatus.textContent='No supported GPU was selected; using local CPU. '+((computeAvailability?.cloud_error)||'You can choose a GPU if one is available.');
+  }
+  if(computeAvailability?.cloud_error && selected!=='runpod'){
+    gpuStatus.textContent+=' RunPod unavailable: '+computeAvailability.cloud_error;
+  }else if(useRunpod.checked && selected==='cpu' && !computeAvailability?.cloud_gpu?.available && !computeAvailability?.local_gpu?.available){
+    gpuStatus.textContent+=' No CUDA GPU was detected locally or remotely. Configure a running RunPod worker or continue on CPU.';
   }
 }
-useRunpod.addEventListener('change',()=>{updateButtonLabels();probeRunpod();});
+async function probeRunpod(){
+  computeBackendWrap.hidden=!useRunpod.checked;
+  if(!useRunpod.checked){
+    computeAvailability=null;
+    renderComputeOptions({available_backends:['cpu'],auto_backend:'cpu',local_gpu:{},cloud_gpu:{},cloud_error:null});
+    return;
+  }
+  gpuModePill.textContent='CHECKING GPUS…';
+  gpuStatus.textContent='Checking local CUDA support and testing the configured RunPod worker…';
+  computeBackend.disabled=true;
+  try{
+    const response=await fetch('/api/gpu-status?probe=1');
+    const data=await response.json();
+    if(!response.ok)throw new Error(data.message||'Could not inspect available GPUs.');
+    renderComputeOptions(data);
+  }catch(error){
+    renderComputeOptions({available_backends:['cpu'],auto_backend:'cpu',local_gpu:{available:false},cloud_gpu:{available:false},cloud_error:error.message});
+  }finally{
+    computeBackend.disabled=false;
+    updateButtonLabels();
+  }
+}
+useRunpod.addEventListener('change',()=>{computeBackendWrap.hidden=!useRunpod.checked;updateButtonLabels();probeRunpod();});
+computeBackend.addEventListener('change',()=>{applyComputeStatus();updateButtonLabels();});
 function updateButtonLabels(){
-  const mode=useRunpod.checked?'RunPod GPU':'locally';
-  generateButton.textContent='Generate photo '+(useRunpod.checked?'on RunPod GPU':'locally');
-  videoButton.textContent='Generate video '+(useRunpod.checked?'on RunPod GPU':'locally');
-  trainButton.textContent='Train selected face '+(useRunpod.checked?'on RunPod GPU':'locally');
+  const selected=useRunpod.checked?(computeBackend.value||'cpu'):'cpu';
+  const labels={cpu:'local CPU',local_gpu:'System GPU',runpod:'RunPod GPU'};
+  const mode=labels[selected]||'local CPU';
+  generateButton.textContent='Generate photo on '+mode;
+  videoButton.textContent='Generate video on '+mode;
+  trainButton.textContent='Train selected face on '+mode;
 }
 strength.addEventListener('input',()=>document.getElementById('strengthValue').textContent=Number(strength.value).toFixed(2));
 referenceImage.addEventListener('change',()=>{
@@ -354,8 +420,10 @@ videoForm.addEventListener('submit',async event=>{
 async function loadStatus(){
   try{
     const response=await fetch('/health');const data=await readJson(response);
-    gpuStatus.textContent='RunPod is off by default. '+(data.runpod_configured?'A worker URL and token are configured. Toggle on to test it.':'No worker URL/token configured yet. The local app remains usable.');
+    const gpu=data.local_gpu||{};
+    gpuStatus.textContent='GPU acceleration is off by default. '+(gpu.available?'System GPU detected: '+gpu.name+'.':'No local CUDA GPU is available to this PyTorch installation. ')+(data.runpod_configured?'RunPod is configured; toggle on to check cloud GPU availability.':'RunPod is not configured; you can still generate on local CPU.');
   }catch(error){gpuStatus.textContent=error.message;}
+  computeBackendWrap.hidden=!useRunpod.checked;
   await refreshProfiles().catch(error=>{profileList.textContent=error.message;});
 }
 updateButtonLabels();loadStatus();
