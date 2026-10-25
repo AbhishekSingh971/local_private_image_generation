@@ -1367,6 +1367,7 @@ def generate():
         width, height = resolve_image_dimensions(aspect_ratio)
         backend = _resolve_compute_backend(request.form)
         seed = resolve_generation_seed(request.form.get("seed"))
+        use_global_body_model = _truthy(request.form.get("use_global_body_model"))
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID. Refresh the page and retry.")
@@ -1379,6 +1380,18 @@ def generate():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
+    if use_global_body_model:
+        try:
+            body_profile = ensure_global_body_profile()
+            body_backend = "runpod" if backend == "runpod" else "local"
+            if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, body_backend):
+                return jsonify(error=(
+                    "The shared body model is not trained for the selected backend. Open Training datasets, "
+                    "generate body-type samples, train the shared body model on this backend, then retry."
+                )), 400
+            prompt = f"{GLOBAL_BODY_PROFILE_TOKEN}, {prompt}"
+        except (RuntimeError, ValueError) as exc:
+            return jsonify(error=str(exc)), 400
 
     image_file = request.files.get("image")
     try:
@@ -1411,8 +1424,9 @@ def generate():
             )
             data = {
                 "prompt": prompt, "negative_prompt": negative_prompt,
-                "steps": str(steps), "strength": str(strength), "seed": str(seed), "task_id": task_id,
-                "aspect_ratio": aspect_ratio, "image_preset": image_preset,
+                "steps": str(steps), "strength": str(strength), "seed": str(seed),
+                "use_global_body_model": "true" if use_global_body_model else "false",
+                "task_id": task_id, "aspect_ratio": aspect_ratio, "image_preset": image_preset,
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
@@ -1469,7 +1483,9 @@ def generate():
                 task_id, asset_type="image", backend=backend, status="running", progress=3,
                 total_steps=steps, stage="loading_model", message="Loading the image model and selected face…",
             )
-            pipeline = _load_cpu_or_gpu_pipeline(mode, profile_id, backend)
+            pipeline = _load_cpu_or_gpu_pipeline(
+                mode, profile_id, backend, use_global_body_model=use_global_body_model
+            )
             generator_device = "cuda" if backend == "local_gpu" else "cpu"
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=5,
