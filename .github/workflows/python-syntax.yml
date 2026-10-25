@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile application, profile manager, GPU worker and trainer
-        run: python -m py_compile app.py face_profiles.py studio_db.py gpu_worker.py train_face_lora.py image_generation.py
+        run: python -m py_compile app.py face_profiles.py studio_db.py gpu_worker.py train_face_lora.py image_generation.py training_generation.py pose_validation.py
       - name: Install lightweight test dependencies
         run: python -m pip install Pillow pytest SQLAlchemy
       - name: Test compute routing, face profiles, and database persistence
