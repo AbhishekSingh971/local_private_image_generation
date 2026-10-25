@@ -236,6 +236,9 @@ def create_face_profile_record(record: dict) -> dict:
     ensure_schema()
     with _session_factory()() as session:
         try:
+            existing = session.get(FaceProfileRow, record["id"])
+            if existing:
+                return _profile_dict(existing)
             row = FaceProfileRow(
                 id=record["id"], name=record["name"], name_key=record["name"].casefold(),
                 token=record["token"], created_at=record["created_at"],
