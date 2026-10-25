@@ -428,6 +428,17 @@ def create_asset(*, asset_type: str, title: str, filename: str, mime_type: str, 
         return _asset_dict(row)
 
 
+def list_asset_filenames(asset_type: str) -> set[str]:
+    if asset_type not in {"image", "video"}:
+        raise ValueError("Asset type must be image or video.")
+    ensure_schema()
+    with _session_factory()() as session:
+        filenames = session.scalars(
+            select(GeneratedAssetRow.filename).where(GeneratedAssetRow.asset_type == asset_type)
+        ).all()
+        return {Path(name).name for name in filenames}
+
+
 def list_assets(asset_type: str | None = None, limit: int = 200) -> list[dict]:
     ensure_schema()
     limit = max(1, min(int(limit), 500))
