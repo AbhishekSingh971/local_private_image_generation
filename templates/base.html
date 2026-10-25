@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Private Face Studio{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='studio.css') }}">
+</head>
+<body data-page="{{ page_key|default('dashboard') }}" data-asset-type="{{ asset_type|default('') }}">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-mark">PF</span><span><strong>Private Face Studio</strong><small>LOCAL-FIRST CREATIVE AI</small></span></a>
+      <div class="nav-label">WORKSPACE</div>
+      <nav class="nav-list" aria-label="Main navigation">
+        <a class="nav-link {{ 'active' if active_page == 'dashboard' else '' }}" href="{{ url_for('dashboard') }}"><span>⌂</span> Overview</a>
+        <a class="nav-link {{ 'active' if active_page == 'image' else '' }}" href="{{ url_for('generate_image_page') }}"><span>▧</span> Generate image</a>
+        <a class="nav-link {{ 'active' if active_page == 'video' else '' }}" href="{{ url_for('generate_video_page') }}"><span>▷</span> Generate video</a>
+        <a class="nav-link {{ 'active' if active_page == 'faces' else '' }}" href="{{ url_for('faces_page') }}"><span>◎</span> Face models</a>
+        <div class="nav-label nav-label-spaced">YOUR LIBRARY</div>
+        <a class="nav-link {{ 'active' if active_page == 'images' else '' }}" href="{{ url_for('library_images_page') }}"><span>▦</span> Generated images</a>
+        <a class="nav-link {{ 'active' if active_page == 'videos' else '' }}" href="{{ url_for('library_videos_page') }}"><span>▣</span> Generated videos</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="online-dot"></span><div><strong>Private workspace</strong><small>Only run locally unless cloud GPU is selected.</small></div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar">
+        <div><div class="eyebrow">PRIVATE FACE STUDIO</div><div class="topbar-title">{% block page_heading %}Your creative workspace{% endblock %}</div></div>
+        <div class="storage-chip {{ 'connected' if storage_status.connected and storage_status.configured_postgresql else 'warning' }}"><span></span>{{ 'PostgreSQL connected' if storage_status.connected and storage_status.configured_postgresql else ('Local DB · set DATABASE_URL' if storage_status.connected else 'Database unavailable') }}</div>
+      </header>
+
+      <section class="compute-panel panel">
+        <div class="compute-copy">
+          <div class="eyebrow">Compute preference</div>
+          <label class="switchline" for="useRunpod"><input id="useRunpod" type="checkbox"> Enable GPU acceleration</label>
+          <p class="tiny">Off uses local CPU. On checks usable System GPU and configured RunPod GPU before offering choices.</p>
+        </div>
+        <div class="compute-controls">
+          <div class="pill" id="gpuModePill">LOCAL · CPU</div>
+          <div id="computeBackendWrap" hidden><label for="computeBackend">Choose available device</label><select id="computeBackend"><option value="cpu">Local CPU (fallback)</option></select></div>
+        </div>
+        <div id="gpuStatus" class="status" role="status" aria-live="polite">GPU acceleration is off. Requests use local CPU.</div>
+      </section>
+      {% if storage_status.connected and not storage_status.configured_postgresql %}
+        <div class="note">DATABASE_URL is not set, so the app is using its local SQLite development database. Add DATABASE_URL to your private .env to make PostgreSQL the source of truth.</div>
+      {% elif not storage_status.connected %}
+        <div class="note">{{ storage_status.message }} Generation can run only if the database becomes available before saving the result.</div>
+      {% endif %}
+      <div class="page-content">
+        {% block content %}{% endblock %}
+      </div>
+      <footer class="app-footer">Private Face Studio · Keep your .env, face photos and model weights private. GPU routing does not start or stop cloud Pods.</footer>
+    </main>
+  </div>
+  <script src="{{ url_for('static', filename='studio.js') }}" defer></script>
+</body>
+</html>
