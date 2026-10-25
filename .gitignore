@@ -3,5 +3,7 @@ __pycache__/
 *.pyc
 data/inputs/*
 data/outputs/*
+data/videos/*
+data/face_dataset/*
 models/*
 !models/.gitkeep
