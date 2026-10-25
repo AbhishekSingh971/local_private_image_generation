@@ -442,14 +442,48 @@ def list_asset_filenames(asset_type: str) -> set[str]:
         return {Path(name).name for name in filenames}
 
 
-def list_assets(asset_type: str | None = None, limit: int = 200) -> list[dict]:
+def _asset_query(asset_type: str | None = None, search: str = ""):
+    query = select(GeneratedAssetRow)
+    if asset_type in {"image", "video"}:
+        query = query.where(GeneratedAssetRow.asset_type == asset_type)
+    term = (search or "").strip()[:160]
+    if term:
+        pattern = f"%{term}%"
+        query = query.where(
+            GeneratedAssetRow.title.ilike(pattern)
+            | GeneratedAssetRow.prompt.ilike(pattern)
+            | GeneratedAssetRow.negative_prompt.ilike(pattern)
+            | GeneratedAssetRow.profile_name.ilike(pattern)
+        )
+    return query
+
+
+def count_assets(asset_type: str | None = None, search: str = "") -> int:
+    ensure_schema()
+    with _session_factory()() as session:
+        query = _asset_query(asset_type, search).with_only_columns(func.count(GeneratedAssetRow.id)).order_by(None)
+        return int(session.scalar(query) or 0)
+
+
+def list_assets(
+    asset_type: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    search: str = "",
+    sort: str = "newest",
+) -> list[dict]:
     ensure_schema()
     limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
     with _session_factory()() as session:
-        query = select(GeneratedAssetRow)
-        if asset_type in {"image", "video"}:
-            query = query.where(GeneratedAssetRow.asset_type == asset_type)
-        rows = session.scalars(query.order_by(GeneratedAssetRow.created_at.desc()).limit(limit)).all()
+        query = _asset_query(asset_type, search)
+        if sort == "oldest":
+            ordering = (GeneratedAssetRow.created_at.asc(), GeneratedAssetRow.id.asc())
+        elif sort == "title":
+            ordering = (func.lower(GeneratedAssetRow.title).asc(), GeneratedAssetRow.created_at.desc())
+        else:
+            ordering = (GeneratedAssetRow.created_at.desc(), GeneratedAssetRow.id.desc())
+        rows = session.scalars(query.order_by(*ordering).offset(offset).limit(limit)).all()
         return [_asset_dict(row) for row in rows]
 
 
