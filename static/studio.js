@@ -670,6 +670,116 @@
     }
   });
 
+  let globalBodyStatusCache=null;
+  async function loadGlobalBodyStatus(showError=true) {
+    const bodyStatus=$("#globalBodyModelStatus");
+    const generateStatus=$("#globalBodyGenerationStatus");
+    const editBodyCheckbox=$("#trainingPhotoUseBodyModel");
+    try {
+      globalBodyStatusCache=await readJson(await fetch("/api/global-body/status",{cache:"no-store"}));
+      const info=globalBodyStatusCache;
+      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · RunPod: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
+      if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", RunPod: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend."; 
+      if(editBodyCheckbox&&!editBodyCheckbox.dataset.userTouched)editBodyCheckbox.checked=false;
+      const trainBodyButton=$("#trainGlobalBodyButton");
+      if(trainBodyButton)trainBodyButton.disabled=Number(info.image_count||0)<5;
+      return info;
+    } catch(error) {
+      if(showError&&bodyStatus)bodyStatus.textContent="Could not read shared body-model status: "+error.message;
+      if(generateStatus)generateStatus.textContent="Could not read shared body-model status. Check the database connection."; 
+      return null;
+    }
+  }
+  $("#trainingPhotoUseBodyModel")?.addEventListener("change",event=>{event.target.dataset.userTouched="1";});
+
+  const generateBodyDatasetButton=$("#generateBodyDatasetButton");
+  generateBodyDatasetButton?.addEventListener("click",async()=>{
+    const titleInput=$("#bodyGroupTitle");
+    const promptInput=$("#bodyTypePrompt");
+    const status=$("#bodyDatasetStatus");
+    const title=(titleInput?.value||"").trim()||("Shared body type · "+new Date().toLocaleString());
+    const bodyPrompt=(promptInput?.value||"").trim();
+    if(!bodyPrompt){if(status)status.textContent="Describe the adult body type or figure before generating samples.";return;}
+    if(bodyPrompt.length>1000){if(status)status.textContent="The body prompt must be 1000 characters or fewer.";return;}
+    generateBodyDatasetButton.disabled=true;
+    const originalText=generateBodyDatasetButton.textContent;
+    generateBodyDatasetButton.textContent="Generating body samples…";
+    let group=null,generatedCount=0;
+    try {
+      group=(await readJson(await fetch("/api/global-body/dataset-groups",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({title,prompt:bodyPrompt})
+      }))).group;
+      const info=globalBodyStatusCache||await loadGlobalBodyStatus();
+      for(let index=0;index<5;index++){
+        if(status)status.textContent="Generating body sample "+(index+1)+" of 5. No source photo is used."; 
+        const taskId=newGenerationTaskId();
+        const formData=new FormData();
+        formData.set("prompt","Photorealistic full-body studio photograph of an adult model, "+bodyPrompt+". Entire adult subject visible from head to feet, natural anatomy and realistic proportions, neutral uncluttered studio background, realistic skin texture and soft photographic lighting. Sample "+(index+1)+" of the same requested body type, with a subtly different natural standing pose.");
+        formData.set("negative_prompt","cartoon, anime, illustration, CGI, 3D render, plastic skin, deformed anatomy, extra limbs, cropped head, cropped feet, out of frame, blurry, watermark, text");
+        formData.set("steps","20");formData.set("title",title+" - Body sample "+(index+1));
+        formData.set("image_preset","full_body_photo");formData.set("aspect_ratio","portrait");formData.set("task_id",taskId);
+        formData.delete("use_global_body_model");
+        addComputeData(formData);
+        const controller=new AbortController();
+        const watcher=watchGenerationProgress(taskId,"image",controller);
+        let generated;
+        try {generated=await readJson(await fetch("/generate",{method:"POST",body:formData}));}
+        finally {controller.abort();await watcher;}
+        if(!generated.asset_id)throw new Error("Body sample "+(index+1)+" was generated without a saved image ID.");
+        const label=("Body type: "+bodyPrompt).slice(0,80);
+        await readJson(await fetch("/api/face-profiles/"+info.profile_id+"/photos/from-assets",{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({asset_ids:[generated.asset_id],group_id:group.id,angle_labels:[label]})
+        }));
+        generatedCount=index+1;
+        await updateFaceDatasetGroup(group.id,{status:"generating",generated_count:generatedCount,error:""});
+        if(status)status.textContent="Saved body sample "+generatedCount+" of 5 to the shared dataset. The generated image also remains in your image library."; 
+      }
+      await updateFaceDatasetGroup(group.id,{status:"completed",generated_count:5,error:""});
+      if(status)status.textContent="Created shared body-type dataset “"+title+"” with five prompt-generated samples. Train the shared body model to reuse it with any face."; 
+      if(titleInput)titleInput.value=title;
+      await loadDatasetGroups();
+      await loadGlobalBodyStatus();
+    } catch(error) {
+      if(group)await updateFaceDatasetGroup(group.id,{status:generatedCount?"partial":"failed",generated_count:generatedCount,error:error.message}).catch(()=>{});
+      if(status)status.textContent="Body dataset generation stopped after "+generatedCount+" saved sample(s): "+error.message;
+      await loadDatasetGroups();
+    } finally {
+      generateBodyDatasetButton.disabled=false;
+      generateBodyDatasetButton.textContent=originalText;
+      await loadGlobalBodyStatus(false);
+    }
+  });
+
+  const trainGlobalBodyButton=$("#trainGlobalBodyButton");
+  trainGlobalBodyButton?.addEventListener("click",async()=>{
+    const status=$("#bodyDatasetStatus");
+    const button=trainGlobalBodyButton;
+    const info=await loadGlobalBodyStatus();
+    if(!info||!info.profile_id){if(status)status.textContent="Could not load the shared body profile.";return;}
+    if(Number(info.image_count||0)<5){if(status)status.textContent="Generate or add at least five body-type photos first.";return;}
+    const formData=new FormData();formData.set("steps","800");formData.set("resolution","512");addComputeData(formData);
+    const selectedBackend=useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu";
+    const backend=selectedBackend==="runpod"?"runpod":(selectedBackend==="local_gpu"?"local":"cpu");
+    button.disabled=true;
+    try {
+      const response=await readJson(await fetch("/api/face-profiles/"+info.profile_id+"/train",{method:"POST",body:formData}));
+      if(status)status.textContent=response.message||"Shared body-model training started."; 
+      const selected=backend==="runpod"?"runpod":"local";
+      const started=Date.now();
+      while(Date.now()-started<8*60*60*1000){
+        await new Promise(resolve=>setTimeout(resolve,4000));
+        const state=await readJson(await fetch("/api/face-profiles/"+info.profile_id+"/train-status?backend="+selected));
+        if(state.status==="completed"){if(status)status.textContent="Shared body model training completed. Enable it during image generation to reuse the body-type conditioning with any face.";break;}
+        if(state.status==="failed"){throw new Error(state.error||"Shared body-model training failed.");}
+        if(status)status.textContent="Shared body model training is "+state.status+"…";
+      }
+      await loadGlobalBodyStatus();
+    } catch(error) {if(status)status.textContent="Shared body-model training error: "+error.message;}
+    finally {button.disabled=Number((globalBodyStatusCache||{}).image_count||0)<5;await loadGlobalBodyStatus(false);}
+  });
+
   const trainForm=$("#trainForm");
   async function pollTraining(profileId, backend) {
     const started=Date.now();let previous="";
