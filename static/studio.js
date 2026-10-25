@@ -340,16 +340,43 @@
     {label:"Left profile", prompt:"clear left-facing side profile, approximately 90-degree head turn, one eye visible"},
     {label:"Right profile", prompt:"clear right-facing side profile, approximately 90-degree head turn, one eye visible"}
   ];
-  function setAngleProgress(index, message, failed=false) {
+  function setAngleProgressPercent(percent, stageText, message, failed=false) {
     const progress=$("#faceAnglesProgress");
     if(progress)progress.hidden=false;
-    const percent=Math.max(0,Math.min(100,index*20));
+    const value=Math.max(0,Math.min(100,Math.round(percent)));
     const bar=$("#faceAnglesProgressBar");const percentLabel=$("#faceAnglesProgressPercent");
     const stage=$("#faceAnglesProgressStage");const detail=$("#faceAnglesProgressDetail");
-    if(bar){bar.value=percent;bar.classList.toggle("progress-failed",failed);}
-    if(percentLabel)percentLabel.textContent=percent+"%";
-    if(stage)stage.textContent=failed?"Angle generation stopped":(index===5?"Dataset group ready":"Generating angle "+Math.min(index+1,5)+" of 5");
+    if(bar){bar.value=value;bar.classList.toggle("progress-failed",failed);}
+    if(percentLabel)percentLabel.textContent=value+"%";
+    if(stage)stage.textContent=failed?"Angle generation stopped":stageText;
     if(detail)detail.textContent=message;
+  }
+  function setAngleProgress(index, message, failed=false) {
+    const stage=index===5?"Dataset group ready":"Generating angle "+Math.min(index+1,5)+" of 5";
+    setAngleProgressPercent(index*20,stage,message,failed);
+  }
+  async function watchFaceAngleProgress(taskId, completedCount, angleLabel, controller) {
+    while(!controller.signal.aborted){
+      try{
+        const response=await fetch("/api/generation-progress/"+taskId,{cache:"no-store",signal:controller.signal});
+        if(response.ok){
+          const data=await response.json();
+          const perAngle=Math.max(0,Math.min(100,Number(data.progress||0)));
+          const overall=((completedCount*100)+perAngle)/5;
+          const step=Number(data.total_steps)>0
+            ? " · step "+Number(data.current_step||0)+"/"+Number(data.total_steps)
+            : "";
+          setAngleProgressPercent(
+            overall,"Angle "+(completedCount+1)+" of 5 · "+(data.stage||"generating"),
+            angleLabel+": "+(data.message||"Generating…")+step,data.status==="failed"
+          );
+          if(data.status==="completed"||data.status==="failed")return;
+        }
+      }catch(error){
+        if(controller.signal.aborted||error.name==="AbortError")return;
+      }
+      await new Promise(resolve=>setTimeout(resolve,850));
+    }
   }
   async function updateFaceDatasetGroup(groupId, payload) {
     return readJson(await fetch("/api/face-dataset-groups/"+groupId,{
@@ -392,11 +419,26 @@
           formData.set("steps","20");
           formData.set("title",title+" - "+angle.label);
           formData.set("image_preset","standard");
-          formData.set("aspect_ratio","portrait");
+          formData.set("aspect_ratio","square");
           formData.append("image",source,source.name);
-          formData.set("task_id",newGenerationTaskId());
+          const taskId=newGenerationTaskId();
+          formData.set("task_id",taskId);
+          const selectedBackend=useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu";
+          const angleProfile=profiles.find(profile=>profile.id===profileId);
+          if(angleProfile&&(
+            (selectedBackend==="runpod"&&angleProfile.runpod_model_ready)||
+            (selectedBackend!=="runpod"&&angleProfile.local_model_ready)
+          ))formData.set("face_profile_id",profileId);
           addComputeData(formData);
-          const generated=await readJson(await fetch("/generate",{method:"POST",body:formData}));
+          const angleController=new AbortController();
+          const angleWatcher=watchFaceAngleProgress(taskId,i,angle.label,angleController);
+          let generated;
+          try{
+            generated=await readJson(await fetch("/generate",{method:"POST",body:formData}));
+          }finally{
+            angleController.abort();
+            await angleWatcher;
+          }
           if(!generated.asset_id)throw new Error("Image generation returned no saved media ID.");
           generatedIds.push(generated.asset_id);generatedLabels.push(angle.label);
           await updateFaceDatasetGroup(groupId,{status:"generating",generated_count:generatedIds.length});
