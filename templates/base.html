@@ -16,6 +16,7 @@
         <a class="nav-link {{ 'active' if active_page == 'image' else '' }}" href="{{ url_for('generate_image_page') }}"><span>▧</span> Generate image</a>
         <a class="nav-link {{ 'active' if active_page == 'video' else '' }}" href="{{ url_for('generate_video_page') }}"><span>▷</span> Generate video</a>
         <a class="nav-link {{ 'active' if active_page == 'faces' else '' }}" href="{{ url_for('faces_page') }}"><span>◎</span> Face models</a>
+        <a class="nav-link {{ 'active' if active_page == 'training-data' else '' }}" href="{{ url_for('training_data_page') }}"><span>▤</span> Training datasets</a>
         <div class="nav-label nav-label-spaced">YOUR LIBRARY</div>
         <a class="nav-link {{ 'active' if active_page == 'images' else '' }}" href="{{ url_for('library_images_page') }}"><span>▦</span> Generated images</a>
         <a class="nav-link {{ 'active' if active_page == 'videos' else '' }}" href="{{ url_for('library_videos_page') }}"><span>▣</span> Generated videos</a>
@@ -53,6 +54,6 @@
       <footer class="app-footer">Private Face Studio · Keep your .env, face photos and model weights private. GPU routing does not start or stop cloud Pods.</footer>
     </main>
   </div>
-  <script src="{{ url_for('static', filename='studio.js', v='20261025-3') }}" defer></script>
+  <script src="{{ url_for('static', filename='studio.js', v='20261025-4') }}" defer></script>
 </body>
 </html>
