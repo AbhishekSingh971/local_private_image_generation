@@ -16,7 +16,10 @@ def test_assets_and_face_models_are_persisted(tmp_path, monkeypatch):
         "description": "Short curly hair and brown eyes",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    studio_db.add_face_photo(profile_id, "face_test.jpg", b"photo-bytes")
+    group = studio_db.create_face_dataset_group(profile_id, "First angle set", expected_count=5)
+    photo_id = studio_db.add_face_photo(
+        profile_id, "face_test.jpg", b"photo-bytes", group_id=group["id"], angle_label="Original source"
+    )
     asset = studio_db.create_asset(
         asset_type="image", title="Portrait draft", filename="portrait.png",
         mime_type="image/png", media_data=b"png-bytes", prompt="a portrait",
@@ -27,6 +30,19 @@ def test_assets_and_face_models_are_persisted(tmp_path, monkeypatch):
     assert stored_profile["image_count"] == 1
     assert stored_profile["description"] == "Short curly hair and brown eyes"
     assert studio_db.list_face_photo_names(profile_id) == {"face_test.jpg"}
+    stored_photo, photo_bytes = studio_db.get_face_photo_bytes(photo_id)
+    assert photo_bytes == b"photo-bytes"
+    assert stored_photo["group_id"] == group["id"]
+    assert stored_photo["angle_label"] == "Original source"
+    listed_groups = studio_db.list_face_dataset_groups(profile_id)
+    assert len(listed_groups) == 1
+    assert listed_groups[0]["photos"][0]["id"] == photo_id
+    assert listed_groups[0]["photo_count"] == 1
+    completed_group = studio_db.update_face_dataset_group(
+        group["id"], status="completed", generated_count=5
+    )
+    assert completed_group["status"] == "completed"
+    assert completed_group["generated_count"] == 5
     assert studio_db.get_asset(asset["id"], include_content=True)["media_data"] == b"png-bytes"
     backup = studio_db.save_face_model_bundle(profile_id, "local", "model.zip", b"weights", 1)
     assert backup["bundle_size"] == len(b"weights")
