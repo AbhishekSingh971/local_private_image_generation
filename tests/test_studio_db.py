@@ -244,3 +244,30 @@ def test_background_dataset_job_state_and_pose_validation_persist(tmp_path, monk
     cancelled = studio_db.update_face_dataset_job(job_id, status="cancelled", current_task_id=None)
     assert cancelled["status"] == "cancelled"
     assert studio_db.list_face_dataset_jobs(active_only=True) == []
+
+
+
+def test_update_face_photo_validation_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "pose-update.sqlite").as_posix())
+    studio_db.ensure_schema()
+    profile_id = uuid.uuid4().hex
+    studio_db.create_face_profile_record({
+        "id": profile_id,
+        "name": "Pose Metadata",
+        "token": "pose_" + profile_id[:7],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    group = studio_db.create_face_dataset_group(profile_id, "Angles", expected_count=9)
+    photo_id = studio_db.add_face_photo(
+        profile_id, "pose.jpg", b"pose-bytes", group_id=group["id"],
+        angle_label="Middle-left", photo_kind="angle",
+        target_yaw=-30.0, target_pitch=0.0,
+    )
+    result = studio_db.update_face_photo_validation(
+        photo_id, validation_status="passed", validation_message="Pose is within tolerance.",
+        actual_yaw=-27.0, actual_pitch=2.0,
+    )
+    assert result["validation_status"] == "passed"
+    stored, _ = studio_db.get_face_photo_bytes(photo_id)
+    assert stored["actual_yaw"] == -27.0
+    assert stored["validation_message"] == "Pose is within tolerance."
