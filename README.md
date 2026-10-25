@@ -9,7 +9,8 @@ A local-first Windows/Flask application for generating photos, training separate
 - Per-profile photo datasets under `data/face_profiles/<profile-id>/dataset/`; adding a second person's photos does not mix them with the first person's dataset.
 - Reusable LoRA adapters stored under `models/face_loras/<profile-id>/`.
 - Face selector for photo and video generation.
-- A GPU routing toggle that is OFF by default.
+- A GPU acceleration toggle that is OFF by default: OFF forces local CPU; ON checks actual local CUDA and RunPod GPU availability.
+- A backend selector that appears when acceleration is on: supported local System GPU, connected RunPod GPU, and CPU fallback. Auto mode prefers a usable local CUDA GPU first, then the configured cloud GPU, then CPU if neither GPU is available.
 - Authenticated RunPod worker endpoints for face training, photo generation, video generation and status polling.
 - Local output copies saved under `data/outputs/` and `data/videos/`.
 
@@ -77,8 +78,9 @@ The UI toggle routes training/generation requests to a worker that you already d
 2. Set `RUNPOD_WORKER_URL` to the HTTPS port-8000 URL from the Pod.
 3. Set `RUNPOD_WORKER_TOKEN` to the exact same secret used as `REMOTE_API_TOKEN` on the Pod.
 4. Restart `run_local.bat`.
-5. Toggle **Use RunPod GPU (RTX 3090)** on. The app probes the authenticated worker health route and shows the reported GPU name/VRAM.
-6. Turn the toggle back off to route subsequent requests locally.
+5. Toggle **Enable GPU acceleration** on. The app checks whether this Python environment can use a local CUDA GPU and probes the authenticated RunPod worker.
+6. The selector only lists available backends. When both GPUs are available, the default is the local System GPU to avoid cloud charges, but you can switch to the RunPod GPU. If local CUDA is unavailable, the connected RunPod GPU is selected automatically; CPU remains an explicit fallback.
+7. Turn the toggle off to force local CPU for subsequent requests.
 
 Keep `.env` private. Do not commit it or paste a real token into an issue/chat. `.env` and face data are ignored by Git. The local app forwards face photos only when you submit a training job with the RunPod toggle on; generation requests send the prompt and, if used, the reference image to the configured worker.
 
@@ -99,8 +101,10 @@ The worker stores the uploaded face datasets and generated LoRAs on the Pod's fi
 
 ## Security and privacy
 
-- The browser toggle defaults OFF every time the page loads.
-- The toggle never provisions a GPU or changes RunPod billing state; it only chooses whether submitted requests use the configured worker.
+- The browser toggle defaults OFF every time the page loads. OFF means local CPU.
+- When ON, actual availability is detected server-side. The automatic choice prefers a usable local CUDA GPU, then an authenticated RunPod GPU, then CPU fallback; an explicitly chosen unavailable GPU is rejected rather than silently used.
+- When local and cloud GPUs are both available, the UI lets you switch between them. A local GPU typically avoids cloud usage fees; a cloud RTX 3090 may be faster than a lower-powered local GPU.
+- The toggle never provisions a GPU or changes RunPod billing state; it only chooses where submitted requests run.
 - Worker APIs require `Authorization: Bearer <REMOTE_API_TOKEN>`; use a strong random token and HTTPS.
 - Initial package/model downloads use the internet. Local inference otherwise runs on the local model. RunPod mode sends the specific task's input data to that Pod.
 - Uploaded face images are re-encoded as JPEG to discard EXIF metadata and original filenames.
