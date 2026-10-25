@@ -209,13 +209,19 @@ def test_background_dataset_job_state_and_pose_validation_persist(tmp_path, monk
         target_yaw=-90.0, target_pitch=0.0, actual_yaw=-8.0, actual_pitch=1.0,
     )
     job_id = uuid.uuid4().hex
+    manifest = [
+        {"label": "Left profile", "yaw": -90.0, "pitch": 0.0},
+        {"label": "Right profile", "yaw": 90.0, "pitch": 0.0},
+    ]
     job = studio_db.create_face_dataset_job(
         job_id=job_id, group_id=group["id"], profile_id=profile_id,
-        dataset_type="face_angles", backend="cpu", expected_count=9,
-        source_photo_id=source_id,
+        dataset_type="face_angles", backend="cpu", expected_count=2,
+        source_photo_id=source_id, target_manifest=manifest, group_count_base=7,
     )
     assert job["status"] == "queued"
-    assert job["expected_count"] == 9
+    assert job["expected_count"] == 2
+    assert job["target_manifest"] == manifest
+    assert job["group_count_base"] == 7
     running = studio_db.update_face_dataset_job(
         job_id, status="running", current_index=6, current_label="Left profile",
         current_task_id=uuid.uuid4().hex, generated_count=5,
@@ -223,6 +229,8 @@ def test_background_dataset_job_state_and_pose_validation_persist(tmp_path, monk
     )
     assert running["status"] == "running"
     assert running["generated_count"] == 5
+    assert running["target_manifest"] == manifest
+    assert running["group_count_base"] == 7
     assert running["review_targets"][0]["label"] == "Left profile"
     assert studio_db.get_face_dataset_job(job_id)["current_index"] == 6
     assert [row["id"] for row in studio_db.list_face_dataset_jobs(active_only=True)] == [job_id]
