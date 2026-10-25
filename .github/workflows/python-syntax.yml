@@ -19,6 +19,6 @@ jobs:
       - name: Install lightweight test dependencies
         run: python -m pip install Pillow pytest SQLAlchemy
       - name: Test compute routing, face profiles, and database persistence
-        run: python -m pytest -q tests/test_compute_routing.py tests/test_face_profiles.py tests/test_studio_db.py tests/test_image_generation.py
+        run: python -m pytest -q tests/test_compute_routing.py tests/test_face_profiles.py tests/test_studio_db.py tests/test_image_generation.py tests/test_training_generation.py
       - name: Check studio JavaScript syntax
         run: node --check static/studio.js
