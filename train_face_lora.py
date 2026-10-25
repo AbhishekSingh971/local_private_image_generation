@@ -1,5 +1,6 @@
 """Train a local Stable Diffusion 1.5 face-identity LoRA on a CUDA-enabled NVIDIA GPU."""
 import argparse
+import random
 import re
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from peft import LoraConfig
 from peft.utils import get_peft_model_state_dict
 from transformers import CLIPTextModel, CLIPTokenizer
 
+from face_profiles import get_profile
+
 ROOT = Path(__file__).resolve().parent
 BASE_MODEL = ROOT / "models" / "stable-diffusion-v1-5"
 LEGACY_DATASET_DIR = ROOT / "data" / "face_dataset"
@@ -27,10 +30,18 @@ EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 
 class FaceDataset(Dataset):
-    def __init__(self, files, tokenizer, token, class_name, resolution):
+    def __init__(self, files, tokenizer, token, class_name, resolution, description=""):
         self.files = files
         self.tokenizer = tokenizer
         self.prompt = f"a photo of {token} {class_name}"
+        words = (description or "").split()
+        # SD 1.5's CLIP text encoder has a fixed context window. Use short
+        # rotating chunks so longer descriptions are learned over training steps
+        # instead of silently truncating everything after the first chunk.
+        self.description_chunks = [
+            " ".join(words[start:start + 18])
+            for start in range(0, len(words), 18)
+        ] or [""]
         self.resolution = resolution
 
     def __len__(self):
@@ -50,8 +61,10 @@ class FaceDataset(Dataset):
             raise RuntimeError(f"Cannot read training image: {path}") from exc
         pixels = torch.from_numpy(pixels).permute(2, 0, 1).contiguous()
         pixels = pixels / 127.5 - 1.0
+        description_chunk = random.choice(self.description_chunks)
+        training_prompt = self.prompt + (", " + description_chunk if description_chunk else "")
         input_ids = self.tokenizer(
-            self.prompt, padding="max_length", truncation=True,
+            training_prompt, padding="max_length", truncation=True,
             max_length=self.tokenizer.model_max_length, return_tensors="pt",
         ).input_ids[0]
         return {"pixel_values": pixels, "input_ids": input_ids}
@@ -151,7 +164,9 @@ def main():
     text_encoder.to(accelerator.device)
     unet.to(accelerator.device)
 
-    dataset = FaceDataset(files, tokenizer, args.token, args.class_name, args.resolution)
+    profile = get_profile(args.profile_id) if args.profile_id else None
+    description = (profile or {}).get("description", "")
+    dataset = FaceDataset(files, tokenizer, args.token, args.class_name, args.resolution, description)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True)
     trainable = [p for p in unet.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(
