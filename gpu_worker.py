@@ -25,6 +25,7 @@ from flask import Flask, request, jsonify, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
+from image_generation import build_generation_prompts, resolve_image_dimensions, validate_image_preset
 from face_profiles import (
     create_profile,
     dataset_images,
@@ -258,8 +259,11 @@ def remote_generate():
     prompt = (request.form.get("prompt") or "").strip()
     negative_prompt = (request.form.get("negative_prompt") or "").strip()
     try:
-        steps = int(request.form.get("steps", "10"))
+        steps = int(request.form.get("steps", "25"))
         strength = float(request.form.get("strength", "0.45"))
+        aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
+        image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
+        width, height = resolve_image_dimensions(aspect_ratio)
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
@@ -284,7 +288,7 @@ def remote_generate():
             with Image.open(uploaded.stream) as source:
                 image = ImageOps.exif_transpose(source).convert("RGB")
                 image.load()
-            image = ImageOps.fit(image, (512, 512), method=Image.Resampling.LANCZOS)
+            image = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
             return jsonify(error="Reference image is not a valid PNG, JPG or WEBP image."), 400
     _set_generation_progress(task_id, asset_type="image", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the image model and selected face on RunPod…")
@@ -306,9 +310,17 @@ def remote_generate():
             )
             return callback_kwargs
         generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+        effective_prompt, effective_negative_prompt = build_generation_prompts(
+            prompt, negative_prompt, image_preset
+        )
         kwargs = {
-            "prompt": prompt, "negative_prompt": negative_prompt or None,
-            "num_inference_steps": steps, "guidance_scale": 7.0, "generator": generator,
+            "prompt": effective_prompt,
+            "negative_prompt": effective_negative_prompt or None,
+            "width": width,
+            "height": height,
+            "num_inference_steps": steps,
+            "guidance_scale": 7.5,
+            "generator": generator,
         }
         if image is not None:
             kwargs.update(image=image, strength=strength)
