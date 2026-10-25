@@ -53,12 +53,16 @@ from studio_db import (
     database_url_configured,
     ensure_schema,
     create_face_dataset_group,
+    delete_face_dataset_group,
+    delete_face_photo,
     get_face_dataset_group,
     get_face_photo_bytes,
+    list_face_dataset_group_photo_records,
     get_face_profile_record,
     insert_face_profile_record,
     list_face_dataset_groups,
     update_face_dataset_group,
+    update_face_photo,
     get_face_model_bundle,
     list_asset_filenames,
     save_face_model_bundle,
@@ -725,16 +729,67 @@ def api_list_face_dataset_groups():
         return jsonify(error="Could not read dataset groups. Check the database connection."), 503
 
 
+def _stage_profile_dataset_files(profile_id: str, filenames: list[str]) -> list[tuple[Path, Path]]:
+    """Move dataset photos out of the training scan path until a DB delete commits."""
+    folder = dataset_dir(validate_profile_id(profile_id)).resolve()
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for filename in filenames:
+            name = Path(str(filename or "")).name
+            if not name or name in {".", ".."}:
+                continue
+            source = folder / name
+            if source.parent.resolve() != folder or not source.is_file():
+                continue
+            temporary = folder / ("." + name + "." + uuid.uuid4().hex + ".delete")
+            source.replace(temporary)
+            staged.append((source, temporary))
+        return staged
+    except Exception:
+        for source, temporary in reversed(staged):
+            try:
+                if temporary.exists() and not source.exists():
+                    temporary.replace(source)
+            except OSError:
+                app.logger.exception("Could not restore a staged training photo after deletion preparation failed")
+        raise
+
+
+def _restore_staged_profile_files(staged: list[tuple[Path, Path]]) -> None:
+    for source, temporary in reversed(staged):
+        try:
+            if temporary.exists() and not source.exists():
+                temporary.replace(source)
+        except OSError:
+            app.logger.exception("Could not restore a staged training photo after a database failure")
+
+
+def _discard_staged_profile_files(staged: list[tuple[Path, Path]]) -> None:
+    for _source, temporary in staged:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            # The temporary extension is not recognized as a training image.
+            app.logger.exception("Could not remove a staged training photo after successful database deletion")
+
+
 @app.patch("/api/face-dataset-groups/<group_id>")
 def api_update_face_dataset_group(group_id):
     if not re.fullmatch(r"[a-f0-9]{32}", group_id or ""):
         return jsonify(error="Invalid dataset group ID."), 400
     payload = request.get_json(silent=True) or {}
     try:
+        existing_group = get_face_dataset_group(group_id)
+        if not existing_group:
+            return jsonify(error="Dataset group not found."), 404
+        if "title" in payload and existing_group.get("status") == "generating":
+            return jsonify(error="Wait for generation to finish before renaming this group."), 409
         group = update_face_dataset_group(
             group_id,
+            title=payload.get("title") if "title" in payload else None,
             status=payload.get("status"),
             generated_count=payload.get("generated_count"),
+            expected_count=payload.get("expected_count"),
             error=payload.get("error") if "error" in payload else None,
         )
         if not group:
@@ -745,6 +800,131 @@ def api_update_face_dataset_group(group_id):
     except Exception:
         app.logger.exception("Could not update dataset group status")
         return jsonify(error="Could not update dataset group status."), 503
+
+
+@app.delete("/api/face-dataset-groups/<group_id>")
+def api_delete_face_dataset_group(group_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", group_id or ""):
+        return jsonify(error="Invalid dataset group ID."), 400
+    existing_group = get_face_dataset_group(group_id)
+    if not existing_group:
+        return jsonify(error="Dataset group not found."), 404
+    if existing_group.get("status") == "generating":
+        return jsonify(error="This dataset group is still generating. Wait for it to finish before deleting it."), 409
+    try:
+        photo_records = list_face_dataset_group_photo_records(group_id)
+        staged = _stage_profile_dataset_files(
+            existing_group["profile_id"],
+            [photo["filename"] for photo in photo_records],
+        )
+    except Exception:
+        app.logger.exception("Could not stage local photo files for dataset-group deletion")
+        return jsonify(error="Could not prepare the group's local training photos for deletion."), 500
+    try:
+        deleted = delete_face_dataset_group(group_id)
+    except Exception:
+        _restore_staged_profile_files(staged)
+        app.logger.exception("Could not delete dataset group from the database")
+        return jsonify(error="Could not delete the dataset group from the database."), 503
+    if not deleted:
+        _restore_staged_profile_files(staged)
+        return jsonify(error="Dataset group not found."), 404
+    _discard_staged_profile_files(staged)
+    return jsonify(status="deleted", id=group_id, deleted_photos=len(deleted.get("photos") or []))
+
+
+@app.route("/api/face-photos/<photo_id>", methods=["PATCH", "PUT", "DELETE"])
+def api_face_photo_detail(photo_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", photo_id or ""):
+        return jsonify(error="Invalid face photo ID."), 400
+    try:
+        stored = get_face_photo_bytes(photo_id)
+    except Exception:
+        app.logger.exception("Could not read grouped face photo before update")
+        return jsonify(error="Could not read the photo record from storage."), 503
+    if not stored:
+        return jsonify(error="Training photo not found."), 404
+    metadata, _old_bytes = stored
+    group_id = metadata.get("group_id")
+    if not group_id:
+        return jsonify(error="Only photos inside a named training group can be managed here."), 400
+    group = get_face_dataset_group(group_id)
+    if not group:
+        return jsonify(error="The photo's dataset group no longer exists."), 404
+    if group.get("status") == "generating":
+        return jsonify(error="This group is still generating. Wait before editing its photos."), 409
+
+    if request.method == "PATCH":
+        payload = request.get_json(silent=True) or {}
+        if "angle_label" not in payload:
+            return jsonify(error="Supply an angle_label to update the photo label."), 400
+        try:
+            photo = update_face_photo(photo_id, angle_label=payload.get("angle_label"))
+            if not photo:
+                return jsonify(error="Training photo not found."), 404
+            return jsonify(status="updated", photo=photo)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        except Exception:
+            app.logger.exception("Could not update training photo label")
+            return jsonify(error="Could not update the training photo label."), 503
+
+    if request.method == "PUT":
+        upload = request.files.get("photo")
+        try:
+            images = _parse_uploads([upload] if upload and upload.filename else [], max_files=1)
+            if not images:
+                return jsonify(error="Choose a replacement photo file."), 400
+            buffer = io.BytesIO()
+            images[0].save(buffer, format="JPEG", quality=95, optimize=True)
+            image_data = buffer.getvalue()
+            destination = dataset_dir(metadata["profile_id"]) / Path(metadata["filename"]).name
+            if destination.parent.resolve() != dataset_dir(metadata["profile_id"]).resolve():
+                return jsonify(error="Invalid training photo path."), 400
+            temporary = destination.with_name("." + destination.name + "." + uuid.uuid4().hex + ".tmp")
+            temporary.write_bytes(image_data)
+            try:
+                photo = update_face_photo(photo_id, image_data=image_data, mime_type="image/jpeg")
+                if not photo:
+                    raise ValueError("Training photo not found.")
+                temporary.replace(destination)
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
+            return jsonify(status="replaced", photo=photo)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        except Exception:
+            app.logger.exception("Could not replace a training photo")
+            return jsonify(error="Could not replace the training photo in storage."), 503
+
+    try:
+        staged = _stage_profile_dataset_files(metadata["profile_id"], [metadata["filename"]])
+    except Exception:
+        app.logger.exception("Could not stage training photo for deletion")
+        return jsonify(error="Could not prepare the local training photo for deletion."), 500
+    try:
+        deleted = delete_face_photo(photo_id)
+    except Exception:
+        _restore_staged_profile_files(staged)
+        app.logger.exception("Could not delete training photo from the database")
+        return jsonify(error="Could not delete the training photo from storage."), 503
+    if not deleted:
+        _restore_staged_profile_files(staged)
+        return jsonify(error="Training photo not found."), 404
+    _discard_staged_profile_files(staged)
+    angle_label = (metadata.get("angle_label") or "").strip()
+    generated_angles = {"Front view", "Three-quarter left", "Three-quarter right", "Left profile", "Right profile"}
+    if angle_label in generated_angles:
+        new_count = max(0, int(group.get("generated_count") or 0) - 1)
+        next_status = "partial" if new_count < int(group.get("expected_count") or 5) else group.get("status")
+        try:
+            update_face_dataset_group(
+                group_id, generated_count=new_count, status=next_status, error=""
+            )
+        except Exception:
+            app.logger.exception("Could not recalculate grouped photo count after deletion")
+    return jsonify(status="deleted", id=photo_id, group_id=group_id)
 
 
 @app.get("/api/face-photos/<photo_id>/content")
@@ -879,12 +1059,26 @@ def api_add_face_photos(profile_id):
         profile_id = validate_profile_id(profile_id)
         if not get_profile(profile_id):
             return jsonify(error="Face profile not found."), 404
-        images = _parse_uploads(request.files.getlist("photos"))
+        group_id = (request.form.get("group_id") or "").strip() or None
+        if group_id:
+            group = get_face_dataset_group(group_id)
+            if not group or group["profile_id"] != profile_id:
+                return jsonify(error="Dataset group not found for this profile."), 404
+            if group.get("status") == "generating":
+                return jsonify(error="Wait for angle generation to finish before adding more photos to this group."), 409
+        uploads = [item for item in request.files.getlist("photos") if item and item.filename]
+        images = _parse_uploads(uploads)
         if not images:
             return jsonify(error="Choose one or more photos to upload."), 400
-        for image in images:
-            save_profile_image(profile_id, image)
-        return jsonify(status="saved", profile=get_profile(profile_id), added=len(images))
+        labels = request.form.getlist("labels")
+        for index, image in enumerate(images):
+            label = None
+            if group_id:
+                label = (labels[index].strip() if index < len(labels) else "") or f"Additional photo {index + 1}"
+            save_profile_image(profile_id, image, group_id=group_id, angle_label=label)
+        if group_id:
+            update_face_dataset_group(group_id, status="partial", error="")
+        return jsonify(status="saved", profile=get_profile(profile_id), added=len(images), group_id=group_id)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
 
