@@ -958,6 +958,9 @@ def generate():
         steps = int(request.form.get("steps", "10"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         backend = _resolve_compute_backend(request.form)
+        task_id = (request.form.get("task_id") or "").strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+            raise ValueError("Invalid generation task ID. Refresh the page and retry.")
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt:
@@ -979,15 +982,27 @@ def generate():
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
 
+    _set_generation_progress(
+        task_id, asset_type="image", backend=backend, status="running", progress=1,
+        current_step=0, total_steps=steps, stage="starting", message="Preparing your image request…",
+    )
     if not generation_lock.acquire(blocking=False):
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="failed", progress=0,
+            total_steps=steps, stage="busy", message="Another generation is already running.",
+        )
         return jsonify(error="Another generation is running. Please wait."), 429
     try:
         if backend == "runpod":
             if profile_id and not profile.get("runpod_model_ready"):
                 return jsonify(error="This face profile has no RunPod-trained model. Select Train and choose RunPod GPU first."), 400
+            _set_generation_progress(
+                task_id, asset_type="image", backend="runpod", status="running", progress=2,
+                total_steps=steps, stage="connecting", message="Connecting to RunPod GPU worker…",
+            )
             data = {
                 "prompt": prompt, "negative_prompt": negative_prompt,
-                "steps": str(steps), "strength": str(strength),
+                "steps": str(steps), "strength": str(strength), "task_id": task_id,
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
@@ -1002,7 +1017,15 @@ def generate():
                     "POST", "/api/remote/generate", data=data, files=files, timeout=(20, 600)
                 )
             except RuntimeError as exc:
+                _set_generation_progress(
+                    task_id, asset_type="image", backend="runpod", status="failed", progress=0,
+                    total_steps=steps, stage="failed", message=str(exc),
+                )
                 return jsonify(error=str(exc)), 502
+            _set_generation_progress(
+                task_id, asset_type="image", backend="runpod", status="running", progress=96,
+                total_steps=steps, stage="saving", message="GPU generation finished; saving image to the library…",
+            )
             filename = f"{uuid.uuid4().hex}.png"
             (OUTPUT_DIR / filename).write_bytes(response.content)
             try:
@@ -1011,9 +1034,17 @@ def generate():
                     profile=profile, backend="runpod", generation_mode="img2img" if init_image is not None else "txt2img",
                 )
             except RuntimeError as exc:
+                _set_generation_progress(
+                    task_id, asset_type="image", backend="runpod", status="failed", progress=96,
+                    total_steps=steps, stage="failed", message=str(exc),
+                )
                 return jsonify(error=str(exc)), 503
+            _set_generation_progress(
+                task_id, asset_type="image", backend="runpod", status="completed", progress=100,
+                current_step=steps, total_steps=steps, stage="completed", message="Image saved to the library.",
+            )
             return jsonify(
-                status="completed", image_url=f"/assets/{asset['id']}/content", filename=filename,
+                status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
                 asset_id=asset["id"], title=asset["title"],
                 mode="img2img" if init_image is not None else "txt2img",
                 face_profile=profile["name"] if profile else None,
@@ -1024,8 +1055,26 @@ def generate():
             return jsonify(error="This face profile has no locally trained LoRA. Train it using the System GPU or select RunPod GPU."), 400
         try:
             mode = "img2img" if init_image is not None else "txt2img"
+            _set_generation_progress(
+                task_id, asset_type="image", backend=backend, status="running", progress=3,
+                total_steps=steps, stage="loading_model", message="Loading the image model and selected face…",
+            )
             pipeline = _load_cpu_or_gpu_pipeline(mode, profile_id, backend)
             generator_device = "cuda" if backend == "local_gpu" else "cpu"
+            _set_generation_progress(
+                task_id, asset_type="image", backend=backend, status="running", progress=5,
+                total_steps=steps, stage="denoising", message="Starting image denoising steps…",
+            )
+            def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+                scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
+                current = min(step_index + 1, scheduler_steps)
+                percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="running", progress=percent,
+                    current_step=current, total_steps=scheduler_steps, stage="denoising",
+                    message=f"Generating image · step {current} of {scheduler_steps}",
+                )
+                return callback_kwargs
             kwargs = {
                 "prompt": prompt,
                 "negative_prompt": negative_prompt or None,
@@ -1035,8 +1084,16 @@ def generate():
             }
             if init_image is not None:
                 kwargs.update(image=init_image, strength=strength)
-            result = pipeline(**kwargs).images[0]
+            result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+            _set_generation_progress(
+                task_id, asset_type="image", backend=backend, status="running", progress=95,
+                current_step=steps, total_steps=steps, stage="finalizing", message="Finalizing the generated image…",
+            )
         except Exception as exc:
+            _set_generation_progress(
+                task_id, asset_type="image", backend=backend, status="failed", progress=0,
+                total_steps=steps, stage="failed", message="Image generation failed.",
+            )
             message = str(exc)
             if "out of memory" in message.lower() or "memory" in message.lower():
                 message = "The selected device ran out of memory. Try fewer steps or switch to another available compute backend."
@@ -1048,13 +1105,21 @@ def generate():
                 profile=profile, backend=backend, generation_mode="img2img" if init_image is not None else "txt2img",
             )
         except RuntimeError as exc:
+            _set_generation_progress(
+                task_id, asset_type="image", backend=backend, status="failed", progress=96,
+                total_steps=steps, stage="failed", message="The image could not be saved to the database.",
+            )
             return jsonify(error=str(exc)), 503
         if backend == "local_gpu":
             message = "Generated locally on the System GPU and saved to the database library."
         else:
             message = "Generated locally on this computer's CPU and saved to the database library."
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="completed", progress=100,
+            current_step=steps, total_steps=steps, stage="completed", message="Image saved to the library.",
+        )
         return jsonify(
-            status="completed", image_url=f"/assets/{asset['id']}/content", filename=filename,
+            status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
             asset_id=asset["id"], title=asset["title"],
             mode="img2img" if init_image is not None else "txt2img",
             face_profile=profile["name"] if profile else None,
