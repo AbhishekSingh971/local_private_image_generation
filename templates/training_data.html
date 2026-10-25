@@ -27,8 +27,8 @@
   <a class="button-link" href="{{ url_for('faces_page') }}">Add training photos +</a>
 </div>
 <div class="library-toolbar panel">
-  <div><strong id="datasetGroupCount">Loading training datasets…</strong><p class="field-help">The source image and generated variations are saved in the selected profile’s training dataset.</p></div>
-  <button type="button" class="secondary-button" id="datasetRefresh">Refresh</button>
+  <div><strong id="datasetGroupCount">Loading training datasets…</strong><p class="field-help">Each section lists its own training groups. Generated body examples are shared across face models.</p><p id="globalBodyModelStatus" class="field-help">Checking shared body model status…</p><p id="bodyDatasetStatus" class="status" role="status" aria-live="polite"></p></div>
+  <div class="actions"><button type="button" class="secondary-button" id="trainGlobalBodyButton" disabled>Train shared body model</button><button type="button" class="secondary-button" id="datasetRefresh">Refresh</button></div>
 </div>
 <div id="datasetStatus" class="status" role="status" aria-live="polite"></div>
 <div class="dataset-category-tabs" role="tablist" aria-label="Training dataset category"><button type="button" class="dataset-category-tab active" data-dataset-filter="face_angles">Face angles</button><button type="button" class="dataset-category-tab" data-dataset-filter="expressions">Expressions</button><button type="button" class="dataset-category-tab" data-dataset-filter="body_type">Body type · global</button></div>
