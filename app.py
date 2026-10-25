@@ -693,7 +693,7 @@ def api_create_face_dataset_group(profile_id):
         image = images[0]
         if image.width < 128 or image.height < 128:
             raise ValueError("The source image must be at least 128 × 128 pixels.")
-        save_profile_image(profile_id, image, group_id=group_id, angle_label="Original source")
+        save_profile_image(profile_id, image, group_id=group_id, angle_label="Original source", photo_kind="source")
         return jsonify(status="created", group=get_face_dataset_group(group_id)), 201
     except ValueError as exc:
         if group_id:
@@ -913,9 +913,7 @@ def api_face_photo_detail(photo_id):
         _restore_staged_profile_files(staged)
         return jsonify(error="Training photo not found."), 404
     _discard_staged_profile_files(staged)
-    angle_label = (metadata.get("angle_label") or "").strip()
-    generated_angles = {"Front view", "Three-quarter left", "Three-quarter right", "Left profile", "Right profile"}
-    if angle_label in generated_angles:
+    if metadata.get("photo_kind") == "angle":
         new_count = max(0, int(group.get("generated_count") or 0) - 1)
         next_status = "partial" if new_count < int(group.get("expected_count") or 5) else group.get("status")
         try:
@@ -984,8 +982,11 @@ def api_add_generated_photos(profile_id):
             if image.width < 128 or image.height < 128:
                 return jsonify(error="Every selected image must be at least 128 × 128 pixels."), 400
             label = str(angle_labels[added] or "")[:80] if group_id else None
+            photo_kind = "angle" if label in {
+                "Front view", "Three-quarter left", "Three-quarter right", "Left profile", "Right profile"
+            } else "manual"
             save_profile_image(
-                profile_id, image, group_id=group_id, angle_label=label
+                profile_id, image, group_id=group_id, angle_label=label, photo_kind=photo_kind
             )
             added += 1
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
@@ -1075,9 +1076,14 @@ def api_add_face_photos(profile_id):
             label = None
             if group_id:
                 label = (labels[index].strip() if index < len(labels) else "") or f"Additional photo {index + 1}"
-            save_profile_image(profile_id, image, group_id=group_id, angle_label=label)
+            photo_kind = "angle" if label in {
+                "Front view", "Three-quarter left", "Three-quarter right", "Left profile", "Right profile"
+            } else "manual"
+            save_profile_image(
+                profile_id, image, group_id=group_id, angle_label=label, photo_kind=photo_kind
+            )
         if group_id:
-            update_face_dataset_group(group_id, status="partial", error="")
+            update_face_dataset_group(group_id, error="")
         return jsonify(status="saved", profile=get_profile(profile_id), added=len(images), group_id=group_id)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
