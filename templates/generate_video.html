@@ -16,6 +16,12 @@
       <label for="videoTitle">Save as</label><input id="videoTitle" name="title" type="text" maxlength="160" placeholder="e.g. Cinematic turn 01">
       <button type="submit" id="videoButton">Generate video</button>
       <div id="videoStatus" class="status" role="status" aria-live="polite"></div>
+      <div id="videoProgress" class="generation-progress" hidden aria-live="polite">
+        <div class="progress-heading"><span id="videoProgressStage">Preparing video…</span><strong id="videoProgressPercent">0%</strong></div>
+        <progress id="videoProgressBar" max="100" value="0" aria-label="Video generation progress"></progress>
+        <p id="videoProgressDetail" class="progress-detail">Waiting for the model to start.</p>
+        <p id="videoProgressStep" class="progress-step"></p>
+      </div>
       <div class="note">Facial identity can drift between frames. A selected profile must have a LoRA trained on the same backend you choose above.</div>
     </form>
   </section>
