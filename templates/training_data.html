@@ -1,5 +1,19 @@
 {% extends "base.html" %}
-{% block title %}Training datasets · Private Face Studio<dialog id="editTrainingPhotoDialog" class="edit-dialog edit-photo-dialog">
+{% block title %}Training datasets · Private Face Studio{% endblock %}
+{% block page_heading %}Training datasets{% endblock %}
+{% block content %}
+<div class="page-intro">
+  <div><div class="eyebrow">GROUPED TRAINING DATA</div><h1>Training datasets</h1><p>Review separate face-angle, facial-expression, and shared body-type datasets. Edit any photo with a prompt, compare the result, and save only the new image you choose.</p></div>
+  <a class="button-link" href="{{ url_for('faces_page') }}">Add training photos +</a>
+</div>
+<div class="library-toolbar panel">
+  <div><strong id="datasetGroupCount">Loading training datasets…</strong><p class="field-help">Each section lists its own training groups. Generated body examples are shared across face models.</p><p id="globalBodyModelStatus" class="field-help">Checking shared body model status…</p><p id="bodyDatasetStatus" class="status" role="status" aria-live="polite"></p></div>
+  <div class="actions"><button type="button" class="secondary-button" id="trainGlobalBodyButton" disabled>Train shared body model</button><button type="button" class="secondary-button" id="datasetRefresh">Refresh</button></div>
+</div>
+<div id="datasetStatus" class="status" role="status" aria-live="polite"></div>
+<div class="dataset-category-tabs" role="tablist" aria-label="Training dataset category"><button type="button" class="dataset-category-tab active" data-dataset-filter="face_angles">Face angles</button><button type="button" class="dataset-category-tab" data-dataset-filter="expressions">Expressions</button><button type="button" class="dataset-category-tab" data-dataset-filter="body_type">Body type · global</button></div>
+<div id="datasetGroups" class="dataset-group-grid" aria-live="polite"><div class="empty-state panel">Loading grouped training data…</div></div>
+<dialog id="editTrainingPhotoDialog" class="edit-dialog edit-photo-dialog">
   <div class="dialog-heading"><div><div class="eyebrow">NON-DESTRUCTIVE PHOTO EDIT</div><h2>Edit training photo with a prompt</h2><p class="field-help">Generate a preview first. The existing photo stays unchanged until you choose Save new.</p></div><button type="button" id="closeTrainingPhotoEdit" class="icon-button" aria-label="Close">×</button></div>
   <form id="editTrainingPhotoForm">
     <label for="trainingPhotoEditPrompt">What should change?</label>
@@ -19,18 +33,4 @@
     <div class="dialog-actions"><button type="button" class="secondary-button" id="keepOriginalTrainingPhoto">Keep original</button><button type="submit" id="generateTrainingPhotoPreview">Generate preview</button><button type="button" id="saveNewTrainingPhoto" disabled>Save new photo</button></div>
   </form>
 </dialog>
-{% endblock %}
-{% block page_heading %}Training datasets{% endblock %}
-{% block content %}
-<div class="page-intro">
-  <div><div class="eyebrow">GROUPED TRAINING DATA</div><h1>Training datasets</h1><p>Review separate face-angle, facial-expression, and shared body-type datasets. Edit any photo with a prompt, compare the result, and save only the new image you choose.</p></div>
-  <a class="button-link" href="{{ url_for('faces_page') }}">Add training photos +</a>
-</div>
-<div class="library-toolbar panel">
-  <div><strong id="datasetGroupCount">Loading training datasets…</strong><p class="field-help">Each section lists its own training groups. Generated body examples are shared across face models.</p><p id="globalBodyModelStatus" class="field-help">Checking shared body model status…</p><p id="bodyDatasetStatus" class="status" role="status" aria-live="polite"></p></div>
-  <div class="actions"><button type="button" class="secondary-button" id="trainGlobalBodyButton" disabled>Train shared body model</button><button type="button" class="secondary-button" id="datasetRefresh">Refresh</button></div>
-</div>
-<div id="datasetStatus" class="status" role="status" aria-live="polite"></div>
-<div class="dataset-category-tabs" role="tablist" aria-label="Training dataset category"><button type="button" class="dataset-category-tab active" data-dataset-filter="face_angles">Face angles</button><button type="button" class="dataset-category-tab" data-dataset-filter="expressions">Expressions</button><button type="button" class="dataset-category-tab" data-dataset-filter="body_type">Body type · global</button></div>
-<div id="datasetGroups" class="dataset-group-grid" aria-live="polite"><div class="empty-state panel">Loading grouped training data…</div></div>
 {% endblock %}
