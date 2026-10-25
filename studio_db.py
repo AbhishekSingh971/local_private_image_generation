@@ -343,6 +343,102 @@ def add_face_photo(
         return row.id
 
 
+def _dataset_group_dict(row: FaceDatasetGroupRow) -> dict:
+    return {
+        "id": row.id, "profile_id": row.profile_id, "title": row.title,
+        "status": row.status, "expected_count": row.expected_count,
+        "generated_count": row.generated_count, "error": row.error,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def create_face_dataset_group(profile_id: str, title: str, expected_count: int = 5) -> dict:
+    title = (title or "").strip()
+    if not title or len(title) > 120:
+        raise ValueError("Dataset group title must contain 1–120 characters.")
+    if not 1 <= int(expected_count) <= 10:
+        raise ValueError("Dataset group expected count must be between 1 and 10.")
+    ensure_schema()
+    with _session_factory()() as session:
+        if not session.get(FaceProfileRow, profile_id):
+            raise ValueError("Face profile is not present in the configured database.")
+        row = FaceDatasetGroupRow(
+            id=uuid.uuid4().hex, profile_id=profile_id, title=title,
+            status="generating", expected_count=int(expected_count), generated_count=0,
+        )
+        session.add(row)
+        session.commit()
+        return _dataset_group_dict(row)
+
+
+def get_face_dataset_group(group_id: str) -> dict | None:
+    ensure_schema()
+    with _session_factory()() as session:
+        row = session.get(FaceDatasetGroupRow, group_id)
+        return _dataset_group_dict(row) if row else None
+
+
+def update_face_dataset_group(
+    group_id: str, *, status: str | None = None,
+    generated_count: int | None = None, error: str | None = None,
+) -> dict | None:
+    allowed_statuses = {"generating", "completed", "partial", "failed"}
+    if status is not None and status not in allowed_statuses:
+        raise ValueError("Invalid dataset group status.")
+    ensure_schema()
+    with _session_factory()() as session:
+        row = session.get(FaceDatasetGroupRow, group_id)
+        if not row:
+            return None
+        if generated_count is not None:
+            count = int(generated_count)
+            if count < 0 or count > row.expected_count:
+                raise ValueError("Generated count is outside the expected range.")
+            row.generated_count = count
+        if status is not None:
+            row.status = status
+        if error is not None:
+            row.error = str(error)[:1200] or None
+        row.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        return _dataset_group_dict(row)
+
+
+def list_face_dataset_groups(profile_id: str | None = None, limit: int = 200) -> list[dict]:
+    ensure_schema()
+    with _session_factory()() as session:
+        query = select(FaceDatasetGroupRow)
+        if profile_id:
+            query = query.where(FaceDatasetGroupRow.profile_id == profile_id)
+        rows = session.scalars(
+            query.order_by(FaceDatasetGroupRow.created_at.desc()).limit(max(1, min(int(limit), 500)))
+        ).all()
+        result = []
+        for row in rows:
+            record = _dataset_group_dict(row)
+            record["profile_name"] = (
+                session.get(FaceProfileRow, row.profile_id).name
+                if session.get(FaceProfileRow, row.profile_id) else "Unknown profile"
+            )
+            photos = session.scalars(
+                select(FacePhotoRow).where(FacePhotoRow.group_id == row.id)
+                .order_by(FacePhotoRow.created_at.asc(), FacePhotoRow.id.asc())
+            ).all()
+            record["photos"] = [
+                {
+                    "id": photo.id, "filename": photo.filename,
+                    "angle_label": photo.angle_label or "Training photo",
+                    "mime_type": photo.mime_type, "byte_size": photo.byte_size,
+                    "created_at": photo.created_at.isoformat() if photo.created_at else None,
+                }
+                for photo in photos
+            ]
+            record["photo_count"] = len(photos)
+            result.append(record)
+        return result
+
+
 def list_face_photo_names(profile_id: str) -> set[str]:
     ensure_schema()
     with _session_factory()() as session:
