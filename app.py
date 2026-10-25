@@ -933,7 +933,9 @@ def _load_cpu_or_gpu_pipeline(mode, profile_id, compute_backend="cpu"):
             # This lets the user select a compatible, properly licensed photorealistic checkpoint.
             if MODEL_PATH_OVERRIDE:
                 override_path = Path(MODEL_PATH_OVERRIDE).expanduser()
-                local_model = override_path if override_path.is_dir() else MODEL_PATH_OVERRIDE
+                if not override_path.is_dir() or not (override_path / "model_index.json").is_file():
+                    raise ValueError("SD_MODEL_PATH must point to an existing Diffusers model directory containing model_index.json.")
+                local_model = override_path
             elif os.environ.get("SD_MODEL_ID", "").strip():
                 local_model = MODEL_ID
             else:
