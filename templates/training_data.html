@@ -1,9 +1,29 @@
 {% extends "base.html" %}
-{% block title %}Training datasets · Private Face Studio{% endblock %}
+{% block title %}Training datasets · Private Face Studio<dialog id="editTrainingPhotoDialog" class="edit-dialog edit-photo-dialog">
+  <div class="dialog-heading"><div><div class="eyebrow">NON-DESTRUCTIVE PHOTO EDIT</div><h2>Edit training photo with a prompt</h2><p class="field-help">Generate a preview first. The existing photo stays unchanged until you choose Save new.</p></div><button type="button" id="closeTrainingPhotoEdit" class="icon-button" aria-label="Close">×</button></div>
+  <form id="editTrainingPhotoForm">
+    <label for="trainingPhotoEditPrompt">What should change?</label>
+    <textarea id="trainingPhotoEditPrompt" name="prompt" rows="3" maxlength="1200" required placeholder="Keep the same person and hairstyle, add a natural smile, preserve the original lighting…"></textarea>
+    <label for="trainingPhotoEditNegative">Avoid <span class="optional">optional</span></label>
+    <input id="trainingPhotoEditNegative" name="negative_prompt" type="text" maxlength="600" placeholder="different person, changed hairstyle, cartoon, blur">
+    <div class="twocol">
+      <div><label for="trainingPhotoEditStrength">Edit strength</label><input id="trainingPhotoEditStrength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.35"><p class="field-help">Lower values preserve more of the existing image.</p></div>
+      <div><label for="trainingPhotoEditSteps">Inference steps</label><select id="trainingPhotoEditSteps" name="steps"><option value="10">10 · quicker</option><option value="15">15</option><option value="20" selected>20</option><option value="25">25 · slower</option></select></div>
+    </div>
+    <label class="switchline" for="trainingPhotoUseBodyModel"><input id="trainingPhotoUseBodyModel" type="checkbox"> Apply shared body-type model</label>
+    <div class="photo-edit-comparison">
+      <figure><figcaption>Saved original</figcaption><img id="trainingPhotoOldPreview" alt="Original training photo"></figure>
+      <figure><figcaption>New preview</figcaption><img id="trainingPhotoNewPreview" alt="Generated edit preview" hidden><div id="trainingPhotoNewPlaceholder" class="empty-state">Generate a preview to compare.</div></figure>
+    </div>
+    <div id="trainingPhotoEditStatus" class="status" role="status" aria-live="polite"></div>
+    <div class="dialog-actions"><button type="button" class="secondary-button" id="keepOriginalTrainingPhoto">Keep original</button><button type="submit" id="generateTrainingPhotoPreview">Generate preview</button><button type="button" id="saveNewTrainingPhoto" disabled>Save new photo</button></div>
+  </form>
+</dialog>
+{% endblock %}
 {% block page_heading %}Training datasets{% endblock %}
 {% block content %}
 <div class="page-intro">
-  <div><div class="eyebrow">GROUPED FACE DATA</div><h1>Training datasets</h1><p>Review each source photo and its generated angle variations as a named group. New groups appear here, and each group links back to the profile used for training and future generation.</p></div>
+  <div><div class="eyebrow">GROUPED TRAINING DATA</div><h1>Training datasets</h1><p>Review separate face-angle, facial-expression, and shared body-type datasets. Edit any photo with a prompt, compare the result, and save only the new image you choose.</p></div>
   <a class="button-link" href="{{ url_for('faces_page') }}">Add training photos +</a>
 </div>
 <div class="library-toolbar panel">
@@ -11,5 +31,6 @@
   <button type="button" class="secondary-button" id="datasetRefresh">Refresh</button>
 </div>
 <div id="datasetStatus" class="status" role="status" aria-live="polite"></div>
-<div id="datasetGroups" class="dataset-group-grid" aria-live="polite"><div class="empty-state panel">Loading grouped face data…</div></div>
+<div class="dataset-category-tabs" role="tablist" aria-label="Training dataset category"><button type="button" class="dataset-category-tab active" data-dataset-filter="face_angles">Face angles</button><button type="button" class="dataset-category-tab" data-dataset-filter="expressions">Expressions</button><button type="button" class="dataset-category-tab" data-dataset-filter="body_type">Body type · global</button></div>
+<div id="datasetGroups" class="dataset-group-grid" aria-live="polite"><div class="empty-state panel">Loading grouped training data…</div></div>
 {% endblock %}
