@@ -198,6 +198,13 @@
     const data = await readJson(response);
     profiles = data.profiles || [];
     renderProfiles();
+    const requestedProfileId = new URLSearchParams(window.location.search).get("profile_id");
+    if (requestedProfileId && profiles.some(profile => profile.id === requestedProfileId)) {
+      ["trainProfile", "addPhotosProfile", "faceProfile", "videoProfile"].forEach(id => {
+        const select = $("#"+id);
+        if (select) select.value = requestedProfileId;
+      });
+    }
     return profiles;
   }
 
@@ -323,6 +330,118 @@
       if(status)status.textContent="Added "+result.added+" generated image(s) to "+result.profile.name+". Total: "+result.profile.image_count+".";
     }catch(error){if(status)status.textContent=error.message;}
     finally{button.disabled=false;updateGeneratedPhotoSelectionCount();}
+  });
+
+  const generateFaceAnglesButton=$("#generateFaceAnglesButton");
+  const faceAnglesLabels=[
+    {label:"Front view", prompt:"front-facing straight toward the camera, both eyes visible, face centered"},
+    {label:"Three-quarter left", prompt:"three-quarter view turned about 45 degrees toward the subject's left, both eyes still partly visible"},
+    {label:"Three-quarter right", prompt:"three-quarter view turned about 45 degrees toward the subject's right, both eyes still partly visible"},
+    {label:"Left profile", prompt:"clear left-facing side profile, approximately 90-degree head turn, one eye visible"},
+    {label:"Right profile", prompt:"clear right-facing side profile, approximately 90-degree head turn, one eye visible"}
+  ];
+  function setAngleProgress(index, message, failed=false) {
+    const progress=$("#faceAnglesProgress");
+    if(progress)progress.hidden=false;
+    const percent=Math.max(0,Math.min(100,index*20));
+    const bar=$("#faceAnglesProgressBar");const percentLabel=$("#faceAnglesProgressPercent");
+    const stage=$("#faceAnglesProgressStage");const detail=$("#faceAnglesProgressDetail");
+    if(bar){bar.value=percent;bar.classList.toggle("progress-failed",failed);}
+    if(percentLabel)percentLabel.textContent=percent+"%";
+    if(stage)stage.textContent=failed?"Angle generation stopped":(index===5?"Dataset group ready":"Generating angle "+Math.min(index+1,5)+" of 5");
+    if(detail)detail.textContent=message;
+  }
+  async function updateFaceDatasetGroup(groupId, payload) {
+    return readJson(await fetch("/api/face-dataset-groups/"+groupId,{
+      method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)
+    }));
+  }
+  generateFaceAnglesButton?.addEventListener("click",async()=>{
+    const profileId=$("#addPhotosProfile")?.value;
+    const source=$("#angleSourceImage")?.files?.[0];
+    const titleInput=$("#angleGroupTitle");
+    const title=(titleInput?.value||"").trim()||("Face angles · "+new Date().toLocaleString());
+    const status=$("#faceAnglesStatus");
+    if(!profileId){if(status)status.textContent="Select the face profile that should receive these training photos.";return;}
+    if(!source){if(status)status.textContent="Choose one source face photo from your computer.";return;}
+    if(source.size>8*1024*1024){if(status)status.textContent="The source image must be 8 MB or smaller.";return;}
+    generateFaceAnglesButton.disabled=true;
+    const originalText=generateFaceAnglesButton.textContent;
+    generateFaceAnglesButton.textContent="Generating angle set…";
+    if(status)status.textContent="Saving the source photo and creating a named dataset group…";
+    setAngleProgress(0,"Preparing the source image.");
+    let groupId=null;
+    const generatedIds=[];const generatedLabels=[];
+    let generationError="";
+    try{
+      const createData=new FormData();
+      createData.set("title",title);
+      createData.append("source_image",source,source.name);
+      const created=await readJson(await fetch("/api/face-profiles/"+profileId+"/dataset-groups",{method:"POST",body:createData}));
+      groupId=created.group.id;
+      for(let i=0;i<faceAnglesLabels.length;i++){
+        const angle=faceAnglesLabels[i];
+        if(status)status.textContent="Generating "+angle.label+" ("+(i+1)+" of 5). CPU generation can take a long time; GPU mode is recommended.";
+        try{
+          const formData=new FormData();
+          formData.set("prompt",
+            "Photorealistic close-up head-and-shoulders photograph of the same adult person as the reference image, preserve the same identity, face shape, eye color, hairstyle, age and skin tone; "+angle.prompt+
+            ", natural neutral expression, both ears and jawline plausible, realistic eyes and skin pores, soft even studio daylight, plain neutral background, real DSLR photo, no beauty filter.");
+          formData.set("negative_prompt","different person, identity drift, changed hairstyle, changed eye color, face morphing, duplicate face, asymmetrical eyes, cross-eyed, distorted features, plastic skin, airbrushed skin, cartoon, CGI, blur, low resolution, watermark, text");
+          formData.set("strength","0.78");
+          formData.set("steps","20");
+          formData.set("title",title+" - "+angle.label);
+          formData.set("image_preset","standard");
+          formData.set("aspect_ratio","portrait");
+          formData.append("image",source,source.name);
+          formData.set("task_id",newGenerationTaskId());
+          addComputeData(formData);
+          const generated=await readJson(await fetch("/generate",{method:"POST",body:formData}));
+          if(!generated.asset_id)throw new Error("Image generation returned no saved media ID.");
+          generatedIds.push(generated.asset_id);generatedLabels.push(angle.label);
+          await updateFaceDatasetGroup(groupId,{status:"generating",generated_count:generatedIds.length});
+          setAngleProgress(generatedIds.length,"Saved "+angle.label+" to the image library. Adding the next angle…");
+        }catch(error){
+          generationError=angle.label+" failed: "+error.message;
+          break;
+        }
+      }
+      if(generatedIds.length){
+        if(status)status.textContent="Copying "+generatedIds.length+" generated view(s) into the grouped face-training dataset…";
+        try{
+          await readJson(await fetch("/api/face-profiles/"+profileId+"/photos/from-assets",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({asset_ids:generatedIds,group_id:groupId,angle_labels:generatedLabels})
+          }));
+        }catch(error){
+          generationError=(generationError?generationError+"; ":"")+"Could not attach all generated views to the group: "+error.message;
+        }
+      }
+      const finalState=(generatedIds.length===faceAnglesLabels.length&&!generationError)?"completed":(generatedIds.length?"partial":"failed");
+      await updateFaceDatasetGroup(groupId,{
+        status:finalState,generated_count:generatedIds.length,error:generationError
+      });
+      await refreshProfiles();
+      await loadDatasetGroups();
+      if(generatedIds.length===5&&!generationError){
+        if(status)status.textContent="Completed: the original and five angle views are now grouped under “"+title+"”. Review them on Training datasets, then retrain the face profile to use the additional data.";
+        setAngleProgress(5,"Original source + 5 generated views saved to this group.");
+      }else{
+        if(status)status.textContent="Saved "+generatedIds.length+" of 5 angle views. The source and successful outputs are kept; review the partial group on Training datasets. "+generationError;
+        setAngleProgress(generatedIds.length,generationError||"The angle set was incomplete.",true);
+      }
+      if(titleInput)titleInput.value=title;
+    }catch(error){
+      if(groupId){
+        try{await updateFaceDatasetGroup(groupId,{status:generatedIds.length?"partial":"failed",generated_count:generatedIds.length,error:error.message});}catch(_){}
+        await loadDatasetGroups();
+      }
+      if(status)status.textContent="Could not finish the angle dataset: "+error.message;
+      setAngleProgress(generatedIds.length,error.message,true);
+    }finally{
+      generateFaceAnglesButton.disabled=false;
+      generateFaceAnglesButton.textContent=originalText;
+    }
   });
 
   const trainForm=$("#trainForm");
@@ -599,6 +718,58 @@
     finally{button.disabled=false;}
   });
 
+  async function loadDatasetGroups() {
+    const container=$("#datasetGroups");
+    if(!container)return;
+    const countLabel=$("#datasetGroupCount");
+    const status=$("#datasetStatus");
+    if(countLabel)countLabel.textContent="Loading training datasets…";
+    try{
+      const data=await readJson(await fetch("/api/face-dataset-groups",{cache:"no-store"}));
+      const groups=data.groups||[];
+      container.replaceChildren();
+      if(countLabel)countLabel.textContent=groups.length+" dataset group(s)";
+      if(!groups.length){
+        const empty=document.createElement("div");empty.className="empty-state panel";
+        const title=document.createElement("h3");title.textContent="No grouped datasets yet";
+        const note=document.createElement("p");note.textContent="Open Face models → Add training photos → Auto-generate 5 angles to create your first group.";
+        empty.append(title,note);container.appendChild(empty);return;
+      }
+      groups.forEach(group=>{
+        const card=document.createElement("article");card.className="panel dataset-group-card";
+        const header=document.createElement("div");header.className="dataset-group-heading";
+        const title=document.createElement("h2");title.textContent=group.title;
+        const state=document.createElement("span");state.className="dataset-group-status "+(group.status||"");state.textContent=group.status||"unknown";
+        const headingCopy=document.createElement("div");headingCopy.append(title);
+        const caption=document.createElement("p");caption.className="dataset-group-caption";
+        const date=group.created_at?new Date(group.created_at).toLocaleString():"Saved";
+        caption.textContent=(group.profile_name||"Face profile")+" · "+(group.photo_count||0)+" photo(s) · "+(group.generated_count||0)+"/"+(group.expected_count||5)+" generated · "+date;
+        headingCopy.append(caption);header.append(headingCopy,state);card.append(header);
+        const photos=document.createElement("div");photos.className="dataset-group-photos";
+        (group.photos||[]).forEach(photo=>{
+          const figure=document.createElement("div");figure.className="dataset-group-photo";
+          const image=document.createElement("img");image.src=photo.content_url;image.alt=photo.angle_label||"Training photo";image.loading="lazy";
+          image.addEventListener("error",()=>{image.alt="Preview unavailable";image.style.opacity=".35";});
+          const label=document.createElement("span");label.textContent=photo.angle_label||photo.filename||"Training photo";
+          figure.append(image,label);photos.appendChild(figure);
+        });
+        card.appendChild(photos);
+        if(group.error){const error=document.createElement("p");error.className="dataset-group-error";error.textContent=group.error;card.appendChild(error);}
+        if(group.status==="generating"){const warning=document.createElement("p");warning.className="field-help";warning.textContent="Generation is still in progress. Refresh to check the latest status.";card.appendChild(warning);}
+        const actions=document.createElement("div");actions.className="dataset-group-actions";
+        const faceLink=document.createElement("a");faceLink.className="button-link secondary-link";faceLink.href="/faces?profile_id="+encodeURIComponent(group.profile_id);faceLink.textContent="Train this profile";
+        const imageLink=document.createElement("a");imageLink.className="button-link";imageLink.href="/generate/image?profile_id="+encodeURIComponent(group.profile_id);imageLink.textContent="Generate with face";
+        actions.append(faceLink,imageLink);card.appendChild(actions);container.appendChild(card);
+      });
+      if(status)status.textContent="";
+    }catch(error){
+      container.replaceChildren();const empty=document.createElement("div");empty.className="empty-state panel";empty.textContent="Could not load training datasets: "+error.message;container.appendChild(empty);
+      if(countLabel)countLabel.textContent="Dataset library unavailable";
+      if(status)status.textContent=error.message;
+    }
+  }
+  $("#datasetRefresh")?.addEventListener("click",loadDatasetGroups);
+
   async function loadStatus() {
     try{
       const data=await readJson(await fetch("/health"));
@@ -611,4 +782,5 @@
     const profileList=$("#profileList");if(profileList)profileList.textContent="Could not load profiles: "+error.message;
   });
   loadAssets();
+  loadDatasetGroups();
 })();
