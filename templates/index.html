@@ -318,7 +318,13 @@ async function probeRunpod(){
     updateButtonLabels();
   }
 }
-useRunpod.addEventListener('change',()=>{computeBackendWrap.hidden=!useRunpod.checked;updateButtonLabels();probeRunpod();});
+useRunpod.addEventListener('change',()=>{
+  computeBackendWrap.hidden=!useRunpod.checked;
+  // Force auto-selection on each enable: local CUDA first, then connected RunPod, then CPU.
+  if(useRunpod.checked)computeBackend.value='auto';
+  else computeBackend.value='cpu';
+  updateButtonLabels();probeRunpod();
+});
 computeBackend.addEventListener('change',()=>{applyComputeStatus();updateButtonLabels();});
 function updateButtonLabels(){
   const selected=useRunpod.checked?(computeBackend.value||'cpu'):'cpu';
