@@ -330,30 +330,6 @@
   $("#generatedPhotoSearch")?.addEventListener("input",()=>{generatedPhotoOffset=0;loadGeneratedPhotoPicker();});
   $("#generatedPhotoPrev")?.addEventListener("click",()=>{generatedPhotoOffset=Math.max(0,generatedPhotoOffset-generatedPhotoLimit);loadGeneratedPhotoPicker();});
   $("#generatedPhotoNext")?.addEventListener("click",()=>{if(generatedPhotoOffset+generatedPhotoLimit<generatedPhotoTotal){generatedPhotoOffset+=generatedPhotoLimit;loadGeneratedPhotoPicker();}});
-  let activeVariationMode="face_angles";
-  function activateTrainingSourceTab(tab) {
-    $$(".source-tab").forEach(item=>item.classList.toggle("active",item===tab));
-    const key=tab.dataset.sourceTab;
-    if(key==="angles"||key==="expressions")activeVariationMode=key==="expressions"?"expressions":"face_angles";
-    $$("[data-source-panel]").forEach(panel=>{
-      panel.hidden=panel.dataset.sourcePanel==="variations"
-        ? !(key==="angles"||key==="expressions")
-        : panel.dataset.sourcePanel!==key;
-    });
-    const generateButton=$("#generateFaceAnglesButton");
-    const description=$("#variationModeDescription");
-    const title=$("#angleGroupTitle");
-    if(generateButton)generateButton.textContent=activeVariationMode==="expressions"
-      ?"Generate five expressions and add to dataset":"Generate five angles and add to dataset";
-    if(description)description.textContent=activeVariationMode==="expressions"
-      ?"Upload one clear source photo and create five natural facial expressions while keeping the same person, hairstyle, and head angle."
-      :"Upload one clear source photo and create five labeled views of the same person. Only the viewpoint should change; the original is kept unchanged.";
-    if(title&&!(title.value||"").trim())title.placeholder=activeVariationMode==="expressions"
-      ?"e.g. Model A · expression set":"e.g. Model A · first angle set";
-  }
-  $$(".source-tab").forEach(tab=>tab.addEventListener("click",()=>activateTrainingSourceTab(tab)));
-  const initialTrainingTab=$('.source-tab[data-source-tab="angles"]');
-  if(initialTrainingTab)activateTrainingSourceTab(initialTrainingTab);
   $("#addGeneratedPhotosButton")?.addEventListener("click",async()=>{
     const id=$("#addPhotosProfile")?.value;
     const selected=[...selectedGeneratedAssetIds];
