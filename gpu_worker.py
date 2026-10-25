@@ -336,6 +336,7 @@ def remote_generate():
             return jsonify(error="The shared body-type LoRA is not trained on this RunPod worker. Train it using the global body model first."), 400
         prompt = local_engine.GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
     image = None
+    pose_control_image = None
     uploaded = request.files.get("image")
     if uploaded and uploaded.filename:
         try:
@@ -345,12 +346,23 @@ def remote_generate():
             image = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
             return jsonify(error="Reference image is not a valid PNG, JPG or WEBP image."), 400
+    pose_uploaded = request.files.get("pose_control_image")
+    if pose_uploaded and pose_uploaded.filename:
+        try:
+            with Image.open(pose_uploaded.stream) as source:
+                pose_control_image = ImageOps.exif_transpose(source).convert("RGB")
+                pose_control_image.load()
+            pose_control_image = ImageOps.fit(pose_control_image, (width, height), method=Image.Resampling.LANCZOS)
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+            return jsonify(error="Face-pose control image is not a valid image."), 400
+        if image is None:
+            return jsonify(error="Pose control requires a source reference image."), 400
     _set_generation_progress(task_id, asset_type="image", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the image model and selected face on RunPod…")
     if not local_engine.generation_lock.acquire(blocking=False):
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="busy", message="Another GPU generation is already running.")
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
-        mode = "img2img" if image is not None else "txt2img"
+        mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
         pipeline = local_engine._load_cpu_or_gpu_pipeline(
             mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model
         )
@@ -382,6 +394,11 @@ def remote_generate():
         }
         if image is not None:
             kwargs.update(image=image, strength=strength)
+        if pose_control_image is not None:
+            kwargs["control_image"] = pose_control_image
+            kwargs["controlnet_conditioning_scale"] = 1.0
+            if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
+                kwargs["ip_adapter_image"] = image
         result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
