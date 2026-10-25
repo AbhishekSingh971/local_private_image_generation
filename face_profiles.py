@@ -22,7 +22,15 @@ LORA_DIR = ROOT / "models" / "face_loras"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 PROFILE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
+MAX_DESCRIPTION_WORDS = 200
 _LOCK = threading.RLock()
+
+
+def validate_profile_description(description: str | None) -> str:
+    value = (description or "").strip()
+    if len(re.findall(r"\S+", value)) > MAX_DESCRIPTION_WORDS:
+        raise ValueError(f"Face description must be {MAX_DESCRIPTION_WORDS} words or fewer.")
+    return value
 _DB_MIGRATED = False
 
 for folder in (DATA_DIR, PROFILES_DIR, LORA_DIR):
@@ -96,6 +104,7 @@ def _local_lora_ready(profile_id: str) -> bool:
 def _public_record(record: dict) -> dict:
     profile_id = record["id"]
     result = dict(record)
+    result["description"] = record.get("description") or ""
     result["image_count"] = max(_image_count(profile_id), int(record.get("image_count", 0) or 0))
     result["local_model_ready"] = _local_lora_ready(profile_id)
     result["runpod_model_ready"] = bool(record.get("runpod_model_ready"))
@@ -189,8 +198,9 @@ def get_profile(profile_id: str) -> dict | None:
         return _public_record(record) if record else None
 
 
-def create_profile(name: str, profile_id: str | None = None, token: str | None = None) -> dict:
+def create_profile(name: str, profile_id: str | None = None, token: str | None = None, description: str = "") -> dict:
     name = (name or "").strip()
+    description = validate_profile_description(description)
     if not name:
         raise ValueError("Enter a name for this face profile.")
     if len(name) > 80:
@@ -208,6 +218,7 @@ def create_profile(name: str, profile_id: str | None = None, token: str | None =
             "id": profile_id,
             "name": name,
             "token": token,
+            "description": description,
             "created_at": _utc_now(),
             "local_model_ready": False,
             "runpod_model_ready": False,
@@ -250,12 +261,15 @@ def update_profile(profile_id: str, **fields) -> dict:
         "runpod_training_error",
         "runpod_training_job_id",
         "token",
+        "description",
     }
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"Unsupported profile fields: {', '.join(sorted(unknown))}")
     if "token" in fields and not TOKEN_RE.fullmatch(str(fields["token"] or "")):
         raise ValueError("Invalid face prompt token.")
+    if "description" in fields:
+        fields["description"] = validate_profile_description(fields["description"])
     with _LOCK:
         if _database_enabled():
             _ensure_database_migrated()
