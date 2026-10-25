@@ -504,7 +504,7 @@
     const angleProfile=profiles.find(profile=>profile.id===session.profileId);
     if(angleProfile&&(
       (session.selectedBackend==="runpod"&&angleProfile.runpod_model_ready)||
-      (session.selectedBackend==="local_gpu"&&angleProfile.local_model_ready)
+      ((session.selectedBackend==="local_gpu"||session.selectedBackend==="cpu")&&angleProfile.local_model_ready)
     ))formData.set("face_profile_id",session.profileId);
     addComputeData(formData);
     // Preserve the selected compute route used for this group even if UI controls change.
