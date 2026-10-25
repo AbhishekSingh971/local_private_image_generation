@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Generate image · Private Face Studio{% endblock %}
+{% block page_heading %}Image generation{% endblock %}
+{% block content %}
+<div class="page-intro"><div><div class="eyebrow">CREATE · IMAGE</div><h1>Generate an image</h1><p>Describe the image you want or optionally provide a reference image. Completed output is saved to your database-backed library.</p></div><a class="text-link" href="{{ url_for('library_images_page') }}">Open saved images →</a></div>
+<div class="work-grid">
+  <section class="panel form-panel">
+    <form id="generationForm">
+      <label for="faceProfile">Face identity</label><select id="faceProfile" name="face_profile_id"><option value="">Base model (no trained face)</option></select>
+      <label for="referenceImage">Reference image <span class="optional">optional</span></label><input id="referenceImage" name="image" type="file" accept="image/png,image/jpeg,image/webp">
+      <div class="preview reference-preview"><img id="sourcePreview" alt="Reference image preview" hidden><div id="sourcePlaceholder" class="placeholder">Reference image preview</div></div>
+      <label for="prompt">Prompt</label><textarea id="prompt" name="prompt" maxlength="1200" rows="4" required placeholder="A photorealistic editorial portrait, soft window light, subtle background bokeh..."></textarea>
+      <label for="negativePrompt">Negative prompt <span class="optional">optional</span></label><textarea id="negativePrompt" name="negative_prompt" maxlength="600" rows="2" placeholder="blurry, distorted face, extra fingers, low quality"></textarea>
+      <div class="twocol">
+        <div><label for="strength">Reference strength <span id="strengthValue" class="value-pill">0.45</span></label><input id="strength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.45"><p class="field-help">Only used when a reference image is chosen.</p></div>
+        <div><label for="steps">Inference steps</label><select id="steps" name="steps"><option value="5">5 · quick test</option><option value="10" selected>10 · starting point</option><option value="15">15</option><option value="20">20</option><option value="25">25 · slower</option></select></div>
+      </div>
+      <label for="outputTitle">Save as</label><input id="outputTitle" name="title" type="text" maxlength="160" placeholder="e.g. Studio portrait 01">
+      <button type="submit" id="generateButton">Generate photo</button>
+      <div id="generationStatus" class="status" role="status" aria-live="polite"></div>
+    </form>
+  </section>
+  <section class="panel result-panel">
+    <div class="result-heading"><div><div class="eyebrow">LATEST RESULT</div><h2>Your image</h2></div><span class="pill" id="imageSavedPill">Not generated</span></div>
+    <div class="preview result-preview"><img id="resultPreview" alt="Generated photo" hidden><div id="resultPlaceholder" class="placeholder"><div class="empty-icon">✧</div>Your generated photo will appear here.</div></div>
+    <div class="result-actions"><a id="downloadImage" class="button-link" href="#" download hidden>Download image ↓</a><a class="button-link secondary-link" href="{{ url_for('library_images_page') }}">Browse image library →</a></div>
+    <p class="field-help">Image bytes and details are saved to your database; a local output copy is kept for training and backup workflows.</p>
+  </section>
+</div>
+{% endblock %}
