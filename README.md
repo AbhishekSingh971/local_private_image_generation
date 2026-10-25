@@ -88,6 +88,8 @@ The UI toggle routes training/generation requests to a worker that you already d
 
 6. In RunPod, confirm the Pod is running and note the exposed port URL. It should follow:
 
+For live generation progress, the worker must be running the latest `feature/face-identity-lora` code, which adds the authenticated `/api/remote/generation-progress/<task-id>` endpoint and diffusion-step callbacks. If this Pod was deployed from an older commit, pull the latest branch in its workspace and restart `runpod_worker_linux.sh`; updating only the Windows app is not enough for cloud progress.
+
        https://<POD_ID>-8000.proxy.runpod.net
 
 ### B. Configure your Windows app
