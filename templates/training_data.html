@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Training datasets · Private Face Studio{% endblock %}
+{% block page_heading %}Training datasets{% endblock %}
+{% block content %}
+<div class="page-intro">
+  <div><div class="eyebrow">GROUPED FACE DATA</div><h1>Training datasets</h1><p>Review each source photo and its generated angle variations as a named group. New groups appear here, and each group links back to the profile used for training and future generation.</p></div>
+  <a class="button-link" href="{{ url_for('faces_page') }}">Add training photos +</a>
+</div>
+<div class="library-toolbar panel">
+  <div><strong id="datasetGroupCount">Loading training datasets…</strong><p class="field-help">The source image and generated variations are saved in the selected profile’s training dataset.</p></div>
+  <button type="button" class="secondary-button" id="datasetRefresh">Refresh</button>
+</div>
+<div id="datasetStatus" class="status" role="status" aria-live="polite"></div>
+<div id="datasetGroups" class="dataset-group-grid" aria-live="polite"><div class="empty-state panel">Loading grouped face data…</div></div>
+{% endblock %}
