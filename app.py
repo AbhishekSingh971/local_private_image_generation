@@ -51,6 +51,14 @@ from studio_db import (
     create_asset,
     database_status,
     database_url_configured,
+    ensure_schema,
+    create_face_dataset_group,
+    get_face_dataset_group,
+    get_face_photo_bytes,
+    get_face_profile_record,
+    insert_face_profile_record,
+    list_face_dataset_groups,
+    update_face_dataset_group,
     get_face_model_bundle,
     list_asset_filenames,
     save_face_model_bundle,
@@ -539,6 +547,11 @@ def library_videos_page():
     return render_template("library.html", page_key="videos", active_page="videos", asset_type="video")
 
 
+@app.get("/training-data")
+def training_data_page():
+    return render_template("training_data.html", page_key="training-data", active_page="training-data")
+
+
 @app.get("/api/assets")
 def api_list_assets():
     asset_type = (request.args.get("type") or "").strip().lower()
@@ -651,6 +664,104 @@ def api_delete_face_profile(profile_id):
     return jsonify(status="deleted", id=profile_id)
 
 
+@app.post("/api/face-profiles/<profile_id>/dataset-groups")
+def api_create_face_dataset_group(profile_id):
+    group_id = None
+    try:
+        profile_id = validate_profile_id(profile_id)
+        profile = get_profile(profile_id)
+        if not profile:
+            return jsonify(error="Face profile not found."), 404
+        title = _clean_prompt(request.form.get("title"), "Dataset group title", 120)
+        uploads = request.files.getlist("source_image")
+        if not uploads or not uploads[0] or not uploads[0].filename:
+            return jsonify(error="Choose one source image from your computer."), 400
+        images = _parse_uploads(uploads[:1])
+        if not images:
+            return jsonify(error="The source image could not be read."), 400
+        # In local development mode profiles are still in the legacy JSON registry.
+        # Mirror profile metadata into SQLite so grouped photos can be browsed too.
+        ensure_schema()
+        if not get_face_profile_record(profile_id):
+            insert_face_profile_record(profile)
+        group = create_face_dataset_group(profile_id, title, expected_count=5)
+        group_id = group["id"]
+        image = images[0]
+        if image.width < 128 or image.height < 128:
+            raise ValueError("The source image must be at least 128 × 128 pixels.")
+        save_profile_image(profile_id, image, group_id=group_id, angle_label="Original source")
+        return jsonify(status="created", group=get_face_dataset_group(group_id)), 201
+    except ValueError as exc:
+        if group_id:
+            update_face_dataset_group(group_id, status="failed", error=str(exc))
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not create grouped face-training dataset")
+        if group_id:
+            try:
+                update_face_dataset_group(group_id, status="failed", error="Could not save the source image.")
+            except Exception:
+                pass
+        return jsonify(error="Could not create the training-data group. Check database connectivity and profile storage."), 503
+
+
+@app.get("/api/face-dataset-groups")
+def api_list_face_dataset_groups():
+    try:
+        profile_id = request.args.get("profile_id", "").strip() or None
+        if profile_id:
+            profile_id = validate_profile_id(profile_id)
+            if not get_profile(profile_id):
+                return jsonify(error="Face profile not found."), 404
+        groups = list_face_dataset_groups(profile_id=profile_id)
+        for group in groups:
+            for photo in group["photos"]:
+                photo["content_url"] = url_for("face_photo_content", photo_id=photo["id"])
+        return jsonify(groups=groups, count=len(groups))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not list face-training dataset groups")
+        return jsonify(error="Could not read dataset groups. Check the database connection."), 503
+
+
+@app.patch("/api/face-dataset-groups/<group_id>")
+def api_update_face_dataset_group(group_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", group_id or ""):
+        return jsonify(error="Invalid dataset group ID."), 400
+    payload = request.get_json(silent=True) or {}
+    try:
+        group = update_face_dataset_group(
+            group_id,
+            status=payload.get("status"),
+            generated_count=payload.get("generated_count"),
+            error=payload.get("error") if "error" in payload else None,
+        )
+        if not group:
+            return jsonify(error="Dataset group not found."), 404
+        return jsonify(group=group)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not update dataset group status")
+        return jsonify(error="Could not update dataset group status."), 503
+
+
+@app.get("/api/face-photos/<photo_id>/content")
+def face_photo_content(photo_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", photo_id or ""):
+        return jsonify(error="Invalid face photo ID."), 400
+    try:
+        stored = get_face_photo_bytes(photo_id)
+    except Exception:
+        app.logger.exception("Could not read grouped face photo")
+        return jsonify(error="Could not read the grouped photo from storage."), 503
+    if not stored:
+        return jsonify(error="Grouped face photo not found."), 404
+    metadata, image_data = stored
+    return send_file(io.BytesIO(image_data), mimetype=metadata["mime_type"], max_age=0)
+
+
 @app.post("/api/face-profiles/<profile_id>/photos/from-assets")
 def api_add_generated_photos(profile_id):
     try:
@@ -662,8 +773,18 @@ def api_add_generated_photos(profile_id):
         return jsonify(error="Face profile not found."), 404
     payload = request.get_json(silent=True) or {}
     asset_ids = payload.get("asset_ids")
+    group_id = str(payload.get("group_id") or "").strip() or None
+    angle_labels = payload.get("angle_labels") or []
     if not isinstance(asset_ids, list) or not asset_ids:
         return jsonify(error="Select one or more generated images."), 400
+    if group_id:
+        if not re.fullmatch(r"[a-f0-9]{32}", group_id):
+            return jsonify(error="Invalid dataset group ID."), 400
+        group = get_face_dataset_group(group_id)
+        if not group or group["profile_id"] != profile_id:
+            return jsonify(error="Dataset group not found for this face profile."), 404
+        if not isinstance(angle_labels, list) or len(angle_labels) != len(asset_ids):
+            return jsonify(error="Supply one angle label for each generated image."), 400
     if len(asset_ids) > 30:
         return jsonify(error="Add at most 30 generated images per request."), 400
     if len(set(map(str, asset_ids))) != len(asset_ids):
@@ -682,7 +803,10 @@ def api_add_generated_photos(profile_id):
                 image.load()
             if image.width < 128 or image.height < 128:
                 return jsonify(error="Every selected image must be at least 128 × 128 pixels."), 400
-            save_profile_image(profile_id, image)
+            label = str(angle_labels[added] or "")[:80] if group_id else None
+            save_profile_image(
+                profile_id, image, group_id=group_id, angle_label=label
+            )
             added += 1
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         return jsonify(error="A selected media item is not a valid image: " + str(exc)), 400
