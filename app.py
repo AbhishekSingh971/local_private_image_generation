@@ -990,10 +990,12 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
         yaw = float(target["yaw"])
         pitch = float(target["pitch"])
         pose_instruction = (
-            f"REQUIRED TARGET HEAD POSE: yaw {yaw:+.0f} degrees and pitch {pitch:+.0f} degrees. "
+            f"MANDATORY VISIBLE HEAD ROTATION: yaw {yaw:+.0f} degrees and pitch {pitch:+.0f} degrees. "
             + target["prompt"] + ". "
-            + "Rotate the head itself; do not simulate the requested view by moving only the eyes or camera. "
-            + "For side profiles, the nose and chin silhouette must visibly point sideways and the far eye must not remain fully visible. "
+            + "This must be a genuinely different head pose, not a frontal face with eyes looking sideways. Rotate the skull, nose, mouth, chin, and both ears together. "
+            + "For a left turn, the nose points toward the subject's own left; for a right turn, it points toward the subject's own right. "
+            + "At 30 degrees show clear facial asymmetry; at 55 degrees the far eye is only partly visible; at 90 degrees show a true side silhouette with only one eye visible. "
+            + "Keep the same recognizable person, but do not preserve the source's frontal head direction when it conflicts with this target. "
         )
         strength = float(target["strength"])
     else:
@@ -1105,7 +1107,7 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
         }
         if pose_control_image is not None:
             pipeline_kwargs["control_image"] = pose_control_image
-            pipeline_kwargs["controlnet_conditioning_scale"] = 1.0
+            pipeline_kwargs["controlnet_conditioning_scale"] = 1.35
             if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
                 pipeline_kwargs["ip_adapter_image"] = init_image
         result = pipeline(**pipeline_kwargs).images[0].convert("RGB")
