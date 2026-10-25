@@ -308,6 +308,23 @@ def list_face_photo_names(profile_id: str) -> set[str]:
         return set(rows)
 
 
+def list_face_photo_records(profile_id: str) -> list[dict]:
+    """Return stored photo names and bytes for rebuilding a profile's local training cache."""
+    ensure_schema()
+    with _session_factory()() as session:
+        rows = session.scalars(
+            select(FacePhotoRow).where(FacePhotoRow.profile_id == profile_id).order_by(FacePhotoRow.created_at.asc())
+        ).all()
+        return [
+            {
+                "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
+                "mime_type": row.mime_type, "byte_size": row.byte_size,
+                "image_data": bytes(row.image_data),
+            }
+            for row in rows
+        ]
+
+
 def get_face_photo_bytes(photo_id: str) -> tuple[dict, bytes] | None:
     ensure_schema()
     with _session_factory()() as session:
