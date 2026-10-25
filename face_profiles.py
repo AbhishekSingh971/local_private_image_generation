@@ -134,7 +134,7 @@ def _restore_database_photos() -> None:
             try:
                 temporary.write_bytes(photo["image_data"])
                 temporary.replace(destination)
-                caption = (photo.get("angle_label") or "").strip()
+                caption = (photo.get("training_caption") or photo.get("angle_label") or "").strip()
                 if photo.get("photo_kind") in {"angle", "expression", "body"} and caption:
                     destination.with_name(destination.name + ".caption.txt").write_text(
                         caption[:1200], encoding="utf-8"
@@ -360,6 +360,7 @@ def save_profile_image(
             profile_id, destination.name, destination.read_bytes(), "image/jpeg",
             group_id=group_id, angle_label=angle_label, photo_kind=photo_kind,
             validation_status=validation_status, validation_message=validation_message,
+            training_caption=(training_caption or angle_label or ""),
             target_yaw=target_yaw, target_pitch=target_pitch,
             actual_yaw=actual_yaw, actual_pitch=actual_pitch,
         )
