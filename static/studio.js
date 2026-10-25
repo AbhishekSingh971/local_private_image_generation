@@ -391,7 +391,7 @@
   }
   function syncFaceTargetSelection(){
     if(!faceTargetChecklist)return;
-    const boxes=$(".face-target-option input",faceTargetChecklist);
+    const boxes=Array.from(faceTargetChecklist.querySelectorAll(".face-target-option input"));
     const checked=boxes.filter(box=>box.checked);
     if(selectAllFaceTargets){selectAllFaceTargets.checked=boxes.length>0&&checked.length===boxes.length;selectAllFaceTargets.indeterminate=checked.length>0&&checked.length<boxes.length;}
     const help=$("#targetSelectionHelp");
