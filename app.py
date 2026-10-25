@@ -27,6 +27,7 @@ import torch
 from flask import Flask, request, send_from_directory, jsonify
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from compute_routing import select_compute_backend
 from face_profiles import (
     DATA_DIR,
     LORA_DIR,
@@ -58,6 +59,7 @@ MODEL_ID = os.environ.get("SD_MODEL_ID", "stable-diffusion-v1-5/stable-diffusion
 
 pipe = None
 pipeline_mode = None
+pipeline_device = None
 active_lora = None
 model_error = None
 video_pipe = None
@@ -114,6 +116,81 @@ def runpod_request(method: str, path: str, *, data=None, files=None, timeout=(15
             detail = response.text
         raise RuntimeError(f"RunPod worker returned HTTP {response.status_code}: {detail[:1200]}")
     return response
+
+
+def _local_gpu_details() -> dict:
+    """Report GPUs actually usable by this PyTorch installation (CUDA)."""
+    details = {"available": False, "name": None, "vram_gb": None}
+    try:
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            details.update({
+                "available": True,
+                "name": torch.cuda.get_device_name(0),
+                "vram_gb": round(props.total_memory / (1024 ** 3), 2),
+            })
+    except Exception as exc:
+        details["error"] = str(exc)
+    return details
+
+
+def _compute_options(probe_cloud: bool = False) -> dict:
+    local = _local_gpu_details()
+    configured = runpod_configured()
+    cloud = {"available": False, "name": None, "vram_gb": None}
+    cloud_error = None
+    if probe_cloud and configured:
+        try:
+            response = runpod_request("GET", "/api/remote/health", timeout=(8, 12))
+            payload = response.json()
+            if payload.get("cuda_available") is True:
+                cloud.update({
+                    "available": True,
+                    "name": payload.get("gpu_name") or "RunPod GPU",
+                    "vram_gb": payload.get("vram_gb"),
+                })
+            else:
+                cloud_error = payload.get("error") or "RunPod worker reports no CUDA GPU."
+        except (RuntimeError, ValueError) as exc:
+            cloud_error = str(exc)
+
+    available = ["cpu"]
+    if local["available"]:
+        available.append("local_gpu")
+    if cloud["available"]:
+        available.append("runpod")
+    auto_backend = "local_gpu" if local["available"] else ("runpod" if cloud["available"] else "cpu")
+    return {
+        "local_gpu": local,
+        "cloud_gpu": cloud,
+        "runpod_configured": configured,
+        "available_backends": available,
+        "auto_backend": auto_backend,
+        "cloud_error": cloud_error,
+        "message": (
+            f"Using local GPU: {local['name']}."
+            if auto_backend == "local_gpu" else
+            f"Local CUDA GPU not detected; cloud GPU available: {cloud['name']}."
+            if auto_backend == "runpod" else
+            "No usable GPU detected. CPU is available; configure a running RunPod GPU for acceleration."
+        ),
+    }
+
+
+def _resolve_compute_backend(form) -> str:
+    """OFF => CPU. ON => selected GPU; auto prefers local CUDA, then healthy RunPod."""
+    gpu_enabled = _truthy(form.get("use_gpu", form.get("use_runpod")))
+    if not gpu_enabled:
+        return "cpu"
+    requested = (form.get("compute_backend") or "auto").strip().lower()
+    local_available = bool(torch.cuda.is_available())
+    probe_cloud = requested == "runpod" or (requested == "auto" and not local_available)
+    options = _compute_options(probe_cloud=probe_cloud)
+    return select_compute_backend(
+        True, requested,
+        local_gpu_available=options["local_gpu"]["available"],
+        cloud_gpu_available=options["cloud_gpu"]["available"],
+    )
 
 
 def _clean_prompt(value: str, field_name: str, limit: int) -> str:
@@ -215,31 +292,24 @@ def health():
         video_model_loaded=video_pipe is not None,
         video_adapter_ready=(MOTION_DIR / "config.json").is_file(),
         runpod_configured=runpod_configured(),
-        note="Local mode runs on this computer. RunPod requests are made only when the UI toggle is enabled.",
+        local_gpu=_local_gpu_details(),
+        note="GPU toggle off means local CPU. When on, available GPU backends can be selected.",
     )
 
 
 @app.get("/api/gpu-status")
 def gpu_status():
-    configured = runpod_configured()
-    result = {
-        "configured": configured,
-        "connected": False,
-        "message": (
-            "RunPod is configured. Enable the GPU toggle to test the worker."
-            if configured else
-            "Not configured. Add RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN to .env. No Pod has been started."
-        ),
+    probe_cloud = _truthy(request.args.get("probe"))
+    result = _compute_options(probe_cloud=probe_cloud)
+    result["configured"] = result["runpod_configured"]
+    result["connected"] = result["cloud_gpu"]["available"]
+    result["worker"] = {
+        "cuda_available": result["cloud_gpu"]["available"],
+        "gpu_name": result["cloud_gpu"]["name"],
+        "vram_gb": result["cloud_gpu"]["vram_gb"],
     }
-    if _truthy(request.args.get("probe")):
-        if not configured:
-            return jsonify(result), 400
-        try:
-            payload = runpod_request("GET", "/api/remote/health", timeout=(8, 12)).json()
-            result.update({"connected": True, "worker": payload, "message": "RunPod worker is reachable."})
-        except RuntimeError as exc:
-            result["message"] = str(exc)
-            return jsonify(result), 502
+    if result["cloud_error"]:
+        result["message"] = result["cloud_error"]
     return jsonify(result)
 
 
@@ -253,7 +323,8 @@ def api_create_face_profile():
     try:
         name = _clean_prompt(request.form.get("name"), "Profile name", 80)
         token = (request.form.get("token") or "").strip() or None
-        images = _parse_uploads(request.files.getlist("photos"))
+        uploads = request.files.getlist("photos")
+        images = _parse_uploads(uploads) if any(item and item.filename for item in uploads) else []
         profile = create_profile(name, token=token)
         for image in images:
             save_profile_image(profile["id"], image)
@@ -300,8 +371,17 @@ def api_train_face_profile(profile_id):
     if not 100 <= steps <= 3000 or resolution not in (384, 512):
         return jsonify(error="Training steps must be 100–3000 and resolution must be 384 or 512."), 400
 
-    use_runpod = _truthy(request.form.get("use_runpod"))
-    if use_runpod:
+    try:
+        backend = _resolve_compute_backend(request.form)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if backend == "cpu":
+        return jsonify(error=(
+            "Face LoRA training needs a GPU. Turn on Enable GPU acceleration, then select an available "
+            "System GPU or RunPod GPU. CPU fallback is not supported for this training workflow."
+        )), 400
+
+    if backend == "runpod":
         if not runpod_configured():
             return jsonify(error=(
                 "RunPod is not configured. Set RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN in .env, "
@@ -344,8 +424,8 @@ def api_train_face_profile(profile_id):
 
     if not torch.cuda.is_available():
         return jsonify(error=(
-            "Local LoRA training requires an NVIDIA GPU with CUDA. This machine is using CPU-only PyTorch. "
-            "Turn on the RunPod GPU toggle after configuring your running RTX 3090 worker."
+            "System GPU was selected, but this Python environment cannot access a CUDA GPU. "
+            "Choose RunPod GPU or install a compatible CUDA-enabled PyTorch build."
         )), 400
 
     job_id = uuid.uuid4().hex
@@ -404,16 +484,22 @@ def api_face_train_status(profile_id):
     return jsonify(status=state, error=payload.get("error"), job=payload, profile=updated_profile)
 
 
-def _load_cpu_or_gpu_pipeline(mode, profile_id):
-    global pipe, pipeline_mode, active_lora, model_error
+def _load_cpu_or_gpu_pipeline(mode, profile_id, compute_backend="cpu"):
+    global pipe, pipeline_mode, pipeline_device, active_lora, model_error
     global video_pipe, active_video_lora
     from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
 
+    if compute_backend not in {"cpu", "local_gpu"}:
+        raise ValueError("Local image pipeline requires the CPU or System GPU backend.")
+    if compute_backend == "local_gpu" and not torch.cuda.is_available():
+        raise ValueError("System GPU was selected but CUDA is unavailable to this Python environment.")
     with model_lock:
-        use_cuda = torch.cuda.is_available()
-        if pipe is None or pipeline_mode != mode:
+        use_cuda = compute_backend == "local_gpu"
+        device = "cuda" if use_cuda else "cpu"
+        if pipe is None or pipeline_mode != mode or pipeline_device != device:
             pipe = None
             pipeline_mode = None
+            pipeline_device = None
             active_lora = None
             video_pipe = None
             active_video_lora = None
@@ -440,6 +526,7 @@ def _load_cpu_or_gpu_pipeline(mode, profile_id):
                     pass
                 pipe = loaded
                 pipeline_mode = mode
+                pipeline_device = device
                 model_error = None
             except Exception as exc:
                 model_error = str(exc)
