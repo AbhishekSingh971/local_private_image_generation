@@ -380,20 +380,34 @@ def get_face_dataset_group(group_id: str) -> dict | None:
 
 
 def update_face_dataset_group(
-    group_id: str, *, status: str | None = None,
-    generated_count: int | None = None, error: str | None = None,
+    group_id: str, *, title: str | None = None, status: str | None = None,
+    generated_count: int | None = None, expected_count: int | None = None,
+    error: str | None = None,
 ) -> dict | None:
     allowed_statuses = {"generating", "completed", "partial", "failed"}
     if status is not None and status not in allowed_statuses:
         raise ValueError("Invalid dataset group status.")
+    normalized_title = None
+    if title is not None:
+        normalized_title = str(title).strip()
+        if not normalized_title or len(normalized_title) > 120:
+            raise ValueError("Dataset group name must contain 1–120 characters.")
+    if expected_count is not None:
+        expected_count = int(expected_count)
+        if not 1 <= expected_count <= 30:
+            raise ValueError("Expected photo count must be between 1 and 30.")
     ensure_schema()
     with _session_factory()() as session:
         row = session.get(FaceDatasetGroupRow, group_id)
         if not row:
             return None
+        if normalized_title is not None:
+            row.title = normalized_title
+        if expected_count is not None:
+            row.expected_count = max(expected_count, int(generated_count or row.generated_count or 0))
         if generated_count is not None:
             count = int(generated_count)
-            if count < 0 or count > row.expected_count:
+            if count < 0 or count > max(row.expected_count, int(expected_count or 0)):
                 raise ValueError("Generated count is outside the expected range.")
             row.generated_count = count
         if status is not None:
@@ -439,6 +453,28 @@ def list_face_dataset_groups(profile_id: str | None = None, limit: int = 200) ->
         return result
 
 
+def delete_face_dataset_group(group_id: str) -> dict | None:
+    """Delete a group's metadata and its grouped photo records in one transaction."""
+    ensure_schema()
+    with _session_factory()() as session:
+        group = session.get(FaceDatasetGroupRow, group_id)
+        if not group:
+            return None
+        photos = session.scalars(
+            select(FacePhotoRow).where(FacePhotoRow.group_id == group_id)
+        ).all()
+        result = _dataset_group_dict(group)
+        result["photos"] = [
+            {"id": photo.id, "profile_id": photo.profile_id, "filename": photo.filename}
+            for photo in photos
+        ]
+        for photo in photos:
+            session.delete(photo)
+        session.delete(group)
+        session.commit()
+        return result
+
+
 def list_face_photo_names(profile_id: str) -> set[str]:
     ensure_schema()
     with _session_factory()() as session:
@@ -476,6 +512,53 @@ def get_face_photo_bytes(photo_id: str) -> tuple[dict, bytes] | None:
         return ({"id": row.id, "profile_id": row.profile_id, "filename": row.filename,
                  "mime_type": row.mime_type, "byte_size": row.byte_size,
                  "group_id": row.group_id, "angle_label": row.angle_label}, bytes(row.image_data))
+
+
+def update_face_photo(
+    photo_id: str, *, angle_label: str | None = None,
+    image_data: bytes | None = None, mime_type: str | None = None,
+) -> dict | None:
+    """Update a grouped training photo's label and/or encoded image bytes."""
+    ensure_schema()
+    if image_data is not None and (not image_data or len(image_data) > 8 * 1024 * 1024):
+        raise ValueError("Replacement photos must be non-empty and 8 MB or smaller.")
+    normalized_label = None
+    if angle_label is not None:
+        normalized_label = str(angle_label).strip()
+        if not normalized_label or len(normalized_label) > 80:
+            raise ValueError("Photo label must contain 1–80 characters.")
+    with _session_factory()() as session:
+        row = session.get(FacePhotoRow, photo_id)
+        if not row:
+            return None
+        if normalized_label is not None:
+            row.angle_label = normalized_label
+        if image_data is not None:
+            row.image_data = image_data
+            row.byte_size = len(image_data)
+            row.mime_type = (mime_type or "image/jpeg")[:100]
+        session.commit()
+        return {
+            "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
+            "group_id": row.group_id, "angle_label": row.angle_label or "Training photo",
+            "mime_type": row.mime_type, "byte_size": row.byte_size,
+        }
+
+
+def delete_face_photo(photo_id: str) -> dict | None:
+    """Delete one photo record and return local-file metadata for cleanup."""
+    ensure_schema()
+    with _session_factory()() as session:
+        row = session.get(FacePhotoRow, photo_id)
+        if not row:
+            return None
+        result = {
+            "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
+            "group_id": row.group_id, "angle_label": row.angle_label,
+        }
+        session.delete(row)
+        session.commit()
+        return result
 
 
 def save_face_model_bundle(profile_id: str, backend: str, filename: str, bundle_data: bytes, file_count: int) -> dict:
