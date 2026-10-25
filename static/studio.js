@@ -333,6 +333,7 @@
   });
 
   const generateFaceAnglesButton=$("#generateFaceAnglesButton");
+  const retryFaceAngleButton=$("#retryFaceAngleButton");
   const faceAnglesLabels=[
     {label:"Front view", prompt:"front-facing straight toward the camera, both eyes visible, face centered"},
     {label:"Three-quarter left", prompt:"three-quarter view turned about 45 degrees toward the subject's left, both eyes still partly visible"},
@@ -340,6 +341,8 @@
     {label:"Left profile", prompt:"clear left-facing side profile, approximately 90-degree head turn, one eye visible"},
     {label:"Right profile", prompt:"clear right-facing side profile, approximately 90-degree head turn, one eye visible"}
   ];
+  let pendingAngleSession=null;
+
   function setAngleProgressPercent(percent, stageText, message, failed=false) {
     const progress=$("#faceAnglesProgress");
     if(progress)progress.hidden=false;
@@ -383,106 +386,220 @@
       method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)
     }));
   }
+  async function attachPendingAngleToGroup(session,index) {
+    if(!session.pendingAssetId)throw new Error("There is no saved generated image to attach.");
+    const angle=faceAnglesLabels[index];
+    await readJson(await fetch("/api/face-profiles/"+session.profileId+"/photos/from-assets",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        asset_ids:[session.pendingAssetId],
+        group_id:session.groupId,
+        angle_labels:[angle.label]
+      })
+    }));
+    session.generatedCount+=1;
+    session.nextIndex=index+1;
+    session.pendingAssetId=null;
+    session.pendingAssetIndex=null;
+    await updateFaceDatasetGroup(session.groupId,{
+      status:"generating",generated_count:session.generatedCount,error:""
+    });
+    setAngleProgressPercent(
+      session.nextIndex*20,"Saved "+angle.label,
+      "This view is saved in both Generated images and this group's training photos."
+    );
+  }
+  async function generateOneFaceAngle(session,index) {
+    if(session.pendingAssetId&&session.pendingAssetIndex===index){
+      // Generation succeeded previously but attaching its saved result failed.
+      // Retry the attachment before creating another image.
+      await attachPendingAngleToGroup(session,index);
+      return;
+    }
+    const angle=faceAnglesLabels[index];
+    const formData=new FormData();
+    formData.set("prompt",
+      "Photorealistic close-up head-and-shoulders photograph of the same adult person as the reference image, preserve the same identity, face shape, eye color, hairstyle, age and skin tone; "+angle.prompt+
+      ", natural neutral expression, both ears and jawline plausible, realistic eyes and skin pores, soft even studio daylight, plain neutral background, real DSLR photo, no beauty filter.");
+    formData.set("negative_prompt","different person, identity drift, changed hairstyle, changed eye color, face morphing, duplicate face, asymmetrical eyes, cross-eyed, distorted features, plastic skin, airbrushed skin, cartoon, CGI, blur, low resolution, watermark, text");
+    formData.set("strength","0.78");
+    formData.set("steps","20");
+    formData.set("title",session.title+" - "+angle.label);
+    formData.set("image_preset","standard");
+    formData.set("aspect_ratio","square");
+    formData.append("image",session.sourceFile,session.sourceFile.name);
+    const taskId=newGenerationTaskId();
+    formData.set("task_id",taskId);
+    const angleProfile=profiles.find(profile=>profile.id===session.profileId);
+    if(angleProfile&&(
+      (session.selectedBackend==="runpod"&&angleProfile.runpod_model_ready)||
+      (session.selectedBackend==="local_gpu"&&angleProfile.local_model_ready)
+    ))formData.set("face_profile_id",session.profileId);
+    addComputeData(formData);
+    // Preserve the selected compute route used for this group even if UI controls change.
+    formData.set("use_gpu",session.selectedBackend!=="cpu"?"true":"false");
+    formData.set("compute_backend",session.selectedBackend);
+    const angleController=new AbortController();
+    const angleWatcher=watchFaceAngleProgress(taskId,index,angle.label,angleController);
+    let generated;
+    try{
+      generated=await readJson(await fetch("/generate",{method:"POST",body:formData}));
+    }finally{
+      angleController.abort();
+      await angleWatcher;
+    }
+    if(!generated.asset_id)throw new Error("Image generation returned no saved media ID.");
+    // The generated asset is already persisted in the image library by /generate.
+    // Keep its ID until it is linked into the profile group; retry then reuses it.
+    session.pendingAssetId=generated.asset_id;
+    session.pendingAssetIndex=index;
+    await attachPendingAngleToGroup(session,index);
+  }
+  async function handleFaceAngleFailure(session,index,error) {
+    const angle=faceAnglesLabels[index];
+    const detail=String(error?.message||error||"Unknown generation error");
+    session.failedIndex=index;
+    session.lastError=detail;
+    await updateFaceDatasetGroup(session.groupId,{
+      status:session.generatedCount?"partial":"failed",
+      generated_count:session.generatedCount,
+      error:angle.label+" failed: "+detail
+    }).catch(()=>{});
+    if(session.retryUsed){
+      const savedNote=session.pendingAssetId
+        ? " The rendered image is saved in Generated images but could not be attached to the training group."
+        : "";
+      const finalMessage="The "+angle.label+" could not be processed after one retry. This angle will not be retried again. The original and "+session.generatedCount+" successful view(s) are preserved."+savedNote;
+      if($("#faceAnglesStatus"))$("#faceAnglesStatus").textContent=finalMessage;
+      if(retryFaceAngleButton)retryFaceAngleButton.hidden=true;
+      setAngleProgressPercent(
+        (session.nextIndex/5)*100,"Angle could not be processed",
+        finalMessage,false
+      );
+      pendingAngleSession=null;
+    }else{
+      if(retryFaceAngleButton){
+        retryFaceAngleButton.hidden=false;
+        retryFaceAngleButton.disabled=false;
+        retryFaceAngleButton.textContent="Retry "+angle.label+" once";
+      }
+      const message=angle.label+" failed: "+detail+". Click the retry button to try this same angle once. Completed images are already saved.";
+      if($("#faceAnglesStatus"))$("#faceAnglesStatus").textContent=message;
+      setAngleProgressPercent(
+        (session.nextIndex/5)*100,"Angle generation paused",
+        message,true
+      );
+      pendingAngleSession=session;
+    }
+    await loadDatasetGroups();
+  }
+  async function processFaceAngleSequence(session) {
+    for(let index=session.nextIndex;index<faceAnglesLabels.length;){
+      const angle=faceAnglesLabels[index];
+      const status=$("#faceAnglesStatus");
+      if(status)status.textContent="Generating "+angle.label+" ("+(index+1)+" of 5). Each completed view is saved immediately.";
+      try{
+        await generateOneFaceAngle(session,index);
+      }catch(error){
+        await handleFaceAngleFailure(session,index,error);
+        return;
+      }
+      session.failedIndex=null;
+      session.retryUsed=false;
+      index=session.nextIndex;
+    }
+    await updateFaceDatasetGroup(session.groupId,{
+      status:"completed",generated_count:session.generatedCount,error:""
+    });
+    pendingAngleSession=null;
+    if(retryFaceAngleButton)retryFaceAngleButton.hidden=true;
+    if($("#faceAnglesStatus")){
+      $("#faceAnglesStatus").textContent="Completed: the original and five labeled angle views are saved in “"+session.title+"”. Review the group on Training datasets, then retrain the face profile to use these photos.";
+    }
+    setAngleProgressPercent(100,"Dataset group ready","Original source + 5 generated views saved to the group.");
+    await refreshProfiles();
+    await loadDatasetGroups();
+  }
   generateFaceAnglesButton?.addEventListener("click",async()=>{
     const profileId=$("#addPhotosProfile")?.value;
     const source=$("#angleSourceImage")?.files?.[0];
     const titleInput=$("#angleGroupTitle");
     const title=(titleInput?.value||"").trim()||("Face angles · "+new Date().toLocaleString());
     const status=$("#faceAnglesStatus");
+    if(pendingAngleSession?.failedIndex!==null&&pendingAngleSession){
+      if(status)status.textContent="Retry the failed angle in the existing group before starting another group.";
+      return;
+    }
     if(!profileId){if(status)status.textContent="Select the face profile that should receive these training photos.";return;}
     if(!source){if(status)status.textContent="Choose one source face photo from your computer.";return;}
     if(source.size>8*1024*1024){if(status)status.textContent="The source image must be 8 MB or smaller.";return;}
     generateFaceAnglesButton.disabled=true;
     const originalText=generateFaceAnglesButton.textContent;
     generateFaceAnglesButton.textContent="Generating angle set…";
+    if(retryFaceAngleButton)retryFaceAngleButton.hidden=true;
     if(status)status.textContent="Saving the source photo and creating a named dataset group…";
     setAngleProgress(0,"Preparing the source image.");
-    let groupId=null;
-    const generatedIds=[];const generatedLabels=[];
-    let generationError="";
+    let session=null;
     try{
       const createData=new FormData();
       createData.set("title",title);
       createData.append("source_image",source,source.name);
       const created=await readJson(await fetch("/api/face-profiles/"+profileId+"/dataset-groups",{method:"POST",body:createData}));
-      groupId=created.group.id;
-      for(let i=0;i<faceAnglesLabels.length;i++){
-        const angle=faceAnglesLabels[i];
-        if(status)status.textContent="Generating "+angle.label+" ("+(i+1)+" of 5). CPU generation can take a long time; GPU mode is recommended.";
-        try{
-          const formData=new FormData();
-          formData.set("prompt",
-            "Photorealistic close-up head-and-shoulders photograph of the same adult person as the reference image, preserve the same identity, face shape, eye color, hairstyle, age and skin tone; "+angle.prompt+
-            ", natural neutral expression, both ears and jawline plausible, realistic eyes and skin pores, soft even studio daylight, plain neutral background, real DSLR photo, no beauty filter.");
-          formData.set("negative_prompt","different person, identity drift, changed hairstyle, changed eye color, face morphing, duplicate face, asymmetrical eyes, cross-eyed, distorted features, plastic skin, airbrushed skin, cartoon, CGI, blur, low resolution, watermark, text");
-          formData.set("strength","0.78");
-          formData.set("steps","20");
-          formData.set("title",title+" - "+angle.label);
-          formData.set("image_preset","standard");
-          formData.set("aspect_ratio","square");
-          formData.append("image",source,source.name);
-          const taskId=newGenerationTaskId();
-          formData.set("task_id",taskId);
-          const selectedBackend=useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu";
-          const angleProfile=profiles.find(profile=>profile.id===profileId);
-          if(angleProfile&&(
-            (selectedBackend==="runpod"&&angleProfile.runpod_model_ready)||
-            (selectedBackend!=="runpod"&&angleProfile.local_model_ready)
-          ))formData.set("face_profile_id",profileId);
-          addComputeData(formData);
-          const angleController=new AbortController();
-          const angleWatcher=watchFaceAngleProgress(taskId,i,angle.label,angleController);
-          let generated;
-          try{
-            generated=await readJson(await fetch("/generate",{method:"POST",body:formData}));
-          }finally{
-            angleController.abort();
-            await angleWatcher;
-          }
-          if(!generated.asset_id)throw new Error("Image generation returned no saved media ID.");
-          generatedIds.push(generated.asset_id);generatedLabels.push(angle.label);
-          await updateFaceDatasetGroup(groupId,{status:"generating",generated_count:generatedIds.length});
-          setAngleProgress(generatedIds.length,"Saved "+angle.label+" to the image library. Adding the next angle…");
-        }catch(error){
-          generationError=angle.label+" failed: "+error.message;
-          break;
-        }
-      }
-      if(generatedIds.length){
-        if(status)status.textContent="Copying "+generatedIds.length+" generated view(s) into the grouped face-training dataset…";
-        try{
-          await readJson(await fetch("/api/face-profiles/"+profileId+"/photos/from-assets",{
-            method:"POST",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({asset_ids:generatedIds,group_id:groupId,angle_labels:generatedLabels})
-          }));
-        }catch(error){
-          generationError=(generationError?generationError+"; ":"")+"Could not attach all generated views to the group: "+error.message;
-        }
-      }
-      const finalState=(generatedIds.length===faceAnglesLabels.length&&!generationError)?"completed":(generatedIds.length?"partial":"failed");
-      await updateFaceDatasetGroup(groupId,{
-        status:finalState,generated_count:generatedIds.length,error:generationError
-      });
-      await refreshProfiles();
-      await loadDatasetGroups();
-      if(generatedIds.length===5&&!generationError){
-        if(status)status.textContent="Completed: the original and five angle views are now grouped under “"+title+"”. Review them on Training datasets, then retrain the face profile to use the additional data.";
-        setAngleProgress(5,"Original source + 5 generated views saved to this group.");
-      }else{
-        if(status)status.textContent="Saved "+generatedIds.length+" of 5 angle views. The source and successful outputs are kept; review the partial group on Training datasets. "+generationError;
-        setAngleProgress(generatedIds.length,generationError||"The angle set was incomplete.",true);
-      }
+      session={
+        profileId,sourceFile:source,title,groupId:created.group.id,
+        selectedBackend:useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu",
+        nextIndex:0,generatedCount:0,failedIndex:null,retryUsed:false,
+        pendingAssetId:null,pendingAssetIndex:null,lastError:""
+      };
+      pendingAngleSession=session;
+      await processFaceAngleSequence(session);
       if(titleInput)titleInput.value=title;
     }catch(error){
-      if(groupId){
-        try{await updateFaceDatasetGroup(groupId,{status:generatedIds.length?"partial":"failed",generated_count:generatedIds.length,error:error.message});}catch(_){}
+      if(session?.groupId){
+        await updateFaceDatasetGroup(session.groupId,{
+          status:session.generatedCount?"partial":"failed",
+          generated_count:session.generatedCount,error:error.message
+        }).catch(()=>{});
         await loadDatasetGroups();
       }
       if(status)status.textContent="Could not finish the angle dataset: "+error.message;
-      setAngleProgress(generatedIds.length,error.message,true);
+      setAngleProgressPercent(
+        session?(session.nextIndex/5)*100:0,"Angle generation stopped",error.message,true
+      );
+      pendingAngleSession=null;
     }finally{
       generateFaceAnglesButton.disabled=false;
       generateFaceAnglesButton.textContent=originalText;
+    }
+  });
+  retryFaceAngleButton?.addEventListener("click",async()=>{
+    const session=pendingAngleSession;
+    if(!session||session.failedIndex===null||session.retryUsed)return;
+    const index=session.failedIndex;
+    const angle=faceAnglesLabels[index];
+    retryFaceAngleButton.disabled=true;
+    retryFaceAngleButton.textContent="Retrying "+angle.label+"…";
+    retryFaceAngleButton.hidden=true;
+    if($("#faceAnglesStatus"))$("#faceAnglesStatus").textContent="Retrying the same "+angle.label+" once. All completed photos remain saved.";
+    setAngleProgressPercent(
+      (session.nextIndex/5)*100,"Retrying "+angle.label,"Retry attempt 1 of 1."
+    );
+    session.retryUsed=true;
+    try{
+      await updateFaceDatasetGroup(session.groupId,{
+        status:"generating",generated_count:session.generatedCount,error:""
+      });
+      await generateOneFaceAngle(session,index);
+      session.failedIndex=null;
+      session.retryUsed=false;
+      await processFaceAngleSequence(session);
+    }catch(error){
+      await handleFaceAngleFailure(session,index,error);
+    }finally{
+      retryFaceAngleButton.disabled=false;
+      if(!retryFaceAngleButton.hidden&&pendingAngleSession?.failedIndex!==null){
+        retryFaceAngleButton.textContent="Retry "+faceAnglesLabels[pendingAngleSession.failedIndex].label+" once";
+      }
     }
   });
 
