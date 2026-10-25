@@ -733,9 +733,10 @@ def api_create_face_profile():
     try:
         name = _clean_prompt(request.form.get("name"), "Profile name", 80)
         token = (request.form.get("token") or "").strip() or None
+        description = request.form.get("description") or ""
         uploads = request.files.getlist("photos")
         images = _parse_uploads(uploads) if any(item and item.filename for item in uploads) else []
-        profile = create_profile(name, token=token)
+        profile = create_profile(name, token=token, description=description)
         for image in images:
             save_profile_image(profile["id"], image)
         profile = get_profile(profile["id"])
@@ -812,6 +813,7 @@ def api_train_face_profile(profile_id):
                     "profile_id": profile_id,
                     "name": profile["name"],
                     "token": profile["token"],
+                    "description": profile.get("description", ""),
                     "steps": str(steps),
                     "resolution": str(resolution),
                 },
