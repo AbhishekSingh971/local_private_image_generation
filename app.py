@@ -1139,6 +1139,9 @@ def generate_video():
         frames = int(request.form.get("frames", "16"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         backend = _resolve_compute_backend(request.form)
+        task_id = (request.form.get("task_id") or "").strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+            raise ValueError("Invalid generation task ID. Refresh the page and retry.")
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid video settings."), 400
     if not prompt:
@@ -1151,13 +1154,25 @@ def generate_video():
     if backend == "cpu":
         return jsonify(error="Video generation requires a GPU. Turn on GPU acceleration and select an available System GPU or RunPod GPU."), 400
 
+    _set_generation_progress(
+        task_id, asset_type="video", backend=backend, status="running", progress=1,
+        current_step=0, total_steps=steps, stage="starting", message="Preparing your video request…",
+    )
     if not generation_lock.acquire(blocking=False):
+        _set_generation_progress(
+            task_id, asset_type="video", backend=backend, status="failed", progress=0,
+            total_steps=steps, stage="busy", message="Another generation is already running.",
+        )
         return jsonify(error="Another generation is running. Please wait."), 429
     try:
         if backend == "runpod":
             if profile_id and not profile.get("runpod_model_ready"):
                 return jsonify(error="This face profile has no RunPod-trained model. Train it using RunPod GPU first."), 400
-            data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames)}
+            _set_generation_progress(
+                task_id, asset_type="video", backend="runpod", status="running", progress=2,
+                total_steps=steps, stage="connecting", message="Connecting to RunPod GPU worker…",
+            )
+            data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames), "task_id": task_id}
             if profile_id:
                 data["face_profile_id"] = profile_id
             try:
@@ -1165,7 +1180,15 @@ def generate_video():
                     "POST", "/api/remote/generate-video", data=data, timeout=(20, 1200)
                 )
             except RuntimeError as exc:
+                _set_generation_progress(
+                    task_id, asset_type="video", backend="runpod", status="failed", progress=0,
+                    total_steps=steps, stage="failed", message=str(exc),
+                )
                 return jsonify(error=str(exc)), 502
+            _set_generation_progress(
+                task_id, asset_type="video", backend="runpod", status="running", progress=96,
+                total_steps=steps, stage="saving", message="GPU generation finished; saving video to the library…",
+            )
             filename = f"{uuid.uuid4().hex}.mp4"
             (VIDEO_OUTPUT_DIR / filename).write_bytes(response.content)
             try:
@@ -1174,9 +1197,17 @@ def generate_video():
                     profile=profile, backend="runpod", generation_mode="animatediff",
                 )
             except RuntimeError as exc:
+                _set_generation_progress(
+                    task_id, asset_type="video", backend="runpod", status="failed", progress=96,
+                    total_steps=steps, stage="failed", message=str(exc),
+                )
                 return jsonify(error=str(exc)), 503
+            _set_generation_progress(
+                task_id, asset_type="video", backend="runpod", status="completed", progress=100,
+                current_step=steps, total_steps=steps, stage="completed", message="Video saved to the library.",
+            )
             return jsonify(
-                status="completed", video_url=f"/assets/{asset['id']}/content", filename=filename,
+                status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
                 asset_id=asset["id"], title=asset["title"],
                 face_profile=profile["name"] if profile else None, backend="runpod",
                 message="Generated on the selected RunPod GPU and saved to the database library.",
@@ -1192,6 +1223,10 @@ def generate_video():
             from diffusers import AnimateDiffPipeline, MotionAdapter
             from diffusers.utils import export_to_video
             global video_pipe, active_video_lora, video_model_error
+            _set_generation_progress(
+                task_id, asset_type="video", backend=backend, status="running", progress=3,
+                total_steps=steps, stage="loading_model", message="Loading the video model and selected face…",
+            )
             with model_lock:
                 if video_pipe is None:
                     adapter = MotionAdapter.from_pretrained(str(MOTION_DIR), local_files_only=True, torch_dtype=torch.float16)
@@ -1209,15 +1244,38 @@ def generate_video():
                     if profile_id:
                         video_pipe.load_lora_weights(str(model_path(profile_id)))
                         active_video_lora = profile_id
+            _set_generation_progress(
+                task_id, asset_type="video", backend=backend, status="running", progress=5,
+                total_steps=steps, stage="denoising", message="Starting video denoising steps…",
+            )
+            def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+                scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
+                current = min(step_index + 1, scheduler_steps)
+                percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+                _set_generation_progress(
+                    task_id, asset_type="video", backend=backend, status="running", progress=percent,
+                    current_step=current, total_steps=scheduler_steps, stage="denoising",
+                    message=f"Generating video · step {current} of {scheduler_steps} · {frames} frames",
+                )
+                return callback_kwargs
             generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
             result = video_pipe(
                 prompt=prompt, negative_prompt=negative_prompt or None,
                 num_frames=frames, num_inference_steps=steps,
                 guidance_scale=7.0, generator=generator,
+                callback_on_step_end=on_step_end,
+            )
+            _set_generation_progress(
+                task_id, asset_type="video", backend=backend, status="running", progress=95,
+                current_step=steps, total_steps=steps, stage="encoding", message="Encoding video frames into MP4…",
             )
             filename = f"{uuid.uuid4().hex}.mp4"
             export_to_video(result.frames[0], str(VIDEO_OUTPUT_DIR / filename), fps=8)
         except Exception as exc:
+            _set_generation_progress(
+                task_id, asset_type="video", backend=backend, status="failed", progress=0,
+                total_steps=steps, stage="failed", message="Video generation failed.",
+            )
             video_model_error = str(exc)
             message = str(exc)
             if "out of memory" in message.lower():
@@ -1229,9 +1287,17 @@ def generate_video():
                 profile=profile, backend="local_gpu", generation_mode="animatediff",
             )
         except RuntimeError as exc:
+            _set_generation_progress(
+                task_id, asset_type="video", backend=backend, status="failed", progress=98,
+                total_steps=steps, stage="failed", message="The video could not be saved to the database.",
+            )
             return jsonify(error=str(exc)), 503
+        _set_generation_progress(
+            task_id, asset_type="video", backend=backend, status="completed", progress=100,
+            current_step=steps, total_steps=steps, stage="completed", message="Video saved to the library.",
+        )
         return jsonify(
-            status="completed", video_url=f"/assets/{asset['id']}/content", filename=filename,
+            status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
             asset_id=asset["id"], title=asset["title"],
             face_profile=profile["name"] if profile else None, backend="local_gpu",
             message="Generated locally on the System GPU and saved to the database library.",
