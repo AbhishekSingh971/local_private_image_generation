@@ -34,7 +34,12 @@
         <label for="angleGroupTitle">Dataset group name</label><input id="angleGroupTitle" type="text" maxlength="120" placeholder="e.g. Model A · first angle set">
         <label for="angleSourceImage">One source face photo</label><input id="angleSourceImage" type="file" accept="image/png,image/jpeg,image/webp">
         <p class="field-help">Use a clear photo of an adult who has consented. Angle and expression changes are approximate; review each result before training.</p>
-        <button type="button" id="generateFaceAnglesButton">Start 9 face angles</button>
+        <div class="target-selection" aria-labelledby="targetSelectionHeading">
+          <div class="target-selection-heading"><strong id="targetSelectionHeading">Choose targets to generate</strong><label class="target-select-all"><input type="checkbox" id="selectAllFaceTargets" checked> Select all</label></div>
+          <p id="targetSelectionHelp" class="field-help">All 9 face angles are selected. Uncheck any target you do not need.</p>
+          <div id="faceTargetChecklist" class="target-checklist"></div>
+        </div>
+        <button type="button" id="generateFaceAnglesButton">Start selected face angles</button>
         <button type="button" id="retryFaceAngleButton" class="secondary-button" hidden>Retry failed target</button>
         <p class="field-help">Generation runs on the server, so navigation does not stop the batch. Each image is saved immediately. Failed or mismatched outputs are marked for review.</p>
         <div id="faceAnglesStatus" class="status" role="status" aria-live="polite"></div>
