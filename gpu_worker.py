@@ -190,6 +190,7 @@ def remote_train_profile():
         profile_id = validate_profile_id(request.form.get("profile_id", ""))
         name = (request.form.get("name") or "").strip()
         token = (request.form.get("token") or "").strip()
+        description = request.form.get("description") or ""
         steps = int(request.form.get("steps", "800"))
         resolution = int(request.form.get("resolution", "512"))
         if not 100 <= steps <= 3000 or resolution not in (384, 512):
@@ -197,7 +198,7 @@ def remote_train_profile():
         images = local_engine._parse_uploads(request.files.getlist("photos"))
         if len(images) < 5:
             raise ValueError("At least 5 valid face photos are required.")
-        create_profile(name, profile_id=profile_id, token=token)
+        create_profile(name, profile_id=profile_id, token=token, description=description)
         for image in images:
             save_profile_image(profile_id, image)
         existing = get_profile(profile_id)
