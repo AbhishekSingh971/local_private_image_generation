@@ -379,6 +379,23 @@ def get_face_dataset_group(group_id: str) -> dict | None:
         return _dataset_group_dict(row) if row else None
 
 
+def list_face_dataset_group_photo_records(group_id: str) -> list[dict]:
+    """List local file metadata for all photos in a group without loading image blobs."""
+    ensure_schema()
+    with _session_factory()() as session:
+        rows = session.scalars(
+            select(FacePhotoRow).where(FacePhotoRow.group_id == group_id)
+            .order_by(FacePhotoRow.created_at.asc(), FacePhotoRow.id.asc())
+        ).all()
+        return [
+            {
+                "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
+                "group_id": row.group_id, "angle_label": row.angle_label,
+            }
+            for row in rows
+        ]
+
+
 def update_face_dataset_group(
     group_id: str, *, title: str | None = None, status: str | None = None,
     generated_count: int | None = None, expected_count: int | None = None,
