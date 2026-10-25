@@ -5,6 +5,7 @@ When it is absent, a local SQLite database is used for development only.
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import uuid
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, event, func, inspect, select, text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, event, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -100,7 +101,40 @@ class FacePhotoRow(Base):
     group_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     angle_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
     photo_kind: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
+    validation_status: Mapped[str] = mapped_column(String(24), default="not_checked", nullable=False)
+    validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_yaw: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_pitch: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_yaw: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_pitch: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class FaceDatasetJobRow(Base):
+    __tablename__ = "face_dataset_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    group_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("face_dataset_groups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    profile_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("face_profiles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dataset_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued", index=True)
+    backend: Mapped[str] = mapped_column(String(24), nullable=False, default="cpu")
+    expected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    generated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_label: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    current_task_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_photo_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    failed_targets: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    review_targets: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class FaceModelArtifactRow(Base):
@@ -183,6 +217,13 @@ def ensure_schema() -> None:
                 connection.execute(text("ALTER TABLE face_photos ADD COLUMN angle_label VARCHAR(80)"))
             if "photo_kind" not in photo_columns:
                 connection.execute(text("ALTER TABLE face_photos ADD COLUMN photo_kind VARCHAR(16) NOT NULL DEFAULT 'manual'"))
+            if "validation_status" not in photo_columns:
+                connection.execute(text("ALTER TABLE face_photos ADD COLUMN validation_status VARCHAR(24) NOT NULL DEFAULT 'not_checked'"))
+            if "validation_message" not in photo_columns:
+                connection.execute(text("ALTER TABLE face_photos ADD COLUMN validation_message TEXT"))
+            for column_name in ("target_yaw", "target_pitch", "actual_yaw", "actual_pitch"):
+                if column_name not in photo_columns:
+                    connection.execute(text(f"ALTER TABLE face_photos ADD COLUMN {column_name} FLOAT"))
         _SCHEMA_READY.add(url)
 
 
@@ -426,7 +467,7 @@ def update_face_dataset_group(
     generated_count: int | None = None, expected_count: int | None = None,
     error: str | None = None,
 ) -> dict | None:
-    allowed_statuses = {"generating", "completed", "partial", "failed"}
+    allowed_statuses = {"generating", "completed", "partial", "failed", "cancelled"}
     if status is not None and status not in allowed_statuses:
         raise ValueError("Invalid dataset group status.")
     normalized_title = None
