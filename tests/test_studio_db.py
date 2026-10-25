@@ -60,6 +60,49 @@ def test_assets_and_face_models_are_persisted(tmp_path, monkeypatch):
     assert studio_db.get_asset(asset["id"]) is None
 
 
+def test_dataset_group_and_photo_crud(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "dataset-crud.sqlite").as_posix())
+    studio_db.ensure_schema()
+    profile_id = uuid.uuid4().hex
+    studio_db.create_face_profile_record({
+        "id": profile_id,
+        "name": "CRUD Model",
+        "token": "crud_" + profile_id[:6],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    group = studio_db.create_face_dataset_group(profile_id, "Initial batch", expected_count=5)
+    source_id = studio_db.add_face_photo(
+        profile_id, "source.jpg", b"source-bytes", group_id=group["id"],
+        angle_label="Original source", photo_kind="source",
+    )
+    angle_id = studio_db.add_face_photo(
+        profile_id, "front.jpg", b"front-bytes", group_id=group["id"],
+        angle_label="Front view", photo_kind="angle",
+    )
+
+    renamed = studio_db.update_face_dataset_group(group["id"], title="Renamed batch")
+    assert renamed["title"] == "Renamed batch"
+    relabeled = studio_db.update_face_photo(angle_id, angle_label="Straight-on view")
+    assert relabeled["angle_label"] == "Straight-on view"
+    assert relabeled["photo_kind"] == "angle"
+
+    listed = studio_db.list_face_dataset_groups(profile_id)
+    assert listed[0]["photo_count"] == 2
+    assert {photo["id"] for photo in listed[0]["photos"]} == {source_id, angle_id}
+
+    deleted_photo = studio_db.delete_face_photo(angle_id)
+    assert deleted_photo["id"] == angle_id
+    assert studio_db.get_face_photo_bytes(angle_id) is None
+    assert studio_db.list_face_dataset_groups(profile_id)[0]["photo_count"] == 1
+
+    deleted_group = studio_db.delete_face_dataset_group(group["id"])
+    assert deleted_group["id"] == group["id"]
+    assert [photo["id"] for photo in deleted_group["photos"]] == [source_id]
+    assert studio_db.get_face_dataset_group(group["id"]) is None
+    assert studio_db.get_face_photo_bytes(source_id) is None
+    assert studio_db.list_face_dataset_groups(profile_id) == []
+
+
 def test_database_status_does_not_disclose_database_path(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "status.sqlite").as_posix())
     status = studio_db.database_status()
