@@ -418,6 +418,7 @@
     const progress=$("#backgroundTrainingJobProgress");
     const counts=$("#backgroundTrainingJobCounts");
     const cancel=$("#cancelBackgroundTrainingJob");
+    const retry=$("#retryFailedBackgroundTrainingJob");
     if(title)title.textContent=(job.title||trainingJobLabel(job))+" · "+trainingJobLabel(job);
     if(state){
       state.textContent=job.status==="cancelling"?"Cancelling…":job.status==="queued"?"Queued":job.status==="running"?"Running":job.status==="completed"?"Completed":job.status==="cancelled"?"Cancelled":job.status==="interrupted"?"Interrupted":job.status==="failed"?"Failed":"Partial";
@@ -437,6 +438,11 @@
       cancel.hidden=terminal||!["queued","running","cancelling"].includes(job.status);
       cancel.disabled=job.status==="cancelling";
       cancel.textContent=job.status==="cancelling"?"Cancelling…":"Cancel generation";
+    }
+    if(retry){
+      retry.hidden=!terminal||!(job.failed_targets||[]).length;
+      retry.disabled=false;
+      retry.textContent="Retry "+(job.failed_targets||[]).length+" failed target(s)";
     }
   }
   function syncFaceDatasetStartButton() {
@@ -579,6 +585,28 @@
     try{
       await readJson(await fetch("/api/training-generation-jobs/"+encodeURIComponent(jobId)+"/cancel",{method:"POST"}));
       if(status)status.textContent="Cancellation requested. Completed images are preserved; the current step is being stopped.";
+      await refreshBackgroundFaceDatasetJobs();
+    }catch(error){if(status)status.textContent=error.message;}
+    finally{button.disabled=false;}
+  });
+
+  $("#retryFailedBackgroundTrainingJob")?.addEventListener("click",async()=>{
+    const job=lastFaceDatasetTerminalJob;
+    const status=$("#backgroundTrainingJobStatus");
+    const button=$("#retryFailedBackgroundTrainingJob");
+    if(!job?.id||!(job.failed_targets||[]).length)return;
+    button.disabled=true;
+    if(status)status.textContent="Queueing only failed targets. Images already saved will not be regenerated.";
+    try{
+      const result=await readJson(await fetch(
+        "/api/training-generation-jobs/"+encodeURIComponent(job.id)+"/retry-failed",
+        {method:"POST"}
+      ));
+      trackedFaceDatasetJobId=result.job.id;
+      sessionStorage.setItem("privateFaceStudioActiveDatasetJob",result.job.id);
+      lastFaceDatasetTerminalJob=null;
+      activeFaceDatasetJobs=[result.job];
+      if(status)status.textContent=result.message||"Retry queued.";
       await refreshBackgroundFaceDatasetJobs();
     }catch(error){if(status)status.textContent=error.message;}
     finally{button.disabled=false;}
