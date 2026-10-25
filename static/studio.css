@@ -68,6 +68,8 @@ button.danger-button{background:#3c1f2a;border-color:#643345;color:#ffd9df}
 .generation-progress progress::-webkit-progress-bar{background:#243047;border-radius:999px}
 .generation-progress progress::-webkit-progress-value{background:linear-gradient(90deg,#9cafff,#88e7c0);border-radius:999px;transition:width .25s ease}
 .generation-progress progress::-moz-progress-bar{background:linear-gradient(90deg,#9cafff,#88e7c0);border-radius:999px}
+.generation-progress progress.progress-failed::-webkit-progress-value{background:#f19b9b}
+.generation-progress progress.progress-failed::-moz-progress-bar{background:#f19b9b}
 .progress-detail{color:#aebbd2;font-size:11px;margin:8px 0 0}
 .progress-step{color:#8294b2;font-size:10px;margin:3px 0 0;font-variant-numeric:tabular-nums}
 .note{border-left:3px solid var(--warning);background:#292419;color:#edd9a7;border-radius:6px;padding:10px 12px;margin-top:12px;font-size:11px}
