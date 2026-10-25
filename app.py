@@ -24,7 +24,7 @@ load_dotenv(APP_DIR / ".env")
 
 import requests
 import torch
-from flask import Flask, request, send_from_directory, jsonify
+from flask import Flask, request, send_from_directory, send_file, jsonify, render_template, redirect, url_for
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
@@ -33,6 +33,7 @@ from face_profiles import (
     LORA_DIR,
     PROFILES_DIR,
     create_profile,
+    delete_profile,
     dataset_images,
     dataset_dir,
     get_profile,
@@ -42,6 +43,14 @@ from face_profiles import (
     save_profile_image,
     update_profile,
     validate_profile_id,
+)
+from studio_db import (
+    create_asset,
+    database_status,
+    delete_asset,
+    get_asset,
+    list_assets,
+    update_asset,
 )
 
 INPUT_DIR = DATA_DIR / "inputs"
@@ -227,6 +236,30 @@ def _save_generated_png(image) -> str:
     return filename
 
 
+def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode):
+    folder = OUTPUT_DIR if asset_type == "image" else VIDEO_OUTPUT_DIR
+    path = folder / Path(filename).name
+    try:
+        return create_asset(
+            asset_type=asset_type,
+            title=title or prompt[:100] or ("Generated image" if asset_type == "image" else "Generated video"),
+            filename=path.name,
+            mime_type="image/png" if asset_type == "image" else "video/mp4",
+            media_data=path.read_bytes(),
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            profile_id=profile["id"] if profile else None,
+            profile_name=profile["name"] if profile else None,
+            backend=backend,
+            generation_mode=generation_mode,
+        )
+    except Exception as exc:
+        app.logger.exception("Could not persist generated media to the database")
+        raise RuntimeError(
+            "The media was generated but could not be saved to the database. Check DATABASE_URL and database permissions. The local output copy remains in " + str(path)
+        ) from exc
+
+
 def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: str) -> None:
     profile = get_profile(profile_id)
     if not profile:
@@ -276,16 +309,189 @@ def request_too_large(_error):
     return jsonify(error="Upload too large. Keep the combined request under 64 MB."), 413
 
 
+@app.context_processor
+def inject_storage_status():
+    return {"storage_status": database_status()}
+
+
 @app.get("/")
 def index():
-    from flask import render_template
-    return render_template("index.html")
+    return redirect(url_for("dashboard"))
+
+
+@app.get("/dashboard")
+def dashboard():
+    images = list_assets("image", 500)
+    videos = list_assets("video", 500)
+    return render_template(
+        "dashboard.html", page_key="dashboard", active_page="dashboard",
+        image_count=len(images), video_count=len(videos),
+        profile_count=len(list_profiles()), recent_assets=list_assets(limit=8),
+    )
+
+
+@app.get("/generate/image")
+def generate_image_page():
+    return render_template("generate_image.html", page_key="image", active_page="image")
+
+
+@app.get("/generate/video")
+def generate_video_page():
+    return render_template("generate_video.html", page_key="video", active_page="video")
+
+
+@app.get("/faces")
+def faces_page():
+    return render_template("faces.html", page_key="faces", active_page="faces")
+
+
+@app.get("/library/images")
+def library_images_page():
+    return render_template("library.html", page_key="images", active_page="images", asset_type="image")
+
+
+@app.get("/library/videos")
+def library_videos_page():
+    return render_template("library.html", page_key="videos", active_page="videos", asset_type="video")
+
+
+@app.get("/api/assets")
+def api_list_assets():
+    asset_type = (request.args.get("type") or "").strip().lower()
+    if asset_type and asset_type not in {"image", "video"}:
+        return jsonify(error="Asset type must be image or video."), 400
+    try:
+        limit = int(request.args.get("limit", "200"))
+        assets = list_assets(asset_type or None, limit)
+        for asset in assets:
+            asset["content_url"] = url_for("asset_content", asset_id=asset["id"])
+        return jsonify(assets=assets)
+    except (TypeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not list media from the database")
+        return jsonify(error="Could not read the media library. Check DATABASE_URL and database connectivity."), 503
+
+
+@app.get("/assets/<asset_id>/content")
+def asset_content(asset_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", asset_id or ""):
+        return jsonify(error="Invalid media ID."), 400
+    try:
+        asset = get_asset(asset_id, include_content=True)
+    except Exception:
+        app.logger.exception("Could not read media from the database")
+        return jsonify(error="Could not read saved media. Check DATABASE_URL and database connectivity."), 503
+    if not asset:
+        return jsonify(error="Saved media not found."), 404
+    return send_file(
+        io.BytesIO(asset["media_data"]), mimetype=asset["mime_type"],
+        as_attachment=_truthy(request.args.get("download")),
+        download_name=Path(asset["filename"]).name, max_age=0,
+    )
+
+
+@app.route("/api/assets/<asset_id>", methods=["PATCH", "DELETE"])
+def api_asset_detail(asset_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", asset_id or ""):
+        return jsonify(error="Invalid media ID."), 400
+    if request.method == "PATCH":
+        payload = request.get_json(silent=True) or {}
+        try:
+            asset = update_asset(asset_id, payload)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        except Exception:
+            app.logger.exception("Could not update media metadata")
+            return jsonify(error="Could not update media metadata in the database."), 503
+        if not asset:
+            return jsonify(error="Saved media not found."), 404
+        return jsonify(status="updated", asset=asset)
+    try:
+        asset = delete_asset(asset_id)
+    except Exception:
+        app.logger.exception("Could not delete media from database")
+        return jsonify(error="Could not delete media from the database."), 503
+    if not asset:
+        return jsonify(error="Saved media not found."), 404
+    folder = OUTPUT_DIR if asset["asset_type"] == "image" else VIDEO_OUTPUT_DIR
+    local_copy = folder / Path(asset["filename"]).name
+    try:
+        if local_copy.is_file():
+            local_copy.unlink()
+    except OSError:
+        app.logger.warning("Deleted database asset %s but could not delete its local copy", asset_id)
+    return jsonify(status="deleted", id=asset_id)
+
+
+@app.delete("/api/face-profiles/<profile_id>")
+def api_delete_face_profile(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile not found."), 404
+    if profile.get("local_training_state") == "running" or profile.get("runpod_training_state") == "running":
+        return jsonify(error="This face profile is training. Wait for the job to finish before deleting it."), 409
+    try:
+        deleted = delete_profile(profile_id)
+    except Exception:
+        app.logger.exception("Could not delete face profile")
+        return jsonify(error="Could not delete the face profile. Check the database connection."), 503
+    if not deleted:
+        return jsonify(error="Face profile not found."), 404
+    return jsonify(status="deleted", id=profile_id)
+
+
+@app.post("/api/face-profiles/<profile_id>/photos/from-assets")
+def api_add_generated_photos(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile not found."), 404
+    payload = request.get_json(silent=True) or {}
+    asset_ids = payload.get("asset_ids")
+    if not isinstance(asset_ids, list) or not asset_ids:
+        return jsonify(error="Select one or more generated images."), 400
+    if len(asset_ids) > 30:
+        return jsonify(error="Add at most 30 generated images per request."), 400
+    if len(set(map(str, asset_ids))) != len(asset_ids):
+        return jsonify(error="The selection contains duplicate image IDs."), 400
+    added = 0
+    try:
+        for asset_id in asset_ids:
+            asset_id = str(asset_id)
+            if not re.fullmatch(r"[a-f0-9]{32}", asset_id):
+                return jsonify(error="One selected image ID is invalid."), 400
+            asset = get_asset(asset_id, include_content=True)
+            if not asset or asset["asset_type"] != "image":
+                return jsonify(error="One selected item is not a saved image."), 400
+            with Image.open(io.BytesIO(asset["media_data"])) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+                image.load()
+            if image.width < 128 or image.height < 128:
+                return jsonify(error="Every selected image must be at least 128 × 128 pixels."), 400
+            save_profile_image(profile_id, image)
+            added += 1
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        return jsonify(error="A selected media item is not a valid image: " + str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not copy selected generated images to face dataset")
+        return jsonify(error="Could not save selected images to the database or local dataset."), 503
+    return jsonify(status="saved", added=added, profile=get_profile(profile_id))
+
 
 
 @app.get("/health")
 def health():
     return jsonify(
         status="ok",
+        storage=database_status(),
         image_model_loaded=pipe is not None,
         image_model_error=model_error,
         face_profiles=len(list_profiles()),
@@ -552,6 +758,7 @@ def generate():
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = float(request.form.get("strength", "0.45"))
         steps = int(request.form.get("steps", "10"))
+        title = _clean_prompt(request.form.get("title"), "Title", 160)
         backend = _resolve_compute_backend(request.form)
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
@@ -600,11 +807,19 @@ def generate():
                 return jsonify(error=str(exc)), 502
             filename = f"{uuid.uuid4().hex}.png"
             (OUTPUT_DIR / filename).write_bytes(response.content)
+            try:
+                asset = _persist_generated_asset(
+                    "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
+                    profile=profile, backend="runpod", generation_mode="img2img" if init_image is not None else "txt2img",
+                )
+            except RuntimeError as exc:
+                return jsonify(error=str(exc)), 503
             return jsonify(
-                status="completed", image_url=f"/outputs/{filename}", filename=filename,
+                status="completed", image_url=f"/assets/{asset['id']}/content", filename=filename,
+                asset_id=asset["id"], title=asset["title"],
                 mode="img2img" if init_image is not None else "txt2img",
                 face_profile=profile["name"] if profile else None,
-                backend="runpod", message="Generated on the selected RunPod GPU and saved locally.",
+                backend="runpod", message="Generated on the selected RunPod GPU and saved to the database library.",
             )
 
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
@@ -629,12 +844,20 @@ def generate():
                 message = "The selected device ran out of memory. Try fewer steps or switch to another available compute backend."
             return jsonify(error=f"Generation failed: {message}"), 500
         filename = _save_generated_png(result)
+        try:
+            asset = _persist_generated_asset(
+                "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
+                profile=profile, backend=backend, generation_mode="img2img" if init_image is not None else "txt2img",
+            )
+        except RuntimeError as exc:
+            return jsonify(error=str(exc)), 503
         if backend == "local_gpu":
-            message = "Generated locally on the System GPU."
+            message = "Generated locally on the System GPU and saved to the database library."
         else:
-            message = "Generated locally on this computer's CPU."
+            message = "Generated locally on this computer's CPU and saved to the database library."
         return jsonify(
-            status="completed", image_url=f"/outputs/{filename}", filename=filename,
+            status="completed", image_url=f"/assets/{asset['id']}/content", filename=filename,
+            asset_id=asset["id"], title=asset["title"],
             mode="img2img" if init_image is not None else "txt2img",
             face_profile=profile["name"] if profile else None,
             backend=backend, message=message,
@@ -651,6 +874,7 @@ def generate_video():
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
+        title = _clean_prompt(request.form.get("title"), "Title", 160)
         backend = _resolve_compute_backend(request.form)
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid video settings."), 400
@@ -681,10 +905,18 @@ def generate_video():
                 return jsonify(error=str(exc)), 502
             filename = f"{uuid.uuid4().hex}.mp4"
             (VIDEO_OUTPUT_DIR / filename).write_bytes(response.content)
+            try:
+                asset = _persist_generated_asset(
+                    "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
+                    profile=profile, backend="runpod", generation_mode="animatediff",
+                )
+            except RuntimeError as exc:
+                return jsonify(error=str(exc)), 503
             return jsonify(
-                status="completed", video_url=f"/videos/{filename}", filename=filename,
+                status="completed", video_url=f"/assets/{asset['id']}/content", filename=filename,
+                asset_id=asset["id"], title=asset["title"],
                 face_profile=profile["name"] if profile else None, backend="runpod",
-                message="Generated on the selected RunPod GPU and saved locally.",
+                message="Generated on the selected RunPod GPU and saved to the database library.",
             )
 
         if backend != "local_gpu" or not torch.cuda.is_available():
@@ -728,10 +960,18 @@ def generate_video():
             if "out of memory" in message.lower():
                 message = "The GPU ran out of memory. Try fewer frames or use the RunPod GPU."
             return jsonify(error=f"Video generation failed: {message}"), 500
+        try:
+            asset = _persist_generated_asset(
+                "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
+                profile=profile, backend="local_gpu", generation_mode="animatediff",
+            )
+        except RuntimeError as exc:
+            return jsonify(error=str(exc)), 503
         return jsonify(
-            status="completed", video_url=f"/videos/{filename}", filename=filename,
+            status="completed", video_url=f"/assets/{asset['id']}/content", filename=filename,
+            asset_id=asset["id"], title=asset["title"],
             face_profile=profile["name"] if profile else None, backend="local_gpu",
-            message="Generated locally on the System GPU.",
+            message="Generated locally on the System GPU and saved to the database library.",
         )
     finally:
         generation_lock.release()
