@@ -308,13 +308,16 @@ def list_face_photo_names(profile_id: str) -> set[str]:
         return set(rows)
 
 
-def list_face_photo_records(profile_id: str) -> list[dict]:
+def list_face_photo_records(profile_id: str, filenames: set[str] | None = None) -> list[dict]:
     """Return stored photo names and bytes for rebuilding a profile's local training cache."""
     ensure_schema()
     with _session_factory()() as session:
-        rows = session.scalars(
-            select(FacePhotoRow).where(FacePhotoRow.profile_id == profile_id).order_by(FacePhotoRow.created_at.asc())
-        ).all()
+        query = select(FacePhotoRow).where(FacePhotoRow.profile_id == profile_id)
+        if filenames is not None:
+            if not filenames:
+                return []
+            query = query.where(FacePhotoRow.filename.in_(filenames))
+        rows = session.scalars(query.order_by(FacePhotoRow.created_at.asc())).all()
         return [
             {
                 "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
