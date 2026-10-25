@@ -103,8 +103,30 @@ def _public_record(record: dict) -> dict:
     return result
 
 
+def _restore_database_photos() -> None:
+    """Recreate missing local training-cache files from PostgreSQL photo blobs."""
+    from studio_db import list_face_photo_records, list_face_profile_records
+
+    for profile in list_face_profile_records():
+        folder = dataset_dir(profile["id"])
+        for photo in list_face_photo_records(profile["id"]):
+            filename = Path(photo["filename"]).name
+            if not filename or filename in {".", ".."}:
+                continue
+            destination = folder / filename
+            if destination.is_file():
+                continue
+            temporary = destination.with_suffix(destination.suffix + ".tmp")
+            try:
+                temporary.write_bytes(photo["image_data"])
+                temporary.replace(destination)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+
+
 def _ensure_database_migrated() -> None:
-    """Import profiles from the old JSON registry once, preserving existing datasets."""
+    """Import legacy JSON metadata/photos once and restore any missing photo cache files."""
     global _DB_MIGRATED
     if not _database_enabled() or _DB_MIGRATED:
         return
@@ -120,25 +142,23 @@ def _ensure_database_migrated() -> None:
         registry = _load_registry()
         # This marker prevents a profile deleted from PostgreSQL from being re-imported
         # from the legacy JSON cache after the next application restart.
-        if registry.get("migrated_to_database") == "postgresql":
-            _DB_MIGRATED = True
-            return
-        for raw in registry["profiles"]:
-            profile_id = validate_profile_id(raw.get("id", ""))
-            if not get_face_profile_record(profile_id):
-                insert_face_profile_record(raw)
-            existing_names = list_face_photo_names(profile_id)
-            for image_path in dataset_images(profile_id):
-                if image_path.name not in existing_names:
-                    add_face_photo(
-                        profile_id, image_path.name, image_path.read_bytes(),
-                        "image/jpeg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else "image/" + image_path.suffix.lower().lstrip("."),
-                    )
-        registry["migrated_to_database"] = "postgresql"
-        registry["migrated_at"] = _utc_now()
-        _save_registry(registry)
+        if registry.get("migrated_to_database") != "postgresql":
+            for raw in registry["profiles"]:
+                profile_id = validate_profile_id(raw.get("id", ""))
+                if not get_face_profile_record(profile_id):
+                    insert_face_profile_record(raw)
+                existing_names = list_face_photo_names(profile_id)
+                for image_path in dataset_images(profile_id):
+                    if image_path.name not in existing_names:
+                        add_face_photo(
+                            profile_id, image_path.name, image_path.read_bytes(),
+                            "image/jpeg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else "image/" + image_path.suffix.lower().lstrip("."),
+                        )
+            registry["migrated_to_database"] = "postgresql"
+            registry["migrated_at"] = _utc_now()
+            _save_registry(registry)
+        _restore_database_photos()
         _DB_MIGRATED = True
-
 
 def list_profiles() -> list[dict]:
     if _database_enabled():
