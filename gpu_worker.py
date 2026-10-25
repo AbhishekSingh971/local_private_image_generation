@@ -381,7 +381,7 @@ def remote_generate():
             return callback_kwargs
         generator = torch.Generator(device="cuda").manual_seed(seed)
         effective_prompt, effective_negative_prompt = build_generation_prompts(
-            prompt, negative_prompt, image_preset
+            prompt, negative_prompt, image_preset, has_reference_image=image is not None
         )
         kwargs = {
             "prompt": effective_prompt,
