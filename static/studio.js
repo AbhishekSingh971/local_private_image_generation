@@ -679,8 +679,12 @@
       globalBodyStatusCache=await readJson(await fetch("/api/global-body/status",{cache:"no-store"}));
       const info=globalBodyStatusCache;
       if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · RunPod: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
-      if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", RunPod: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend."; 
-      if(editBodyCheckbox&&!editBodyCheckbox.dataset.userTouched)editBodyCheckbox.checked=false;
+      if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", RunPod: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
+      const selectedBackend=useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu";
+      const backendReady=selectedBackend==="runpod"?info.runpod_model_ready:info.local_model_ready;
+      const generationBodyCheckbox=$("#useGlobalBodyModel");
+      if(generationBodyCheckbox){generationBodyCheckbox.disabled=!backendReady;if(!backendReady)generationBodyCheckbox.checked=false;}
+      if(editBodyCheckbox){editBodyCheckbox.disabled=!backendReady;if(editBodyCheckbox.disabled)editBodyCheckbox.checked=false;}
       const trainBodyButton=$("#trainGlobalBodyButton");
       if(trainBodyButton)trainBodyButton.disabled=Number(info.image_count||0)<5;
       return info;
@@ -737,8 +741,10 @@
         if(status)status.textContent="Saved body sample "+generatedCount+" of 5 to the shared dataset. The generated image also remains in your image library."; 
       }
       await updateFaceDatasetGroup(group.id,{status:"completed",generated_count:5,error:""});
-      if(status)status.textContent="Created shared body-type dataset “"+title+"” with five prompt-generated samples. Train the shared body model to reuse it with any face."; 
+      if(status)status.textContent="Created shared body-type dataset “"+title+"” with five prompt-generated samples. Train the shared body model to reuse it with any face.";
       if(titleInput)titleInput.value=title;
+      activeDatasetType="body_type";
+      $(".dataset-category-tab").forEach(tab=>tab.classList.toggle("active",tab.dataset.datasetFilter===activeDatasetType));
       await loadDatasetGroups();
       await loadGlobalBodyStatus();
     } catch(error) {
@@ -1257,6 +1263,7 @@
     }catch(error){if(gpuStatus)gpuStatus.textContent=error.message;}
   }
   loadStatus();
+  if($("#globalBodyModelStatus")||$("#globalBodyGenerationStatus")||$("#useGlobalBodyModel")||$("#datasetGroups"))loadGlobalBodyStatus().catch(()=>{});
   if($("#profileList")||$("#trainProfile")||$("#faceProfile")||$("#videoProfile"))refreshProfiles().catch(error=>{
     const profileList=$("#profileList");if(profileList)profileList.textContent="Could not load profiles: "+error.message;
   });
