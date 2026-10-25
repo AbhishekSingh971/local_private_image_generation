@@ -435,7 +435,11 @@
     if(retryFaceAngleButton)retryFaceAngleButton.hidden=true;
     renderFaceTargetChecklist();
   }
-  $(".source-tab").forEach(tab=>tab.addEventListener("click",()=>activateTrainingSourceTab(tab)));
+  // Guard this optional page section so a missing/null selector result cannot abort all studio initialization.
+  const sourceTabs = $(".source-tab");
+  if (Array.isArray(sourceTabs)) {
+    sourceTabs.forEach(tab => tab.addEventListener("click", () => activateTrainingSourceTab(tab)));
+  }
   const initialTrainingTab=$('.source-tab[data-source-tab="angles"]');
   if(initialTrainingTab)activateTrainingSourceTab(initialTrainingTab);
 
