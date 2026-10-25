@@ -546,12 +546,13 @@ def _load_cpu_or_gpu_pipeline(mode, profile_id, compute_backend="cpu"):
 
 @app.post("/generate")
 def generate():
-    prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1200)
-    negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
     try:
+        prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1200)
+        negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = float(request.form.get("strength", "0.45"))
         steps = int(request.form.get("steps", "10"))
+        backend = _resolve_compute_backend(request.form)
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt:
@@ -562,7 +563,6 @@ def generate():
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
 
-    use_runpod = _truthy(request.form.get("use_runpod"))
     image_file = request.files.get("image")
     try:
         init_image = None
@@ -577,11 +577,9 @@ def generate():
     if not generation_lock.acquire(blocking=False):
         return jsonify(error="Another generation is running. Please wait."), 429
     try:
-        if use_runpod:
-            if not runpod_configured():
-                return jsonify(error="RunPod is not configured. Set RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN in .env, then restart the app."), 400
+        if backend == "runpod":
             if profile_id and not profile.get("runpod_model_ready"):
-                return jsonify(error="This face profile has not been trained on RunPod yet. Turn on RunPod and train this profile first."), 400
+                return jsonify(error="This face profile has no RunPod-trained model. Select Train and choose RunPod GPU first."), 400
             data = {
                 "prompt": prompt, "negative_prompt": negative_prompt,
                 "steps": str(steps), "strength": str(strength),
@@ -606,19 +604,21 @@ def generate():
                 status="completed", image_url=f"/outputs/{filename}", filename=filename,
                 mode="img2img" if init_image is not None else "txt2img",
                 face_profile=profile["name"] if profile else None,
-                backend="runpod", message="Generated on the configured RunPod GPU and saved locally.",
+                backend="runpod", message="Generated on the selected RunPod GPU and saved locally.",
             )
+
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
-            return jsonify(error="This face profile has no local LoRA yet. Train it locally or enable the configured RunPod GPU toggle."), 400
+            return jsonify(error="This face profile has no locally trained LoRA. Train it using the System GPU or select RunPod GPU."), 400
         try:
             mode = "img2img" if init_image is not None else "txt2img"
-            pipeline = _load_cpu_or_gpu_pipeline(mode, profile_id)
+            pipeline = _load_cpu_or_gpu_pipeline(mode, profile_id, backend)
+            generator_device = "cuda" if backend == "local_gpu" else "cpu"
             kwargs = {
                 "prompt": prompt,
                 "negative_prompt": negative_prompt or None,
                 "num_inference_steps": steps,
                 "guidance_scale": 7.0,
-                "generator": torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(int(time.time_ns() % (2**31 - 1))),
+                "generator": torch.Generator(device=generator_device).manual_seed(int(time.time_ns() % (2**31 - 1))),
             }
             if init_image is not None:
                 kwargs.update(image=init_image, strength=strength)
@@ -626,14 +626,18 @@ def generate():
         except Exception as exc:
             message = str(exc)
             if "out of memory" in message.lower() or "memory" in message.lower():
-                message = "The model ran out of memory. Close other apps and retry with fewer steps."
+                message = "The selected device ran out of memory. Try fewer steps or switch to another available compute backend."
             return jsonify(error=f"Generation failed: {message}"), 500
         filename = _save_generated_png(result)
+        if backend == "local_gpu":
+            message = "Generated locally on the System GPU."
+        else:
+            message = "Generated locally on this computer's CPU."
         return jsonify(
             status="completed", image_url=f"/outputs/{filename}", filename=filename,
             mode="img2img" if init_image is not None else "txt2img",
             face_profile=profile["name"] if profile else None,
-            backend="local", message="Generated locally on this computer.",
+            backend=backend, message=message,
         )
     finally:
         generation_lock.release()
@@ -647,6 +651,7 @@ def generate_video():
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
+        backend = _resolve_compute_backend(request.form)
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid video settings."), 400
     if not prompt:
@@ -656,16 +661,15 @@ def generate_video():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
+    if backend == "cpu":
+        return jsonify(error="Video generation requires a GPU. Turn on GPU acceleration and select an available System GPU or RunPod GPU."), 400
 
-    use_runpod = _truthy(request.form.get("use_runpod"))
     if not generation_lock.acquire(blocking=False):
         return jsonify(error="Another generation is running. Please wait."), 429
     try:
-        if use_runpod:
-            if not runpod_configured():
-                return jsonify(error="RunPod is not configured. Set RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN in .env, then restart the app."), 400
+        if backend == "runpod":
             if profile_id and not profile.get("runpod_model_ready"):
-                return jsonify(error="This face profile has not been trained on RunPod yet. Train it on RunPod first."), 400
+                return jsonify(error="This face profile has no RunPod-trained model. Train it using RunPod GPU first."), 400
             data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames)}
             if profile_id:
                 data["face_profile_id"] = profile_id
@@ -680,12 +684,13 @@ def generate_video():
             return jsonify(
                 status="completed", video_url=f"/videos/{filename}", filename=filename,
                 face_profile=profile["name"] if profile else None, backend="runpod",
-                message="Generated on the configured RunPod GPU and saved locally.",
+                message="Generated on the selected RunPod GPU and saved locally.",
             )
-        if not torch.cuda.is_available():
-            return jsonify(error="Local video generation requires a CUDA-enabled NVIDIA GPU. Enable the configured RunPod GPU toggle to use your remote GPU."), 400
+
+        if backend != "local_gpu" or not torch.cuda.is_available():
+            return jsonify(error="System GPU is not available to this Python environment. Select RunPod GPU."), 400
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
-            return jsonify(error="This face profile has no locally trained LoRA. Train it locally or enable the configured RunPod GPU toggle."), 400
+            return jsonify(error="This face profile has no locally trained LoRA. Train it using the System GPU or select RunPod GPU."), 400
         if not (MOTION_DIR / "config.json").is_file():
             return jsonify(error="AnimateDiff motion adapter is missing. Run download_video_model.bat first."), 400
         try:
@@ -721,12 +726,12 @@ def generate_video():
             video_model_error = str(exc)
             message = str(exc)
             if "out of memory" in message.lower():
-                message = "The GPU ran out of memory. Try fewer frames or a smaller workload."
+                message = "The GPU ran out of memory. Try fewer frames or use the RunPod GPU."
             return jsonify(error=f"Video generation failed: {message}"), 500
         return jsonify(
             status="completed", video_url=f"/videos/{filename}", filename=filename,
-            face_profile=profile["name"] if profile else None, backend="local",
-            message="Generated locally on this GPU.",
+            face_profile=profile["name"] if profile else None, backend="local_gpu",
+            message="Generated locally on the System GPU.",
         )
     finally:
         generation_lock.release()
