@@ -720,6 +720,55 @@ def api_create_face_dataset_group(profile_id):
         return jsonify(error="Could not create the training-data group. Check database connectivity and profile storage."), 503
 
 
+@app.post("/api/global-body/dataset-groups")
+def api_create_global_body_dataset_group():
+    """Create a prompt-only dataset group for the reusable global body-type LoRA."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        profile = ensure_global_body_profile()
+        ensure_schema()
+        if not get_face_profile_record(GLOBAL_BODY_PROFILE_ID):
+            insert_face_profile_record(profile)
+        title = _clean_prompt(payload.get("title"), "Dataset group title", 120)
+        prompt = _clean_prompt(payload.get("prompt"), "Body-type prompt", 1200)
+        if not prompt:
+            return jsonify(error="Describe the adult body type or figure you want to train."), 400
+        group = create_face_dataset_group(
+            GLOBAL_BODY_PROFILE_ID, title, expected_count=5,
+            dataset_type="body_type", prompt=prompt,
+        )
+        return jsonify(status="created", group=group, profile_name=GLOBAL_BODY_PROFILE_NAME), 201
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not create shared body-type dataset group")
+        return jsonify(error="Could not create the shared body dataset. Check database connectivity."), 503
+
+
+@app.get("/api/global-body/status")
+def api_global_body_status():
+    """Return global body-model readiness without exposing it as a user face identity."""
+    try:
+        profile = ensure_global_body_profile()
+        ensure_schema()
+        if not get_face_profile_record(GLOBAL_BODY_PROFILE_ID):
+            insert_face_profile_record(profile)
+        profile = get_profile(GLOBAL_BODY_PROFILE_ID) or profile
+        groups = list_face_dataset_groups(profile_id=GLOBAL_BODY_PROFILE_ID)
+        return jsonify(
+            profile_id=GLOBAL_BODY_PROFILE_ID, token=GLOBAL_BODY_PROFILE_TOKEN,
+            name=GLOBAL_BODY_PROFILE_NAME, image_count=profile.get("image_count", 0),
+            local_model_ready=bool(profile.get("local_model_ready")),
+            runpod_model_ready=bool(profile.get("runpod_model_ready")),
+            local_training_state=profile.get("local_training_state", "not_trained"),
+            runpod_training_state=profile.get("runpod_training_state", "not_trained"),
+            groups_count=len(groups),
+        )
+    except Exception:
+        app.logger.exception("Could not read shared body model status")
+        return jsonify(error="Could not read the shared body model status."), 503
+
+
 @app.get("/api/face-dataset-groups")
 def api_list_face_dataset_groups():
     try:
