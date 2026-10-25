@@ -53,7 +53,7 @@ from face_profiles import (
     update_profile,
     validate_profile_id,
 )
-from pose_validation import estimate_head_pose, validate_pose_target
+from pose_validation import build_pose_control_image, estimate_head_pose, validate_pose_target
 from training_generation import targets_for_dataset_type
 
 from studio_db import (
@@ -994,6 +994,10 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
     init_image = ImageOps.fit(source_image.convert("RGB"), (width, height), method=Image.Resampling.LANCZOS)
     seed = (int(task_id[:8], 16) + (target_index + 1) * 7919) % (2**31 - 1)
 
+    pose_control_image = None
+    if dataset_type == "face_angles":
+        pose_control_image = build_pose_control_image(yaw, pitch, width, height)
+
     if backend == "runpod":
         while not generation_lock.acquire(timeout=0.5):
             if _face_dataset_job_cancelled(job["id"]):
@@ -1012,9 +1016,15 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
             }
             if profile_id_for_generation:
                 data["face_profile_id"] = profile_id_for_generation
+            remote_files = {"image": ("source-face.png", upload, "image/png")}
+            if pose_control_image is not None:
+                pose_buffer = io.BytesIO()
+                pose_control_image.save(pose_buffer, format="PNG")
+                pose_buffer.seek(0)
+                remote_files["pose_control_image"] = ("target-face-pose.png", pose_buffer, "image/png")
             response = runpod_request(
                 "POST", "/api/remote/generate", data=data,
-                files={"image": ("source-face.png", upload, "image/png")}, timeout=(20, 600),
+                files=remote_files, timeout=(20, 600),
             )
             if _face_dataset_job_cancelled(job["id"]):
                 raise FaceDatasetJobCancelled("Cancellation requested.")
@@ -1036,7 +1046,8 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
     try:
         if _face_dataset_job_cancelled(job["id"]):
             raise FaceDatasetJobCancelled("Cancellation requested.")
-        pipeline = _load_cpu_or_gpu_pipeline("img2img", profile_id_for_generation, backend)
+        pipeline_mode_for_target = "pose_img2img" if pose_control_image is not None else "img2img"
+        pipeline = _load_cpu_or_gpu_pipeline(pipeline_mode_for_target, profile_id_for_generation, backend)
         generator_device = "cuda" if backend == "local_gpu" else "cpu"
         effective_prompt, effective_negative = build_generation_prompts(prompt, negative_prompt, "photorealistic")
         _set_generation_progress(
@@ -1060,16 +1071,22 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
                 message=f"Generating {target['label']} · step {current} of {steps_total}",
             )
             return callback_kwargs
-        result = pipeline(
-            prompt=effective_prompt,
-            negative_prompt=effective_negative or None,
-            image=init_image,
-            strength=strength,
-            width=width, height=height,
-            num_inference_steps=22, guidance_scale=7.5,
-            generator=torch.Generator(device=generator_device).manual_seed(seed),
-            callback_on_step_end=on_step_end,
-        ).images[0].convert("RGB")
+        pipeline_kwargs = {
+            "prompt": effective_prompt,
+            "negative_prompt": effective_negative or None,
+            "image": init_image,
+            "strength": strength,
+            "width": width, "height": height,
+            "num_inference_steps": 22, "guidance_scale": 7.5,
+            "generator": torch.Generator(device=generator_device).manual_seed(seed),
+            "callback_on_step_end": on_step_end,
+        }
+        if pose_control_image is not None:
+            pipeline_kwargs["control_image"] = pose_control_image
+            pipeline_kwargs["controlnet_conditioning_scale"] = 1.0
+            if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
+                pipeline_kwargs["ip_adapter_image"] = init_image
+        result = pipeline(**pipeline_kwargs).images[0].convert("RGB")
         if _face_dataset_job_cancelled(job["id"]):
             raise FaceDatasetJobCancelled("Cancellation requested.")
         return result, backend, prompt, negative_prompt, yaw, pitch
@@ -2033,15 +2050,27 @@ def _load_cpu_or_gpu_pipeline(
                 local_model = MODEL_ID
             else:
                 local_model = MODEL_DIR if (MODEL_DIR / "model_index.json").is_file() else MODEL_ID
-            pipeline_class = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
+            dtype = torch.float16 if use_cuda else torch.float32
+            controlnet = None
+            if mode == "pose_img2img":
+                from diffusers import ControlNetModel, StableDiffusionControlNetImg2ImgPipeline
+                controlnet_id = os.environ.get(
+                    "FACE_POSE_CONTROLNET_ID", "lllyasviel/control_v11p_sd15_openpose"
+                ).strip() or "lllyasviel/control_v11p_sd15_openpose"
+                controlnet = ControlNetModel.from_pretrained(controlnet_id, torch_dtype=dtype)
+                pipeline_class = StableDiffusionControlNetImg2ImgPipeline
+            else:
+                pipeline_class = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
             kwargs = {
-                "torch_dtype": torch.float16 if use_cuda else torch.float32,
+                "torch_dtype": dtype,
                 "safety_checker": None,
                 "requires_safety_checker": False,
             }
+            if controlnet is not None:
+                kwargs["controlnet"] = controlnet
             if isinstance(local_model, Path):
                 if not (local_model / "model_index.json").is_file():
-                    raise ValueError(f"SD_MODEL_PATH is not a Diffusers model folder: {local_model}")
+                    raise ValueError(f"SD_MODEL_PATH is not a Diffusers model folder containing model_index.json.")
                 kwargs["local_files_only"] = True
             try:
                 loaded = pipeline_class.from_pretrained(local_model, **kwargs)
@@ -2052,6 +2081,22 @@ def _load_cpu_or_gpu_pipeline(
                     loaded.enable_vae_slicing()
                 except Exception:
                     pass
+                loaded._private_face_ip_adapter_loaded = False
+                if mode == "pose_img2img" and _truthy(os.environ.get("FACE_IDENTITY_IP_ADAPTER_ENABLED", "true")):
+                    try:
+                        loaded.load_ip_adapter(
+                            os.environ.get("FACE_IDENTITY_IP_ADAPTER_REPO", "h94/IP-Adapter").strip() or "h94/IP-Adapter",
+                            subfolder="models",
+                            weight_name=os.environ.get("FACE_IDENTITY_IP_ADAPTER_FILE", "ip-adapter-full-face_sd15.bin").strip() or "ip-adapter-full-face_sd15.bin",
+                        )
+                        adapter_scale = float(os.environ.get("FACE_IDENTITY_IP_ADAPTER_SCALE", "0.45"))
+                        loaded.set_ip_adapter_scale(max(0.0, min(1.0, adapter_scale)))
+                        loaded._private_face_ip_adapter_loaded = True
+                    except Exception as adapter_exc:
+                        app.logger.warning(
+                            "Face IP-Adapter could not be loaded; ControlNet and the source image will still condition pose generation: %s",
+                            str(adapter_exc)[:300],
+                        )
                 pipe = loaded
                 pipeline_mode = mode
                 pipeline_device = device
