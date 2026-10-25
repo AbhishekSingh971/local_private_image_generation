@@ -134,6 +134,17 @@
     });
     if (profiles.some(profile => profile.id === selected)) select.value = selected;
   }
+  function updateFaceConditionControls() {
+    const profileSelected=Boolean($("#faceProfile")?.value);
+    ["faceAngle","faceExpression"].forEach(id=>{
+      const control=$("#"+id);
+      if(!control)return;
+      control.disabled=!profileSelected;
+      if(!profileSelected)control.value="";
+    });
+  }
+  $("#faceProfile")?.addEventListener("change",updateFaceConditionControls);
+
   function makeTag(text, state) {
     const node = document.createElement("span");
     node.className = "tag " + (state ? "ready" : "pending");
@@ -207,6 +218,7 @@
         if (select) select.value = requestedProfileId;
       });
     }
+    updateFaceConditionControls();
     return profiles;
   }
 
