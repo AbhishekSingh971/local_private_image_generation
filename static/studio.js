@@ -364,6 +364,47 @@
     face_angles:["Front view","Middle-left","Middle-right","Three-quarter left","Three-quarter right","Left profile","Right profile","Looking up","Looking down"],
     expressions:["Neutral expression","Gentle smile","Broad smile","Laughing","Sad","Angry","Surprised","Fearful","Disgusted","Confused"]
   };
+  const faceTargetChecklist=$("#faceTargetChecklist");
+  const selectAllFaceTargets=$("#selectAllFaceTargets");
+  function selectedFaceTargetLabels(){
+    return $(".face-target-option input[type=checkbox]:checked",faceTargetChecklist||document).map(input=>input.value);
+  }
+  function renderFaceTargetChecklist(){
+    if(!faceTargetChecklist)return;
+    const labels=faceVariationLabels[activeVariationMode]||[];
+    const selected=new Set(selectedFaceTargetLabels());
+    faceTargetChecklist.innerHTML="";
+    labels.forEach((label,index)=>{
+      const item=document.createElement("label");
+      item.className="face-target-option";
+      const checkbox=document.createElement("input");
+      checkbox.type="checkbox";checkbox.value=label;checkbox.checked=selected.size?selected.has(label):true;
+      checkbox.setAttribute("aria-label","Generate "+label);
+      const text=document.createElement("span");
+      text.textContent=label;
+      item.append(checkbox,text);
+      faceTargetChecklist.append(item);
+      checkbox.addEventListener("change",syncFaceTargetSelection);
+    });
+    if(selectAllFaceTargets)selectAllFaceTargets.checked=true;
+    syncFaceTargetSelection();
+  }
+  function syncFaceTargetSelection(){
+    if(!faceTargetChecklist)return;
+    const boxes=$(".face-target-option input",faceTargetChecklist);
+    const checked=boxes.filter(box=>box.checked);
+    if(selectAllFaceTargets){selectAllFaceTargets.checked=boxes.length>0&&checked.length===boxes.length;selectAllFaceTargets.indeterminate=checked.length>0&&checked.length<boxes.length;}
+    const help=$("#targetSelectionHelp");
+    if(help)help.textContent=checked.length===boxes.length
+      ?"All "+boxes.length+" "+(activeVariationMode==="expressions"?"expressions":"face angles")+" are selected."
+      :checked.length+" of "+boxes.length+" selected. Only checked targets will be generated.";
+    if(generateFaceAnglesButton&&!activeFaceDatasetJobs.some(job=>["queued","running","cancelling"].includes(job.status))&&!startingFaceDatasetJob)
+      generateFaceAnglesButton.textContent="Generate "+checked.length+" selected "+(activeVariationMode==="expressions"?"expressions":"face angles");
+  }
+  selectAllFaceTargets?.addEventListener("change",()=>{
+    $(".face-target-option input",faceTargetChecklist||document).forEach(box=>box.checked=selectAllFaceTargets.checked);
+    syncFaceTargetSelection();
+  });
   let activeFaceDatasetJobs=[];
   let trackedFaceDatasetJobId=sessionStorage.getItem("privateFaceStudioActiveDatasetJob")||"";
   let lastFaceDatasetTerminalJob=null;
@@ -392,8 +433,9 @@
     if(title&&!(title.value||"").trim())title.placeholder=activeVariationMode==="expressions"
       ?"e.g. Model A · expression set":"e.g. Model A · nine-angle set";
     if(retryFaceAngleButton)retryFaceAngleButton.hidden=true;
+    renderFaceTargetChecklist();
   }
-  $$(".source-tab").forEach(tab=>tab.addEventListener("click",()=>activateTrainingSourceTab(tab)));
+  $(".source-tab").forEach(tab=>tab.addEventListener("click",()=>activateTrainingSourceTab(tab)));
   const initialTrainingTab=$('.source-tab[data-source-tab="angles"]');
   if(initialTrainingTab)activateTrainingSourceTab(initialTrainingTab);
 
@@ -551,6 +593,8 @@
     const status=$("#faceAnglesStatus");
     if(!profileId){if(status)status.textContent="Select the face profile that should receive these training photos.";return;}
     if(!source){if(status)status.textContent="Choose one source face photo from your computer.";return;}
+    const selectedTargets=selectedFaceTargetLabels();
+    if(!selectedTargets.length){if(status)status.textContent="Select at least one angle or expression to generate.";return;}
     if(source.size>8*1024*1024){if(status)status.textContent="The source image must be 8 MB or smaller.";return;}
     if(activeFaceDatasetJobs.some(job=>["queued","running","cancelling"].includes(job.status))){if(status)status.textContent="A batch is already running. Cancel it or wait for it to finish.";return;}
     startingFaceDatasetJob=true;syncFaceDatasetStartButton();
@@ -569,6 +613,7 @@
       const formData=new FormData();
       formData.set("title",title);
       formData.set("dataset_type",activeVariationMode);
+      formData.set("selected_targets",JSON.stringify(selectedTargets));
       formData.append("source_image",source,source.name);
       addComputeData(formData);
       const response=await fetch("/api/face-profiles/"+encodeURIComponent(profileId)+"/dataset-jobs",{method:"POST",body:formData});
