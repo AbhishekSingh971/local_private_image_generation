@@ -134,6 +134,11 @@ def _restore_database_photos() -> None:
             try:
                 temporary.write_bytes(photo["image_data"])
                 temporary.replace(destination)
+                caption = (photo.get("angle_label") or "").strip()
+                if photo.get("photo_kind") in {"angle", "expression", "body"} and caption:
+                    destination.with_name(destination.name + ".caption.txt").write_text(
+                        caption[:1200], encoding="utf-8"
+                    )
             finally:
                 if temporary.exists():
                     temporary.unlink()
