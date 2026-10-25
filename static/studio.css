@@ -60,6 +60,16 @@ button.danger-button{background:#3c1f2a;border-color:#643345;color:#ffd9df}
 .actions,.hero-actions,.result-actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
 .status{white-space:pre-wrap;overflow-wrap:anywhere;color:#9aabc5;font-size:12px;margin-top:10px}
 .status:empty{display:none}
+.generation-progress{margin-top:14px;padding:13px 14px;border:1px solid #344460;background:#0b1423;border-radius:12px}
+.generation-progress[hidden]{display:none!important}
+.progress-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;font-weight:850;color:#e7ecff;margin-bottom:9px}
+.progress-heading strong{font-size:15px;letter-spacing:-.02em;color:var(--mint);font-variant-numeric:tabular-nums}
+.generation-progress progress{display:block;width:100%;height:9px;border:0;border-radius:999px;overflow:hidden;appearance:none;-webkit-appearance:none;background:#243047}
+.generation-progress progress::-webkit-progress-bar{background:#243047;border-radius:999px}
+.generation-progress progress::-webkit-progress-value{background:linear-gradient(90deg,#9cafff,#88e7c0);border-radius:999px;transition:width .25s ease}
+.generation-progress progress::-moz-progress-bar{background:linear-gradient(90deg,#9cafff,#88e7c0);border-radius:999px}
+.progress-detail{color:#aebbd2;font-size:11px;margin:8px 0 0}
+.progress-step{color:#8294b2;font-size:10px;margin:3px 0 0;font-variant-numeric:tabular-nums}
 .note{border-left:3px solid var(--warning);background:#292419;color:#edd9a7;border-radius:6px;padding:10px 12px;margin-top:12px;font-size:11px}
 .success{border-left:3px solid var(--mint);background:#102a24;color:#bdf3d9;border-radius:6px;padding:10px 12px;font-size:11px;margin-top:12px}
 .page-content{min-width:0}
