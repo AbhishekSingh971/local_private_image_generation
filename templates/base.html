@@ -48,12 +48,21 @@
       {% elif not storage_status.connected %}
         <div class="note">{{ storage_status.message }} Generation can run only if the database becomes available before saving the result.</div>
       {% endif %}
+      <div id="backgroundTrainingJobBanner" class="background-job-banner panel" hidden aria-live="polite">
+        <div class="background-job-heading">
+          <div><div class="eyebrow">BACKGROUND TRAINING JOB</div><strong id="backgroundTrainingJobTitle">Face dataset generation</strong></div>
+          <span id="backgroundTrainingJobState" class="dataset-group-status generating">Queued</span>
+        </div>
+        <p id="backgroundTrainingJobStatus" class="field-help">Preparing the first target…</p>
+        <progress id="backgroundTrainingJobProgress" max="100" value="0" aria-label="Background dataset generation progress"></progress>
+        <div class="background-job-footer"><span id="backgroundTrainingJobCounts">0 of 9 targets saved</span><button type="button" id="cancelBackgroundTrainingJob" class="danger-button">Cancel generation</button></div>
+      </div>
       <div class="page-content">
         {% block content %}{% endblock %}
       </div>
       <footer class="app-footer">Private Face Studio · Keep your .env, face photos and model weights private. GPU routing does not start or stop cloud Pods.</footer>
     </main>
   </div>
-  <script src="{{ url_for('static', filename='studio.js', v='20261025-11') }}" defer></script>
+  <script src="{{ url_for('static', filename='studio.js', v='20261025-12') }}" defer></script>
 </body>
 </html>
