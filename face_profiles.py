@@ -118,6 +118,11 @@ def _ensure_database_migrated() -> None:
         if _DB_MIGRATED:
             return
         registry = _load_registry()
+        # This marker prevents a profile deleted from PostgreSQL from being re-imported
+        # from the legacy JSON cache after the next application restart.
+        if registry.get("migrated_to_database") == "postgresql":
+            _DB_MIGRATED = True
+            return
         for raw in registry["profiles"]:
             profile_id = validate_profile_id(raw.get("id", ""))
             if not get_face_profile_record(profile_id):
@@ -129,6 +134,9 @@ def _ensure_database_migrated() -> None:
                         profile_id, image_path.name, image_path.read_bytes(),
                         "image/jpeg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else "image/" + image_path.suffix.lower().lstrip("."),
                     )
+        registry["migrated_to_database"] = "postgresql"
+        registry["migrated_at"] = _utc_now()
+        _save_registry(registry)
         _DB_MIGRATED = True
 
 
