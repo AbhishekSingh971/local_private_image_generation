@@ -904,6 +904,12 @@
     finally{button.disabled=false;}
   });
 
+  async function mutateDatasetPhoto(photo, action, payload) {
+    const response=await fetch("/api/face-photos/"+encodeURIComponent(photo.id),{
+      method:action,headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)
+    });
+    return readJson(response);
+  }
   async function loadDatasetGroups() {
     const container=$("#datasetGroups");
     if(!container)return;
@@ -922,6 +928,7 @@
         empty.append(title,note);container.appendChild(empty);return;
       }
       groups.forEach(group=>{
+        const busy=group.status==="generating";
         const card=document.createElement("article");card.className="panel dataset-group-card";
         const header=document.createElement("div");header.className="dataset-group-heading";
         const title=document.createElement("h2");title.textContent=group.title;
@@ -937,15 +944,78 @@
           const image=document.createElement("img");image.src=photo.content_url;image.alt=photo.angle_label||"Training photo";image.loading="lazy";
           image.addEventListener("error",()=>{image.alt="Preview unavailable";image.style.opacity=".35";});
           const label=document.createElement("span");label.textContent=photo.angle_label||photo.filename||"Training photo";
-          figure.append(image,label);photos.appendChild(figure);
+          const photoActions=document.createElement("div");photoActions.className="dataset-photo-actions";
+          const renamePhoto=document.createElement("button");renamePhoto.type="button";renamePhoto.className="secondary-button";renamePhoto.textContent="Edit label";renamePhoto.disabled=busy;
+          renamePhoto.addEventListener("click",async()=>{
+            const next=window.prompt("Photo label",photo.angle_label||"Training photo");
+            if(next===null)return;
+            try{
+              await mutateDatasetPhoto(photo,"PATCH",{angle_label:next});
+              if(status)status.textContent="Photo label updated.";
+              await loadDatasetGroups();
+            }catch(error){if(status)status.textContent=error.message;}
+          });
+          const replaceInput=document.createElement("input");replaceInput.type="file";replaceInput.accept="image/png,image/jpeg,image/webp";replaceInput.hidden=true;replaceInput.setAttribute("aria-label","Choose replacement image for "+label.textContent);
+          const replacePhoto=document.createElement("button");replacePhoto.type="button";replacePhoto.className="secondary-button";replacePhoto.textContent="Replace";replacePhoto.disabled=busy;
+          replacePhoto.addEventListener("click",()=>replaceInput.click());
+          replaceInput.addEventListener("change",async()=>{
+            const file=replaceInput.files?.[0];if(!file)return;
+            if(file.size>8*1024*1024){if(status)status.textContent="Replacement image must be 8 MB or smaller.";replaceInput.value="";return;}
+            replacePhoto.disabled=true;if(status)status.textContent="Replacing "+(photo.angle_label||"training photo")+"…";
+            try{
+              const form=new FormData();form.append("photo",file,file.name);
+              await readJson(await fetch("/api/face-photos/"+encodeURIComponent(photo.id),{method:"PUT",body:form}));
+              if(status)status.textContent="Photo replaced. The training dataset file and database copy are updated.";
+              await loadDatasetGroups();
+            }catch(error){if(status)status.textContent=error.message;}
+            finally{replacePhoto.disabled=false;}
+          });
+          const deletePhoto=document.createElement("button");deletePhoto.type="button";deletePhoto.className="secondary-button danger-button";deletePhoto.textContent="Delete photo";deletePhoto.disabled=busy;
+          deletePhoto.addEventListener("click",async()=>{
+            if(!window.confirm("Delete this photo from the training group and profile dataset? The original in Generated images will remain unchanged."))return;
+            deletePhoto.disabled=true;if(status)status.textContent="Deleting training photo…";
+            try{
+              await readJson(await fetch("/api/face-photos/"+encodeURIComponent(photo.id),{method:"DELETE"}));
+              if(status)status.textContent="Training photo deleted. The original generated-library image, if any, was preserved.";
+              await loadDatasetGroups();
+              await refreshProfiles();
+            }catch(error){if(status)status.textContent=error.message;deletePhoto.disabled=false;}
+          });
+          photoActions.append(renamePhoto,replacePhoto,deletePhoto);
+          figure.append(image,label,photoActions,replaceInput);photos.appendChild(figure);
         });
         card.appendChild(photos);
         if(group.error){const error=document.createElement("p");error.className="dataset-group-error";error.textContent=group.error;card.appendChild(error);}
-        if(group.status==="generating"){const warning=document.createElement("p");warning.className="field-help";warning.textContent="Generation is still in progress. Refresh to check the latest status.";card.appendChild(warning);}
+        if(busy){const warning=document.createElement("p");warning.className="field-help";warning.textContent="Generation is still in progress. Group edits are temporarily disabled.";card.appendChild(warning);}
         const actions=document.createElement("div");actions.className="dataset-group-actions";
+        const addPhotos=document.createElement("a");addPhotos.className="button-link secondary-link";addPhotos.href="/faces?profile_id="+encodeURIComponent(group.profile_id)+"&group_id="+encodeURIComponent(group.id);addPhotos.textContent="Add photos";
+        const renameGroup=document.createElement("button");renameGroup.type="button";renameGroup.className="secondary-button";renameGroup.textContent="Rename group";renameGroup.disabled=busy;
+        renameGroup.addEventListener("click",async()=>{
+          const next=window.prompt("Dataset group name",group.title);
+          if(next===null)return;
+          try{
+            await readJson(await fetch("/api/face-dataset-groups/"+encodeURIComponent(group.id),{
+              method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:next})
+            }));
+            if(status)status.textContent="Dataset group renamed.";
+            await loadDatasetGroups();
+          }catch(error){if(status)status.textContent=error.message;}
+        });
         const faceLink=document.createElement("a");faceLink.className="button-link secondary-link";faceLink.href="/faces?profile_id="+encodeURIComponent(group.profile_id);faceLink.textContent="Train this profile";
         const imageLink=document.createElement("a");imageLink.className="button-link";imageLink.href="/generate/image?profile_id="+encodeURIComponent(group.profile_id);imageLink.textContent="Generate with face";
-        actions.append(faceLink,imageLink);card.appendChild(actions);container.appendChild(card);
+        const deleteGroup=document.createElement("button");deleteGroup.type="button";deleteGroup.className="secondary-button danger-button";deleteGroup.textContent="Delete entire group";deleteGroup.disabled=busy;
+        deleteGroup.addEventListener("click",async()=>{
+          const confirmText="Delete the dataset group “"+group.title+"” and all "+(group.photo_count||0)+" grouped training photo(s)? This will not delete the original images from Generated images or the face profile itself.";
+          if(!window.confirm(confirmText))return;
+          deleteGroup.disabled=true;if(status)status.textContent="Deleting dataset group and its training photo copies…";
+          try{
+            const result=await readJson(await fetch("/api/face-dataset-groups/"+encodeURIComponent(group.id),{method:"DELETE"}));
+            if(status)status.textContent="Deleted the dataset group and "+result.deleted_photos+" photo(s). Original generated-library images were kept.";
+            await loadDatasetGroups();
+            await refreshProfiles();
+          }catch(error){if(status)status.textContent=error.message;deleteGroup.disabled=false;}
+        });
+        actions.append(addPhotos,renameGroup,faceLink,imageLink,deleteGroup);card.appendChild(actions);container.appendChild(card);
       });
       if(status)status.textContent="";
     }catch(error){
