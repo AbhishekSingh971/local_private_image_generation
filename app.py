@@ -1,3 +1,4 @@
+import base64
 import gc
 import io
 import os
@@ -34,6 +35,11 @@ from face_profiles import (
     DATA_DIR,
     LORA_DIR,
     PROFILES_DIR,
+    GLOBAL_BODY_PROFILE_ID,
+    GLOBAL_BODY_PROFILE_NAME,
+    GLOBAL_BODY_PROFILE_TOKEN,
+    ensure_global_body_profile,
+    is_global_body_profile,
     create_profile,
     delete_profile,
     dataset_images,
@@ -677,6 +683,9 @@ def api_create_face_dataset_group(profile_id):
         if not profile:
             return jsonify(error="Face profile not found."), 404
         title = _clean_prompt(request.form.get("title"), "Dataset group title", 120)
+        dataset_type = (request.form.get("dataset_type") or "face_angles").strip().lower()
+        if dataset_type not in {"face_angles", "expressions"}:
+            return jsonify(error="Choose face_angles or expressions for a face-specific dataset."), 400
         uploads = request.files.getlist("source_image")
         if not uploads or not uploads[0] or not uploads[0].filename:
             return jsonify(error="Choose one source image from your computer."), 400
@@ -688,7 +697,9 @@ def api_create_face_dataset_group(profile_id):
         ensure_schema()
         if not get_face_profile_record(profile_id):
             insert_face_profile_record(profile)
-        group = create_face_dataset_group(profile_id, title, expected_count=5)
+        group = create_face_dataset_group(
+            profile_id, title, expected_count=5, dataset_type=dataset_type
+        )
         group_id = group["id"]
         image = images[0]
         if image.width < 128 or image.height < 128:
@@ -738,12 +749,13 @@ def _stage_profile_dataset_files(profile_id: str, filenames: list[str]) -> list[
             name = Path(str(filename or "")).name
             if not name or name in {".", ".."}:
                 continue
-            source = folder / name
-            if source.parent.resolve() != folder or not source.is_file():
-                continue
-            temporary = folder / ("." + name + "." + uuid.uuid4().hex + ".delete")
-            source.replace(temporary)
-            staged.append((source, temporary))
+            for companion_name in (name, name + ".caption.txt"):
+                source = folder / companion_name
+                if source.parent.resolve() != folder or not source.is_file():
+                    continue
+                temporary = folder / ("." + companion_name + "." + uuid.uuid4().hex + ".delete")
+                source.replace(temporary)
+                staged.append((source, temporary))
         return staged
     except Exception:
         for source, temporary in reversed(staged):
@@ -859,9 +871,15 @@ def api_face_photo_detail(photo_id):
         if "angle_label" not in payload:
             return jsonify(error="Supply an angle_label to update the photo label."), 400
         try:
-            photo = update_face_photo(photo_id, angle_label=payload.get("angle_label"))
+            next_label = str(payload.get("angle_label") or "").strip()
+            photo = update_face_photo(photo_id, angle_label=next_label)
             if not photo:
                 return jsonify(error="Training photo not found."), 404
+            caption_path = dataset_dir(metadata["profile_id"]) / (Path(metadata["filename"]).name + ".caption.txt")
+            if metadata.get("photo_kind") in {"angle", "expression", "body"}:
+                caption_path.write_text(next_label[:1200], encoding="utf-8")
+            else:
+                caption_path.unlink(missing_ok=True)
             return jsonify(status="updated", photo=photo)
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
@@ -913,7 +931,7 @@ def api_face_photo_detail(photo_id):
         _restore_staged_profile_files(staged)
         return jsonify(error="Training photo not found."), 404
     _discard_staged_profile_files(staged)
-    if metadata.get("photo_kind") == "angle":
+    if metadata.get("photo_kind") in {"angle", "expression", "body"}:
         new_count = max(0, int(group.get("generated_count") or 0) - 1)
         next_status = "partial" if new_count < int(group.get("expected_count") or 5) else group.get("status")
         try:
@@ -982,9 +1000,17 @@ def api_add_generated_photos(profile_id):
             if image.width < 128 or image.height < 128:
                 return jsonify(error="Every selected image must be at least 128 × 128 pixels."), 400
             label = str(angle_labels[added] or "")[:80] if group_id else None
-            photo_kind = "angle" if label in {
+            group_type = group.get("dataset_type", "face_angles") if group_id else "face_angles"
+            if group_type == "body_type":
+                photo_kind = "body"
+            elif group_type == "expressions":
+                photo_kind = "expression"
+            elif label in {
                 "Front view", "Three-quarter left", "Three-quarter right", "Left profile", "Right profile"
-            } else "manual"
+            }:
+                photo_kind = "angle"
+            else:
+                photo_kind = "manual"
             save_profile_image(
                 profile_id, image, group_id=group_id, angle_label=label, photo_kind=photo_kind
             )
@@ -1076,9 +1102,17 @@ def api_add_face_photos(profile_id):
             label = None
             if group_id:
                 label = (labels[index].strip() if index < len(labels) else "") or f"Additional photo {index + 1}"
-            photo_kind = "angle" if label in {
+            group_type = group.get("dataset_type", "face_angles") if group_id else "face_angles"
+            if group_type == "body_type":
+                photo_kind = "body"
+            elif group_type == "expressions":
+                photo_kind = "expression"
+            elif label in {
                 "Front view", "Three-quarter left", "Three-quarter right", "Left profile", "Right profile"
-            } else "manual"
+            }:
+                photo_kind = "angle"
+            else:
+                photo_kind = "manual"
             save_profile_image(
                 profile_id, image, group_id=group_id, angle_label=label, photo_kind=photo_kind
             )
