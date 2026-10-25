@@ -12,7 +12,7 @@ A local-first Windows/Flask application for generating photos, training separate
 - Image/video library CRUD: preview, search, edit title and prompts, download original media bytes, and delete from the database and local output copy.
 - Add model-training photos either by uploading local files or by selecting saved generated images from the image library.
 - Auto-generate five approximate face-angle variations from one local source image. Every successful view is saved immediately in the image library and grouped face dataset. If a view fails, the UI offers one retry for that exact angle; if retry fails again, that angle is marked failed and all successful photos remain available. If generation succeeded but attaching the image to the group failed, retry reuses the saved image rather than generating another one.
-- A separate Training datasets page displays grouped source/angle photos over time and links back to the selected face profile for retraining and later image generation.
+- A separate Training datasets page displays grouped source/angle photos over time and links back to the selected face profile for retraining and later image generation. Dataset groups can be renamed or deleted as a whole. Individual grouped photos can be previewed, relabeled, replaced by a local image, or deleted; local and saved-library photos can also be added to an existing group. Deleting a group/photo removes its training-dataset copy and metadata, but leaves the original generated-library image intact.
 - Reusable LoRA adapters stored under `models/face_loras/<profile-id>/`.
 - Face selector for photo and video generation.
 - A GPU acceleration toggle that is OFF by default: OFF forces local CPU; ON checks actual local CUDA and RunPod GPU availability.
