@@ -10,6 +10,37 @@ from dataclasses import dataclass
 from math import isfinite
 
 
+def _face_mesh_api(mp_module=None):
+    """Return Face Mesh API across MediaPipe package layouts."""
+    try:
+        module = mp_module
+        if module is None:
+            import mediapipe as module
+        api = getattr(getattr(module, "solutions", None), "face_mesh", None)
+        if api is not None and hasattr(api, "FaceMesh"):
+            return api
+    except Exception:
+        pass
+    try:
+        from mediapipe.python.solutions import face_mesh
+        return face_mesh if hasattr(face_mesh, "FaceMesh") else None
+    except Exception:
+        return None
+
+
+def _face_mesh_tessellation(mp_module=None):
+    """Return tessellation connections across supported MediaPipe layouts."""
+    api = _face_mesh_api(mp_module)
+    connections = getattr(api, "FACEMESH_TESSELATION", None) if api else None
+    if connections:
+        return connections
+    try:
+        from mediapipe.python.solutions import face_mesh_connections
+        return getattr(face_mesh_connections, "FACEMESH_TESSELATION", None)
+    except Exception:
+        return None
+
+
 @dataclass(frozen=True)
 class HeadPose:
     yaw: float
@@ -35,7 +66,7 @@ def estimate_head_pose(image) -> tuple[HeadPose | None, str]:
         if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.shape[0] < 64 or rgb.shape[1] < 64:
             return None, "Pose validation could not inspect this image size."
         height, width = rgb.shape[:2]
-        face_mesh_api = getattr(getattr(mp, "solutions", None), "face_mesh", None)
+        face_mesh_api = _face_mesh_api(mp)
         if face_mesh_api is None:
             return None, "MediaPipe Face Mesh API is unavailable in this installation."
         with face_mesh_api.FaceMesh(
@@ -145,9 +176,12 @@ def build_pose_control_image(
     rgb = np.asarray(source_image.convert("RGB"))
     if rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) < 64:
         raise ValueError("The source face image is too small for face-pose conditioning.")
-    mesh_api = getattr(getattr(mp, "solutions", None), "face_mesh", None)
+    mesh_api = _face_mesh_api(mp)
     if mesh_api is None:
-        raise RuntimeError("MediaPipe Face Mesh is unavailable; install the pinned optional dependencies.")
+        raise RuntimeError(
+            "MediaPipe is installed, but its Face Mesh API could not be imported. "
+            "Reinstall the pinned mediapipe version in the active virtual environment."
+        )
     with mesh_api.FaceMesh(
         static_image_mode=True, max_num_faces=1, refine_landmarks=True,
         min_detection_confidence=0.6,
@@ -199,10 +233,11 @@ def build_pose_control_image(
 
     # MediaPipe face-landmark ControlNet is trained on mesh/landmark maps,
     # not the OpenPose body-skeleton palette used by the previous implementation.
-    connections = getattr(getattr(mp, "solutions", None), "face_mesh", None)
-    tessellation = getattr(connections, "FACEMESH_TESSELATION", None) if connections else None
+    tessellation = _face_mesh_tessellation(mp)
     if not tessellation:
-        raise RuntimeError("MediaPipe face-mesh tessellation connections are unavailable.")
+        raise RuntimeError(
+            "MediaPipe face-mesh tessellation connections are unavailable in this installation."
+        )
     for first, second in tessellation:
         if first >= len(px) or second >= len(px):
             continue
