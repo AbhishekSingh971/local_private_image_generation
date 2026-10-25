@@ -3,5 +3,8 @@ Pillow>=10.4,<12
 diffusers==0.35.1
 transformers>=4.44,<5
 accelerate>=0.34,<2
+peft>=0.13,<1
 safetensors>=0.4.5
 huggingface_hub>=0.34,<1
+imageio>=2.34,<3
+imageio-ffmpeg>=0.5,<1
