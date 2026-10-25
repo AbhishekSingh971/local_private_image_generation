@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import uuid
 
 import studio_db
+import face_profiles
 
 
 def test_assets_and_face_models_are_persisted(tmp_path, monkeypatch):
@@ -41,3 +42,34 @@ def test_database_status_does_not_disclose_database_path(tmp_path, monkeypatch):
     assert status["connected"] is True
     assert status["configured_postgresql"] is False
     assert "status.sqlite" not in status["message"]
+
+
+
+def test_legacy_profile_migration_does_not_resurrect_deleted_profile(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    profiles_dir = data_dir / "face_profiles"
+    model_dir = tmp_path / "models" / "face_loras"
+    profile_id = "a" * 32
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "migration.sqlite").as_posix())
+    monkeypatch.setattr(face_profiles, "DATA_DIR", data_dir)
+    monkeypatch.setattr(face_profiles, "PROFILES_FILE", data_dir / "face_profiles.json")
+    monkeypatch.setattr(face_profiles, "PROFILES_DIR", profiles_dir)
+    monkeypatch.setattr(face_profiles, "LORA_DIR", model_dir)
+    monkeypatch.setattr(face_profiles, "_DB_MIGRATED", False)
+    dataset = profiles_dir / profile_id / "dataset"
+    dataset.mkdir(parents=True)
+    (dataset / "face_legacy.jpg").write_bytes(b"legacy-photo")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "face_profiles.json").write_text(
+        '{"version": 1, "profiles": [{"id": "' + profile_id + '", "name": "Legacy Face", '
+        '"token": "face_legacy", "created_at": "2026-01-01T00:00:00+00:00"}]}',
+        encoding="utf-8",
+    )
+
+    assert len(face_profiles.list_profiles()) == 1
+    assert studio_db.get_face_profile_record(profile_id)["image_count"] == 1
+    assert face_profiles.delete_profile(profile_id) is True
+
+    # A new process would run the migration again; the persisted marker prevents resurrection.
+    monkeypatch.setattr(face_profiles, "_DB_MIGRATED", False)
+    assert face_profiles.list_profiles() == []
