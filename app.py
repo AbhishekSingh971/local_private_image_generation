@@ -29,7 +29,7 @@ from flask import Flask, request, send_from_directory, send_file, jsonify, rende
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
-from image_generation import build_generation_prompts, resolve_image_dimensions, validate_image_preset
+from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from face_profiles import (
     DATA_DIR,
     LORA_DIR,
@@ -1316,6 +1316,7 @@ def generate():
         image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
         width, height = resolve_image_dimensions(aspect_ratio)
         backend = _resolve_compute_backend(request.form)
+        seed = resolve_generation_seed(request.form.get("seed"))
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID. Refresh the page and retry.")
@@ -1360,7 +1361,7 @@ def generate():
             )
             data = {
                 "prompt": prompt, "negative_prompt": negative_prompt,
-                "steps": str(steps), "strength": str(strength), "task_id": task_id,
+                "steps": str(steps), "strength": str(strength), "seed": str(seed), "task_id": task_id,
                 "aspect_ratio": aspect_ratio, "image_preset": image_preset,
             }
             if profile_id:
@@ -1444,7 +1445,7 @@ def generate():
                 "height": height,
                 "num_inference_steps": steps,
                 "guidance_scale": 7.5,
-                "generator": torch.Generator(device=generator_device).manual_seed(int(time.time_ns() % (2**31 - 1))),
+                "generator": torch.Generator(device=generator_device).manual_seed(seed),
             }
             if init_image is not None:
                 kwargs.update(image=init_image, strength=strength)
