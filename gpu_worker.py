@@ -1,0 +1,320 @@
+"""Authenticated HTTP worker intended to run on a user-created RunPod GPU Pod.
+
+Set REMOTE_API_TOKEN to a strong random secret. Expose port 8000 only over HTTPS
+through RunPod's Pod proxy. This worker does not create, start, or stop Pods.
+"""
+import hmac
+import io
+import os
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from dotenv import load_dotenv
+ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")
+
+import torch
+from flask import Flask, request, jsonify, send_file
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+import app as local_engine
+from face_profiles import (
+    create_profile,
+    dataset_images,
+    get_profile,
+    model_path,
+    save_profile_image,
+    update_profile,
+    validate_profile_id,
+)
+
+worker = Flask("runpod_gpu_worker")
+worker.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
+TOKEN = os.environ.get("REMOTE_API_TOKEN", "").strip()
+TASKS = {}
+TASKS_LOCK = threading.RLock()
+TRAIN_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="runpod-face-train")
+VIDEO_PIPE = None
+VIDEO_ACTIVE_LORA = None
+VIDEO_LOCK = threading.Lock()
+
+
+@worker.before_request
+def require_worker_token():
+    expected = os.environ.get("REMOTE_API_TOKEN", "").strip()
+    supplied = request.headers.get("Authorization", "")
+    if not expected:
+        return jsonify(error="REMOTE_API_TOKEN is not configured on the GPU worker."), 503
+    if not supplied.startswith("Bearer ") or not hmac.compare_digest(supplied[7:].strip(), expected):
+        return jsonify(error="Unauthorized."), 401
+    return None
+
+
+@worker.errorhandler(413)
+def request_too_large(_error):
+    return jsonify(error="Request too large. Keep each request under 64 MB."), 413
+
+
+def _valid_profile(profile_id):
+    try:
+        value = validate_profile_id(profile_id)
+    except ValueError:
+        return None
+    return value if get_profile(value) else None
+
+
+def _training_job(profile_id, job_id, steps, resolution):
+    profile = get_profile(profile_id)
+    if not profile:
+        with TASKS_LOCK:
+            TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": "Profile not found."}
+        return
+
+    command = [
+        sys.executable, str(ROOT / "train_face_lora.py"),
+        "--profile-id", profile_id,
+        "--output-name", profile_id,
+        "--token", profile["token"],
+        "--steps", str(steps),
+        "--resolution", str(resolution),
+        "--mixed-precision", "fp16",
+    ]
+    with TASKS_LOCK:
+        TASKS[job_id] = {
+            "job_id": job_id, "profile_id": profile_id, "status": "running",
+            "started_at": time.time(), "logs": "",
+        }
+    try:
+        completed = subprocess.run(
+            command, cwd=ROOT, capture_output=True, text=True, timeout=8 * 60 * 60,
+            check=False,
+        )
+        logs = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+        if completed.returncode == 0 and (
+            (model_path(profile_id) / "pytorch_lora_weights.safetensors").is_file()
+            or (model_path(profile_id) / "pytorch_lora_weights.bin").is_file()
+        ):
+            update_profile(
+                profile_id, local_model_ready=True, local_training_state="completed",
+                local_training_error=None,
+            )
+            task = {"job_id": job_id, "profile_id": profile_id, "status": "completed", "logs": logs[-5000:]}
+        else:
+            error = logs[-3500:] or f"Training exited with code {completed.returncode}."
+            update_profile(
+                profile_id, local_training_state="failed", local_training_error=error,
+                local_model_ready=False,
+            )
+            task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error, "logs": logs[-5000:]}
+    except Exception as exc:
+        error = str(exc)
+        update_profile(
+            profile_id, local_training_state="failed", local_training_error=error,
+            local_model_ready=False,
+        )
+        task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error}
+    with TASKS_LOCK:
+        task["finished_at"] = time.time()
+        TASKS[job_id] = task
+
+
+@worker.get("/api/remote/health")
+def remote_health():
+    if not torch.cuda.is_available():
+        return jsonify(status="error", cuda_available=False, error="CUDA is not available in this Pod."), 503
+    gpu = torch.cuda.get_device_properties(0)
+    return jsonify(
+        status="ok",
+        cuda_available=True,
+        gpu_name=torch.cuda.get_device_name(0),
+        vram_gb=round(gpu.total_memory / (1024 ** 3), 2),
+        face_profiles_ready=sum(
+            1 for p in local_engine.list_profiles() if p.get("local_model_ready")
+        ),
+    )
+
+
+@worker.post("/api/remote/train-profile")
+def remote_train_profile():
+    if not torch.cuda.is_available():
+        return jsonify(error="This RunPod worker has no CUDA GPU attached."), 503
+    try:
+        profile_id = validate_profile_id(request.form.get("profile_id", ""))
+        name = (request.form.get("name") or "").strip()
+        token = (request.form.get("token") or "").strip()
+        steps = int(request.form.get("steps", "800"))
+        resolution = int(request.form.get("resolution", "512"))
+        if not 100 <= steps <= 3000 or resolution not in (384, 512):
+            raise ValueError("Training steps must be 100–3000 and resolution must be 384 or 512.")
+        images = local_engine._parse_uploads(request.files.getlist("photos"))
+        if len(images) < 5:
+            raise ValueError("At least 5 valid face photos are required.")
+        create_profile(name, profile_id=profile_id, token=token)
+        for image in images:
+            save_profile_image(profile_id, image)
+        existing = get_profile(profile_id)
+        if existing and existing.get("local_training_state") == "running":
+            return jsonify(error="This face profile is already training on the GPU worker."), 409
+        job_id = uuid.uuid4().hex
+        update_profile(
+            profile_id, local_training_state="running", local_training_job_id=job_id,
+            local_training_error=None, local_model_ready=False,
+        )
+        with TASKS_LOCK:
+            TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "status": "queued"}
+        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution)
+        return jsonify(status="queued", job_id=job_id, profile_id=profile_id), 202
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except RuntimeError as exc:
+        return jsonify(error=str(exc)), 500
+
+
+@worker.get("/api/remote/jobs/<job_id>")
+def remote_job_status(job_id):
+    with TASKS_LOCK:
+        task = TASKS.get(job_id)
+    if not task:
+        return jsonify(error="Training job not found. The GPU worker may have restarted; check the profile model files."), 404
+    return jsonify(task)
+
+
+@worker.post("/api/remote/generate")
+def remote_generate():
+    prompt = (request.form.get("prompt") or "").strip()
+    negative_prompt = (request.form.get("negative_prompt") or "").strip()
+    try:
+        steps = int(request.form.get("steps", "10"))
+        strength = float(request.form.get("strength", "0.45"))
+        profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
+    except (ValueError, TypeError, KeyError) as exc:
+        return jsonify(error=str(exc) or "Invalid generation settings."), 400
+    if not prompt or len(prompt) > 1200 or len(negative_prompt) > 600:
+        return jsonify(error="Prompt is required and must be within the allowed length."), 400
+    if not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
+        return jsonify(error="Invalid step count or image strength."), 400
+    if not torch.cuda.is_available():
+        return jsonify(error="CUDA is not available on this worker."), 503
+    if profile_id:
+        profile = get_profile(profile_id)
+        if not profile or not profile.get("local_model_ready"):
+            return jsonify(error="The selected face LoRA is not trained on this GPU worker."), 400
+    image = None
+    uploaded = request.files.get("image")
+    if uploaded and uploaded.filename:
+        try:
+            with Image.open(uploaded.stream) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+                image.load()
+            image = ImageOps.fit(image, (512, 512), method=Image.Resampling.LANCZOS)
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+            return jsonify(error="Reference image is not a valid PNG, JPG or WEBP image."), 400
+    if not local_engine.generation_lock.acquire(blocking=False):
+        return jsonify(error="Another GPU generation is running. Try again shortly."), 429
+    try:
+        mode = "img2img" if image is not None else "txt2img"
+        pipeline = local_engine._load_cpu_or_gpu_pipeline(mode, profile_id)
+        generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+        kwargs = {
+            "prompt": prompt, "negative_prompt": negative_prompt or None,
+            "num_inference_steps": steps, "guidance_scale": 7.0, "generator": generator,
+        }
+        if image is not None:
+            kwargs.update(image=image, strength=strength)
+        result = pipeline(**kwargs).images[0]
+        output = io.BytesIO()
+        result.save(output, format="PNG")
+        output.seek(0)
+        return send_file(output, mimetype="image/png", download_name="generated.png")
+    except Exception as exc:
+        message = str(exc)
+        if "out of memory" in message.lower():
+            message = "GPU out of memory. Try fewer steps or a smaller request."
+        return jsonify(error=f"GPU image generation failed: {message}"), 500
+    finally:
+        local_engine.generation_lock.release()
+
+
+@worker.post("/api/remote/generate-video")
+def remote_generate_video():
+    global VIDEO_PIPE, VIDEO_ACTIVE_LORA
+    prompt = (request.form.get("prompt") or "").strip()
+    negative_prompt = (request.form.get("negative_prompt") or "").strip()
+    try:
+        steps = int(request.form.get("steps", "12"))
+        frames = int(request.form.get("frames", "16"))
+        profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
+    except (ValueError, TypeError, KeyError) as exc:
+        return jsonify(error=str(exc) or "Invalid video settings."), 400
+    if not prompt or len(prompt) > 1000 or len(negative_prompt) > 600:
+        return jsonify(error="Video prompt is required and must be within the allowed length."), 400
+    if not 5 <= steps <= 20 or frames not in (8, 16, 24):
+        return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
+    if not torch.cuda.is_available():
+        return jsonify(error="CUDA is not available on this worker."), 503
+    if not (local_engine.MOTION_DIR / "config.json").is_file():
+        return jsonify(error="AnimateDiff motion adapter is missing on the GPU worker."), 400
+    if profile_id:
+        profile = get_profile(profile_id)
+        if not profile or not profile.get("local_model_ready"):
+            return jsonify(error="The selected face LoRA is not trained on this GPU worker."), 400
+    if not local_engine.generation_lock.acquire(blocking=False):
+        return jsonify(error="Another GPU generation is running. Try again shortly."), 429
+    try:
+        from diffusers import AnimateDiffPipeline, MotionAdapter
+        from diffusers.utils import export_to_video
+        with VIDEO_LOCK:
+            if VIDEO_PIPE is None:
+                adapter = MotionAdapter.from_pretrained(
+                    str(local_engine.MOTION_DIR), local_files_only=True, torch_dtype=torch.float16
+                )
+                VIDEO_PIPE = AnimateDiffPipeline.from_pretrained(
+                    str(local_engine.MODEL_DIR), motion_adapter=adapter, local_files_only=True,
+                    torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False,
+                )
+                VIDEO_PIPE.enable_vae_slicing()
+                VIDEO_PIPE.to("cuda")
+                VIDEO_ACTIVE_LORA = None
+            if VIDEO_ACTIVE_LORA != profile_id:
+                if VIDEO_ACTIVE_LORA is not None:
+                    VIDEO_PIPE.unload_lora_weights()
+                    VIDEO_ACTIVE_LORA = None
+                if profile_id:
+                    VIDEO_PIPE.load_lora_weights(str(model_path(profile_id)))
+                    VIDEO_ACTIVE_LORA = profile_id
+        generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+        result = VIDEO_PIPE(
+            prompt=prompt, negative_prompt=negative_prompt or None,
+            num_frames=frames, num_inference_steps=steps,
+            guidance_scale=7.0, generator=generator,
+        )
+        filename = f"gpu_{uuid.uuid4().hex}.mp4"
+        video_path = local_engine.VIDEO_OUTPUT_DIR / filename
+        export_to_video(result.frames[0], str(video_path), fps=8)
+        return send_file(video_path, mimetype="video/mp4", download_name="generated.mp4")
+    except Exception as exc:
+        message = str(exc)
+        if "out of memory" in message.lower():
+            message = "GPU out of memory. Try fewer frames."
+        return jsonify(error=f"GPU video generation failed: {message}"), 500
+    finally:
+        local_engine.generation_lock.release()
+
+
+if __name__ == "__main__":
+    if not os.environ.get("REMOTE_API_TOKEN", "").strip():
+        raise SystemExit("Set REMOTE_API_TOKEN to a strong secret before starting the GPU worker.")
+    if not torch.cuda.is_available():
+        raise SystemExit("CUDA is not available. Start a CUDA-enabled RunPod Pod and verify PyTorch sees the GPU.")
+    print(f"RunPod GPU worker starting on port {int(os.environ.get('GPU_WORKER_PORT', '8000'))}")
+    worker.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("GPU_WORKER_PORT", "8000")),
+        debug=False,
+        threaded=True,
+    )
