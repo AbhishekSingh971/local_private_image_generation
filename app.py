@@ -1062,7 +1062,8 @@ def api_preview_face_photo_edit(photo_id):
         with Image.open(io.BytesIO(image_bytes)) as source:
             init_image = ImageOps.exif_transpose(source).convert("RGB")
             init_image.load()
-        width, height = resolve_image_dimensions("square")
+        edit_aspect_ratio = "portrait" if group.get("dataset_type") == "body_type" else "square"
+        width, height = resolve_image_dimensions(edit_aspect_ratio)
         init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         return jsonify(error="The saved training photo cannot be read as an image."), 400
@@ -1074,7 +1075,7 @@ def api_preview_face_photo_edit(photo_id):
             data = {
                 "prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps),
                 "strength": str(strength), "seed": str(seed), "task_id": task_id,
-                "aspect_ratio": "square", "image_preset": "photorealistic",
+                "aspect_ratio": edit_aspect_ratio, "image_preset": "full_body_photo" if edit_aspect_ratio == "portrait" else "photorealistic",
                 "use_global_body_model": "true" if use_global_body_model else "false",
             }
             if profile_id:
@@ -1093,7 +1094,9 @@ def api_preview_face_photo_edit(photo_id):
             pipeline = _load_cpu_or_gpu_pipeline(
                 "img2img", profile_id, backend, use_global_body_model=use_global_body_model
             )
-            effective_prompt, effective_negative = build_generation_prompts(prompt, negative_prompt, "photorealistic")
+            effective_prompt, effective_negative = build_generation_prompts(
+                prompt, negative_prompt, "full_body_photo" if edit_aspect_ratio == "portrait" else "photorealistic"
+            )
             generator_device = "cuda" if backend == "local_gpu" else "cpu"
             result = pipeline(
                 prompt=effective_prompt, negative_prompt=effective_negative or None,
@@ -1591,6 +1594,9 @@ def generate():
                 prompt = f"{GLOBAL_BODY_PROFILE_TOKEN}, {prompt}"
         except (RuntimeError, ValueError) as exc:
             return jsonify(error=str(exc)), 400
+
+    if len(prompt) > 1200:
+        return jsonify(error="The prompt plus face/body controls exceeds 1200 characters. Shorten the text prompt."), 400
 
     image_file = request.files.get("image")
     try:
