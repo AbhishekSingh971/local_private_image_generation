@@ -739,6 +739,7 @@ def list_face_photo_records(profile_id: str, filenames: set[str] | None = None) 
                 "photo_kind": row.photo_kind,
                 "validation_status": row.validation_status or "not_checked",
                 "validation_message": row.validation_message,
+                "training_caption": row.training_caption or "",
                 "target_yaw": row.target_yaw, "target_pitch": row.target_pitch,
                 "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch,
                 "image_data": bytes(row.image_data),
@@ -759,6 +760,7 @@ def get_face_photo_bytes(photo_id: str) -> tuple[dict, bytes] | None:
                  "photo_kind": row.photo_kind,
                  "validation_status": row.validation_status or "not_checked",
                  "validation_message": row.validation_message,
+                 "training_caption": row.training_caption or "",
                  "target_yaw": row.target_yaw, "target_pitch": row.target_pitch,
                  "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch}, bytes(row.image_data))
 
