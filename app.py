@@ -1055,7 +1055,8 @@ def api_preview_face_photo_edit(photo_id):
         body_backend = "runpod" if backend == "runpod" else "local"
         if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, body_backend):
             return jsonify(error="The shared body model is not trained for this backend yet."), 400
-        prompt = GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
+        if backend != "runpod":
+            prompt = GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
 
     try:
         with Image.open(io.BytesIO(image_bytes)) as source:
@@ -1586,7 +1587,8 @@ def generate():
                     "The shared body model is not trained for the selected backend. Open Training datasets, "
                     "generate body-type samples, train the shared body model on this backend, then retry."
                 )), 400
-            prompt = f"{GLOBAL_BODY_PROFILE_TOKEN}, {prompt}"
+            if backend != "runpod":
+                prompt = f"{GLOBAL_BODY_PROFILE_TOKEN}, {prompt}"
         except (RuntimeError, ValueError) as exc:
             return jsonify(error=str(exc)), 400
 
