@@ -456,6 +456,7 @@ def api_list_assets():
         return jsonify(error="Asset type must be image or video."), 400
     try:
         limit = int(request.args.get("limit", "200"))
+        _migrate_legacy_output_files()
         assets = list_assets(asset_type or None, limit)
         for asset in assets:
             asset["content_url"] = url_for("asset_content", asset_id=asset["id"])
