@@ -76,6 +76,8 @@ class FaceDatasetGroupRow(Base):
         String(32), ForeignKey("face_profiles.id", ondelete="CASCADE"), nullable=False, index=True
     )
     title: Mapped[str] = mapped_column(String(120), nullable=False)
+    dataset_type: Mapped[str] = mapped_column(String(24), nullable=False, default="face_angles")
+    prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="generating")
     expected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     generated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -167,6 +169,12 @@ def ensure_schema() -> None:
         with engine.begin() as connection:
             if "description" not in profile_columns:
                 connection.execute(text("ALTER TABLE face_profiles ADD COLUMN description TEXT NOT NULL DEFAULT ''"))
+        group_columns = {column["name"] for column in inspect(engine).get_columns("face_dataset_groups")}
+        with engine.begin() as connection:
+            if "dataset_type" not in group_columns:
+                connection.execute(text("ALTER TABLE face_dataset_groups ADD COLUMN dataset_type VARCHAR(24) NOT NULL DEFAULT 'face_angles'"))
+            if "prompt" not in group_columns:
+                connection.execute(text("ALTER TABLE face_dataset_groups ADD COLUMN prompt TEXT NOT NULL DEFAULT ''"))
         photo_columns = {column["name"] for column in inspect(engine).get_columns("face_photos")}
         with engine.begin() as connection:
             if "group_id" not in photo_columns:
@@ -329,8 +337,8 @@ def add_face_photo(
     group_id: str | None = None, angle_label: str | None = None,
     photo_kind: str = "manual",
 ) -> str:
-    if photo_kind not in {"source", "angle", "manual"}:
-        raise ValueError("Photo kind must be source, angle or manual.")
+    if photo_kind not in {"source", "angle", "expression", "body", "manual"}:
+        raise ValueError("Photo kind must be source, angle, expression, body or manual.")
     ensure_schema()
     with _session_factory()() as session:
         if not session.get(FaceProfileRow, profile_id):
@@ -352,6 +360,7 @@ def add_face_photo(
 def _dataset_group_dict(row: FaceDatasetGroupRow) -> dict:
     return {
         "id": row.id, "profile_id": row.profile_id, "title": row.title,
+        "dataset_type": row.dataset_type or "face_angles", "prompt": row.prompt or "",
         "status": row.status, "expected_count": row.expected_count,
         "generated_count": row.generated_count, "error": row.error,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -359,18 +368,28 @@ def _dataset_group_dict(row: FaceDatasetGroupRow) -> dict:
     }
 
 
-def create_face_dataset_group(profile_id: str, title: str, expected_count: int = 5) -> dict:
+def create_face_dataset_group(
+    profile_id: str, title: str, expected_count: int = 5,
+    dataset_type: str = "face_angles", prompt: str = "",
+) -> dict:
     title = (title or "").strip()
+    dataset_type = (dataset_type or "face_angles").strip().lower()
+    prompt = (prompt or "").strip()
     if not title or len(title) > 120:
         raise ValueError("Dataset group title must contain 1–120 characters.")
-    if not 1 <= int(expected_count) <= 10:
-        raise ValueError("Dataset group expected count must be between 1 and 10.")
+    if not 1 <= int(expected_count) <= 30:
+        raise ValueError("Dataset group expected count must be between 1 and 30.")
+    if dataset_type not in {"face_angles", "expressions", "body_type"}:
+        raise ValueError("Dataset type must be face_angles, expressions or body_type.")
+    if len(prompt) > 1200:
+        raise ValueError("Dataset prompt must be 1200 characters or fewer.")
     ensure_schema()
     with _session_factory()() as session:
         if not session.get(FaceProfileRow, profile_id):
             raise ValueError("Face profile is not present in the configured database.")
         row = FaceDatasetGroupRow(
             id=uuid.uuid4().hex, profile_id=profile_id, title=title,
+            dataset_type=dataset_type, prompt=prompt,
             status="generating", expected_count=int(expected_count), generated_count=0,
         )
         session.add(row)
