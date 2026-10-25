@@ -469,7 +469,9 @@
     session.failedIndex=index;
     session.lastError=detail;
     await updateFaceDatasetGroup(session.groupId,{
-      status:session.generatedCount?"partial":"failed",
+      status:session.retryUsed
+        ? (session.generatedCount?"partial":"failed")
+        : "partial",
       generated_count:session.generatedCount,
       error:angle.label+" failed: "+detail
     }).catch(()=>{});
@@ -497,7 +499,7 @@
       if($("#faceAnglesStatus"))$("#faceAnglesStatus").textContent=message;
       setAngleProgressPercent(
         (session.nextIndex/5)*100,"Angle generation paused",
-        message,true
+        message,false
       );
       pendingAngleSession=session;
     }
