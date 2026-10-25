@@ -43,6 +43,12 @@ TASKS = {}
 TASKS_LOCK = threading.RLock()
 GENERATION_PROGRESS = {}
 GENERATION_PROGRESS_LOCK = threading.RLock()
+GENERATION_CANCEL_REQUESTS = set()
+GENERATION_CANCEL_LOCK = threading.RLock()
+
+
+class RemoteGenerationCancelled(RuntimeError):
+    pass
 
 
 def _set_generation_progress(task_id, *, asset_type, status, progress, current_step=0, total_steps=0, stage="", message=""):
@@ -272,6 +278,29 @@ def remote_download_model(profile_id):
     return response
 
 
+@worker.post("/api/remote/generation-cancel/<task_id>")
+def remote_generation_cancel(task_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", task_id or ""):
+        return jsonify(error="Invalid generation task ID."), 400
+    with GENERATION_CANCEL_LOCK:
+        GENERATION_CANCEL_REQUESTS.add(task_id)
+    with GENERATION_PROGRESS_LOCK:
+        current = dict(GENERATION_PROGRESS.get(task_id) or {})
+    if current and current.get("status") not in {"completed", "failed", "cancelled"}:
+        _set_generation_progress(
+            task_id, asset_type=current.get("asset_type", "image"), status="cancelling",
+            progress=current.get("progress", 0), current_step=current.get("current_step", 0),
+            total_steps=current.get("total_steps", 0), stage="cancelling",
+            message="Cancellation requested; stopping at the next denoising step.",
+        )
+    return jsonify(status="cancelling", task_id=task_id, message="Cancellation request recorded."), 202
+
+
+def _remote_generation_cancelled(task_id):
+    with GENERATION_CANCEL_LOCK:
+        return task_id in GENERATION_CANCEL_REQUESTS
+
+
 @worker.post("/api/remote/generate")
 def remote_generate():
     prompt = (request.form.get("prompt") or "").strip()
@@ -327,6 +356,8 @@ def remote_generate():
         )
         _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on RunPod…")
         def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+            if _remote_generation_cancelled(task_id):
+                raise RemoteGenerationCancelled("Generation cancelled by the user.")
             scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
             current = min(step_index + 1, scheduler_steps)
             percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
@@ -358,6 +389,12 @@ def remote_generate():
         output.seek(0)
         _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on RunPod.")
         return send_file(output, mimetype="image/png", download_name="generated.png")
+    except RemoteGenerationCancelled:
+        _set_generation_progress(
+            task_id, asset_type="image", status="cancelled", progress=0, total_steps=steps,
+            stage="cancelled", message="Generation cancelled by the user.",
+        )
+        return jsonify(status="cancelled", task_id=task_id, message="Generation cancelled."), 409
     except Exception as exc:
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="Image generation failed on RunPod.")
         message = str(exc)
@@ -366,6 +403,8 @@ def remote_generate():
         return jsonify(error=f"GPU image generation failed: {message}"), 500
     finally:
         local_engine.generation_lock.release()
+        with GENERATION_CANCEL_LOCK:
+            GENERATION_CANCEL_REQUESTS.discard(task_id)
 
 
 @worker.post("/api/remote/generate-video")
