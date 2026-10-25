@@ -55,7 +55,7 @@
         </div>
         <p id="backgroundTrainingJobStatus" class="field-help">Preparing the first target…</p>
         <progress id="backgroundTrainingJobProgress" max="100" value="0" aria-label="Background dataset generation progress"></progress>
-        <div class="background-job-footer"><span id="backgroundTrainingJobCounts">0 of 9 targets saved</span><button type="button" id="cancelBackgroundTrainingJob" class="danger-button">Cancel generation</button></div>
+        <div class="background-job-footer"><span id="backgroundTrainingJobCounts">0 of 9 targets saved</span><div class="background-job-actions"><button type="button" id="retryFailedBackgroundTrainingJob" class="secondary-button" hidden>Retry failed targets</button><button type="button" id="cancelBackgroundTrainingJob" class="danger-button">Cancel generation</button></div></div>
       </div>
       <div class="page-content">
         {% block content %}{% endblock %}
@@ -63,6 +63,6 @@
       <footer class="app-footer">Private Face Studio · Keep your .env, face photos and model weights private. GPU routing does not start or stop cloud Pods.</footer>
     </main>
   </div>
-  <script src="{{ url_for('static', filename='studio.js', v='20261025-13') }}" defer></script>
+  <script src="{{ url_for('static', filename='studio.js', v='20261025-14') }}" defer></script>
 </body>
 </html>
