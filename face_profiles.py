@@ -324,7 +324,9 @@ def dataset_images(profile_id: str) -> list[Path]:
     )
 
 
-def save_profile_image(profile_id: str, image) -> Path:
+def save_profile_image(
+    profile_id: str, image, *, group_id: str | None = None, angle_label: str | None = None
+) -> Path:
     profile_id = validate_profile_id(profile_id)
     if not get_profile(profile_id):
         raise ValueError("Face profile not found.")
@@ -333,9 +335,14 @@ def save_profile_image(profile_id: str, image) -> Path:
     destination = folder / filename
     # Re-encode so original filenames and EXIF metadata are not retained.
     image.convert("RGB").save(destination, format="JPEG", quality=95, optimize=True)
-    if _database_enabled():
+    # Grouped training sets are recorded in the database even in local development
+    # mode, where the legacy ungrouped profile registry still lives in JSON.
+    if _database_enabled() or group_id:
         from studio_db import add_face_photo
-        add_face_photo(profile_id, destination.name, destination.read_bytes(), "image/jpeg")
+        add_face_photo(
+            profile_id, destination.name, destination.read_bytes(), "image/jpeg",
+            group_id=group_id, angle_label=angle_label,
+        )
     return destination
 
 
