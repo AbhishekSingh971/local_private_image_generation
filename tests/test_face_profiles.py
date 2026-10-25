@@ -73,3 +73,29 @@ def test_profile_description_accepts_200_words_and_rejects_201(isolated_store):
 def test_profile_id_validation_rejects_paths(isolated_store):
     with pytest.raises(ValueError):
         profiles.validate_profile_id("../../outside")
+
+
+
+def test_variation_caption_is_written_for_lora_training(isolated_store, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    profile = profiles.create_profile("Captioned Model")
+    photo = profiles.save_profile_image(
+        profile["id"], Image.new("RGB", (256, 256), "white"),
+        angle_label="gentle natural smile", photo_kind="expression",
+    )
+    assert photo.is_file()
+    assert photo.with_name(photo.name + ".caption.txt").read_text(encoding="utf-8") == "gentle natural smile"
+
+    replacement = profiles.save_profile_image(
+        profile["id"], Image.new("RGB", (256, 256), "black"),
+        angle_label="Original source", photo_kind="source",
+    )
+    assert not replacement.with_name(replacement.name + ".caption.txt").exists()
+
+
+def test_global_body_profile_is_shared_but_hidden_from_face_picker(isolated_store, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    body = profiles.ensure_global_body_profile()
+    assert body["id"] == profiles.GLOBAL_BODY_PROFILE_ID
+    assert profiles.get_profile(profiles.GLOBAL_BODY_PROFILE_ID)["token"] == profiles.GLOBAL_BODY_PROFILE_TOKEN
+    assert all(item["id"] != profiles.GLOBAL_BODY_PROFILE_ID for item in profiles.list_profiles())
