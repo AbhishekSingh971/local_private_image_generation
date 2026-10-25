@@ -29,6 +29,11 @@ def test_assets_and_face_models_are_persisted(tmp_path, monkeypatch):
     assert backup["bundle_size"] == len(b"weights")
     assert studio_db.get_face_model_bundle(profile_id, "local")["bundle_data"] == b"weights"
     assert [item["id"] for item in studio_db.list_assets("image")] == [asset["id"]]
+    assert studio_db.count_assets("image") == 1
+    assert studio_db.count_assets("video") == 0
+    assert studio_db.list_assets("image", limit=1, offset=1) == []
+    assert studio_db.list_assets("image", search="portrait")[0]["id"] == asset["id"]
+    assert studio_db.list_assets("image", search="not-a-match") == []
     assert studio_db.list_assets("video") == []
     updated = studio_db.update_asset(asset["id"], {"title": "Portrait final"})
     assert updated["title"] == "Portrait final"
