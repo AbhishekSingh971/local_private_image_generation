@@ -25,7 +25,7 @@ from flask import Flask, request, jsonify, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
-from image_generation import build_generation_prompts, resolve_image_dimensions, validate_image_preset
+from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from face_profiles import (
     create_profile,
     dataset_images,
@@ -265,6 +265,7 @@ def remote_generate():
         image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
         width, height = resolve_image_dimensions(aspect_ratio)
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
+        seed = resolve_generation_seed(request.form.get("seed"))
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
@@ -309,7 +310,7 @@ def remote_generate():
                 message=f"Generating image on RunPod · step {current} of {scheduler_steps}",
             )
             return callback_kwargs
-        generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+        generator = torch.Generator(device="cuda").manual_seed(seed)
         effective_prompt, effective_negative_prompt = build_generation_prompts(
             prompt, negative_prompt, image_preset
         )
