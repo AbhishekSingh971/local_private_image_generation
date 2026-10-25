@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Overview · Private Face Studio{% endblock %}
+{% block page_heading %}Your creative workspace{% endblock %}
+{% block content %}
+<section class="hero panel">
+  <div class="eyebrow">YOUR PRIVATE AI WORKSPACE</div>
+  <h1>Make it yours.<br><span>Keep every result.</span></h1>
+  <p>Generate images and clips, train separate face identities, and keep your library searchable in one place. Your generated media is stored in the database for later viewing and download.</p>
+  <div class="hero-actions"><a class="button-link" href="{{ url_for('generate_image_page') }}">Generate an image <span>↗</span></a><a class="button-link secondary-link" href="{{ url_for('faces_page') }}">Manage face models</a></div>
+</section>
+<section class="stat-grid">
+  <article class="stat-card panel"><span class="stat-icon">▧</span><span class="stat-label">Saved images</span><strong>{{ image_count }}</strong><a href="{{ url_for('library_images_page') }}">Open image library →</a></article>
+  <article class="stat-card panel"><span class="stat-icon">▷</span><span class="stat-label">Saved videos</span><strong>{{ video_count }}</strong><a href="{{ url_for('library_videos_page') }}">Open video library →</a></article>
+  <article class="stat-card panel"><span class="stat-icon">◎</span><span class="stat-label">Face profiles</span><strong>{{ profile_count }}</strong><a href="{{ url_for('faces_page') }}">Train or manage →</a></article>
+</section>
+<section class="section-heading"><div><div class="eyebrow">WORKFLOW</div><h2>Choose what you want to do</h2></div></section>
+<section class="quick-grid">
+  <a class="quick-card panel" href="{{ url_for('generate_image_page') }}"><span class="quick-symbol">▧</span><h3>Image generation</h3><p>Text-to-image or use a reference photo. Save every result into your image library.</p><span class="quick-action">Open generator →</span></a>
+  <a class="quick-card panel" href="{{ url_for('generate_video_page') }}"><span class="quick-symbol">▷</span><h3>Video generation</h3><p>Create short animated clips with an available supported GPU backend.</p><span class="quick-action">Open video studio →</span></a>
+  <a class="quick-card panel" href="{{ url_for('faces_page') }}"><span class="quick-symbol">◎</span><h3>Face models</h3><p>Keep training photos separate and reuse one identity across generations.</p><span class="quick-action">Manage face models →</span></a>
+</section>
+<section class="section-heading"><div><div class="eyebrow">RECENT OUTPUTS</div><h2>Recently saved</h2></div><a href="{{ url_for('library_images_page') }}">View libraries →</a></section>
+<div class="recent-grid">
+  {% for asset in recent_assets %}
+  <a class="recent-card panel" href="{{ url_for('library_images_page' if asset.asset_type == 'image' else 'library_videos_page') }}">
+    {% if asset.asset_type == 'image' %}<img src="{{ url_for('asset_content', asset_id=asset.id) }}" alt="{{ asset.title }}">{% else %}<video src="{{ url_for('asset_content', asset_id=asset.id) }}" muted preload="metadata"></video>{% endif %}
+    <div><strong>{{ asset.title }}</strong><small>{{ asset.asset_type|title }} · {{ asset.created_at[:10] if asset.created_at else 'Saved' }}</small></div>
+  </a>
+  {% else %}
+  <div class="empty-state panel"><div class="empty-icon">✧</div><h3>Your library is ready</h3><p>Generated images and videos will show up here after the first successful generation.</p></div>
+  {% endfor %}
+</div>
+{% endblock %}
