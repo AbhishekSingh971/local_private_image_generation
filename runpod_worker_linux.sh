@@ -2,6 +2,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+if [[ -f .env ]]; then
+  set -a
+  # This file is local-only and must never be committed.
+  source .env
+  set +a
+fi
+
 if [[ -z "${REMOTE_API_TOKEN:-}" ]]; then
   echo "Set REMOTE_API_TOKEN to a strong random secret before starting the worker." >&2
   exit 1
