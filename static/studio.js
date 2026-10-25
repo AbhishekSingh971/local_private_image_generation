@@ -349,12 +349,14 @@
 
   const generateFaceAnglesButton=$("#generateFaceAnglesButton");
   const retryFaceAngleButton=$("#retryFaceAngleButton");
+  // Lower img2img strength preserves more of the source identity. Side profiles
+  // need a little more denoising, but stay far below the previous 0.78 setting.
   const faceAnglesLabels=[
-    {label:"Front view", prompt:"front-facing straight toward the camera, both eyes visible, face centered"},
-    {label:"Three-quarter left", prompt:"three-quarter view turned about 45 degrees toward the subject's left, both eyes still partly visible"},
-    {label:"Three-quarter right", prompt:"three-quarter view turned about 45 degrees toward the subject's right, both eyes still partly visible"},
-    {label:"Left profile", prompt:"clear left-facing side profile, approximately 90-degree head turn, one eye visible"},
-    {label:"Right profile", prompt:"clear right-facing side profile, approximately 90-degree head turn, one eye visible"}
+    {label:"Front view", prompt:"front-facing straight toward the camera, both eyes visible, face centered", strength:0.24},
+    {label:"Three-quarter left", prompt:"three-quarter view turned about 45 degrees toward the subject's left, both eyes still partly visible", strength:0.36},
+    {label:"Three-quarter right", prompt:"three-quarter view turned about 45 degrees toward the subject's right, both eyes still partly visible", strength:0.36},
+    {label:"Left profile", prompt:"clear left-facing side profile, approximately 90-degree head turn, one eye visible", strength:0.48},
+    {label:"Right profile", prompt:"clear right-facing side profile, approximately 90-degree head turn, one eye visible", strength:0.48}
   ];
   let pendingAngleSession=null;
 
@@ -441,11 +443,12 @@
     const angle=faceAnglesLabels[index];
     const formData=new FormData();
     formData.set("prompt",
-      "Photorealistic close-up head-and-shoulders photograph of the same adult person as the reference image, preserve the same identity, face shape, eye color, hairstyle, age and skin tone; "+angle.prompt+
-      ", natural neutral expression, both ears and jawline plausible, realistic eyes and skin pores, soft even studio daylight, plain neutral background, real DSLR photo, no beauty filter.");
-    formData.set("negative_prompt","different person, identity drift, changed hairstyle, changed eye color, face morphing, duplicate face, asymmetrical eyes, cross-eyed, distorted features, plastic skin, airbrushed skin, cartoon, CGI, blur, low resolution, watermark, text");
-    formData.set("strength","0.78");
-    formData.set("steps","20");
+      "Photorealistic reference-guided edit of the exact same adult person in the uploaded source photo; preserve identity and recognizable facial proportions, same apparent age, ethnicity, eye shape and color, nose, lips, jawline, skin tone, and hairstyle. Change only the head viewing angle: "+angle.prompt+
+      ". Natural neutral expression, realistic skin texture and eyes, soft even studio daylight, plain neutral background, real DSLR photograph, no beauty filter, no illustration.");
+    formData.set("negative_prompt","different person, identity drift, changed apparent age, child, elderly face, changed ethnicity, different face shape, different eyes, different nose, different lips, changed hairstyle, face morphing, doll, anime, cartoon, illustration, CGI, 3D render, plastic skin, airbrushed skin, distorted features, asymmetrical eyes, blur, watermark, text");
+    formData.set("strength",String(angle.strength));
+    formData.set("steps","22");
+    formData.set("seed",String(session.seed));
     formData.set("title",session.title+" - "+angle.label);
     formData.set("image_preset","standard");
     formData.set("aspect_ratio","square");
@@ -575,6 +578,8 @@
       session={
         profileId,sourceFile:source,title,groupId:created.group.id,
         selectedBackend:useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu",
+        // Share one seed across all five angles; Retry reuses it too.
+        seed:Math.floor(Math.random()*2147483648),
         nextIndex:0,generatedCount:0,failedIndex:null,retryUsed:false,
         pendingAssetId:null,pendingAssetIndex:null,pendingAssetAttached:false,lastError:""
       };
