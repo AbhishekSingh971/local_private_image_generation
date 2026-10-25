@@ -352,39 +352,118 @@
   });
   $("#strength")?.addEventListener("input",event=>{const label=$("#strengthValue");if(label)label.textContent=Number(event.target.value).toFixed(2);});
 
-  const generationForm=$("#generationForm");
+  function newGenerationTaskId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID().replace(/-/g, "").toLowerCase();
+    }
+    return Array.from({length:32},()=>Math.floor(Math.random()*16).toString(16)).join("");
+  }
+  function updateGenerationProgress(type, data) {
+    const prefix = type === "video" ? "video" : "image";
+    const container = $("#"+prefix+"Progress");
+    if (!container) return;
+    container.hidden = false;
+    const percent = Math.max(0, Math.min(100, Number(data.progress || 0)));
+    const bar = $("#"+prefix+"ProgressBar");
+    const percentLabel = $("#"+prefix+"ProgressPercent");
+    const stageLabel = $("#"+prefix+"ProgressStage");
+    const detail = $("#"+prefix+"ProgressDetail");
+    const step = $("#"+prefix+"ProgressStep");
+    if (bar) { bar.value=percent; bar.setAttribute("aria-valuetext",percent+"%"); }
+    if (percentLabel) percentLabel.textContent=percent+"%";
+    const stageNames = {
+      starting:"Getting ready", connecting:"Connecting to GPU", loading_model:"Loading model",
+      denoising:"Generating "+(type==="video"?"video":"image"), finalizing:"Finalizing result",
+      encoding:"Encoding video", saving:"Saving to library", completed:"Complete",
+      failed:"Generation failed", busy:"GPU busy"
+    };
+    if(stageLabel)stageLabel.textContent=stageNames[data.stage]||"Generation in progress";
+    if(detail)detail.textContent=data.message||"Working…";
+    if(step){
+      step.textContent=Number(data.total_steps)>0
+        ? "Denoising step "+Number(data.current_step||0)+" of "+Number(data.total_steps)
+        : (data.backend==="runpod"?"RunPod GPU":"Local compute");
+      if(data.status==="completed")step.textContent="All steps finished · Saved to your library";
+      if(data.status==="failed")step.textContent="The task ended before completion.";
+    }
+    if(data.status==="completed"&&bar)bar.value=100;
+    if(data.status==="failed"&&bar)bar.classList.add("progress-failed");
+    else if(bar)bar.classList.remove("progress-failed");
+  }
+  function setFinalGenerationProgress(type, completed, message) {
+    updateGenerationProgress(type,{
+      status:completed?"completed":"failed",progress:completed?100:0,
+      stage:completed?"completed":"failed",message:message|| (completed?"Generation completed.":"Generation failed.")
+    });
+  }
+  async function watchGenerationProgress(taskId, type, controller) {
+    while(!controller.signal.aborted){
+      try{
+        const response=await fetch("/api/generation-progress/"+taskId,{cache:"no-store",signal:controller.signal});
+        if(response.ok){
+          const data=await response.json();
+          updateGenerationProgress(type,data);
+          if(data.status==="completed"||data.status==="failed")return;
+        }
+      }catch(error){
+        if(controller.signal.aborted||error.name==="AbortError")return;
+      }
+      await new Promise(resolve=>setTimeout(resolve,800));
+    }
+  }
+
   generationForm?.addEventListener("submit",async event=>{
     event.preventDefault();
     const button=$("#generateButton");const status=$("#generationStatus");
+    const taskId=newGenerationTaskId();
+    const progressController=new AbortController();
     button.disabled=true;button.textContent="Generating image…";
+    const progress=$("#imageProgress");if(progress)progress.hidden=false;
+    updateGenerationProgress("image",{status:"starting",progress:0,stage:"starting",message:"Submitting image generation request…"});
     if(status)status.textContent=useRunpod?.checked?"Sending this image task to the selected GPU worker…":"Loading the model and generating locally. CPU inference may be slow.";
     const preview=$("#resultPreview");const placeholder=$("#resultPlaceholder");const download=$("#downloadImage");const pill=$("#imageSavedPill");
     preview.hidden=true;placeholder.hidden=false;download.hidden=true;
+    const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
+    const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
-      const data=await readJson(await fetch("/generate",{method:"POST",body:addComputeData(new FormData(generationForm))}));
+      const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
       preview.src=data.image_url;preview.hidden=false;placeholder.hidden=true;
       download.href=data.image_url+"?download=1";download.hidden=false;
       pill.textContent="Saved to library";
+      setFinalGenerationProgress("image",true,data.message||"Image generated and saved to the library.");
       if(status)status.textContent=(data.message||"Image generated.")+" Saved as “"+data.title+"”.";
-    }catch(error){if(status)status.textContent="Generation failed: "+error.message;}
-    finally{button.disabled=false;button.textContent="Generate photo";}
+    }catch(error){
+      setFinalGenerationProgress("image",false,error.message);
+      if(status)status.textContent="Generation failed: "+error.message;
+    }
+    finally{progressController.abort();await progressWatcher;button.disabled=false;button.textContent="Generate photo";}
   });
   const videoForm=$("#videoForm");
   videoForm?.addEventListener("submit",async event=>{
     event.preventDefault();
     const button=$("#videoButton");const status=$("#videoStatus");
+    const taskId=newGenerationTaskId();
+    const progressController=new AbortController();
     button.disabled=true;button.textContent="Generating video…";
+    const progress=$("#videoProgress");if(progress)progress.hidden=false;
+    updateGenerationProgress("video",{status:"starting",progress:0,stage:"starting",message:"Submitting video generation request…"});
     if(status)status.textContent=useRunpod?.checked?"Sending this video task to the selected GPU worker…":"Checking local CUDA and video model files…";
     const preview=$("#videoPreview");const placeholder=$("#videoPlaceholder");const download=$("#downloadVideo");const pill=$("#videoSavedPill");
     preview.hidden=true;preview.removeAttribute("src");placeholder.hidden=false;download.hidden=true;
+    const formData=addComputeData(new FormData(videoForm));formData.set("task_id",taskId);
+    const progressWatcher=watchGenerationProgress(taskId,"video",progressController);
     try{
-      const data=await readJson(await fetch("/generate-video",{method:"POST",body:addComputeData(new FormData(videoForm))}));
+      const data=await readJson(await fetch("/generate-video",{method:"POST",body:formData}));
       preview.src=data.video_url;preview.hidden=false;placeholder.hidden=true;
       download.href=data.video_url+"?download=1";download.hidden=false;
       pill.textContent="Saved to library";
+      setFinalGenerationProgress("video",true,data.message||"Video generated and saved to the library.");
       if(status)status.textContent=(data.message||"Video generated.")+" Saved as “"+data.title+"”.";
-    }catch(error){if(status)status.textContent="Video generation failed: "+error.message;}
-    finally{button.disabled=false;button.textContent="Generate video";}
+    }catch(error){
+      setFinalGenerationProgress("video",false,error.message);
+      if(status)status.textContent="Video generation failed: "+error.message;
+    }
+    finally{progressController.abort();await progressWatcher;button.disabled=false;button.textContent="Generate video";}
   });
 
   function escapeHtml(value) {
