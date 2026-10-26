@@ -1,9 +1,10 @@
 # Google Colab GPU worker setup
 
-This lets the existing Private Face Studio app use a Google Colab GPU through the same authenticated worker API previously used by RunPod. The app remains on your computer (or your own web host); only image/video generation and LoRA training requests are sent to the Colab worker.
+This documents how to run the existing authenticated GPU worker from a Colab notebook for experimentation. The app remains on your computer (or your own web host); only image/video generation and LoRA training requests would be sent to that worker.
 
 ## Important limitations
 
+- **Google's current policy warns that free managed Colab runtimes may be terminated when used as a web service for content generation.** This app's worker is an HTTP service for image/video generation, so do not rely on free Colab for this deployment. Use a permitted hosted GPU runtime or a local GPU for continued service. See the [official Colab FAQ](https://research.google.com/colaboratory/faq.html).
 - A free Colab runtime is temporary and may disconnect, time out, or reclaim its GPU. It is not a 24/7 production server.
 - The public HTTPS tunnel URL must be reachable by your app and the shared token must be kept secret. A stable hostname does not keep a Colab runtime alive.
 - Model weights, files and LoRAs stored on a Colab VM may disappear when that VM is reset. Use Google Drive for reusable model cache if appropriate, but avoid putting a public tunnel or token in a notebook shared with others.
@@ -69,19 +70,20 @@ The worker listens on port 8000 inside Colab. Your local app cannot connect to `
 
 ### Option A — ngrok Dev Domain (simplest stable hostname)
 
-1. Create a free ngrok account and reserve/use the free static Dev Domain offered for your account.
+1. Create an ngrok account and use the automatically assigned free Dev Domain shown in your account. ngrok documents a free Dev Domain as stable across agent restarts; its exact domain suffix can vary, so copy the assigned host from the dashboard.
 2. Get an ngrok authtoken from its dashboard. Keep it private.
-3. Install ngrok in a separate Colab cell using the official ngrok Colab instructions, then configure the token without printing it.
-4. Start an HTTP tunnel for port 8000 using that reserved Dev Domain. Keep this tunnel cell running too.
-5. Copy the HTTPS URL ngrok displays. A reserved Dev Domain can keep the same hostname across restarts, but the Colab VM and worker must still be running.
+3. Install ngrok in a separate Colab cell using the official ngrok setup, then configure the token without printing it.
+4. Start an HTTP tunnel for port 8000. Keep this tunnel cell running too.
+5. Copy the HTTPS URL ngrok displays. A Dev Domain can keep the hostname stable, but the Colab VM and worker must still be running.
 
-Example command shape (use your own actual reserved domain; this is not a working URL):
+Example command shape (use the actual domain assigned to your ngrok account):
 
 ```bash
-ngrok http --domain=YOUR-RESERVED-DOMAIN.ngrok-free.app 8000
+ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
+ngrok http 8000
 ```
 
-Use the current ngrok dashboard/docs for exact account-specific setup and domain name. Do not use an ephemeral URL if you require the same hostname on every restart.
+The free plan includes an automatically assigned Dev Domain, but free endpoints have account and usage limits. See the [ngrok free plan limits](https://ngrok.com/docs/pricing-limits/free-plan-limits/). Don't assume your free plan supports manually setting a chosen `--domain`; the Dev Domain is assigned to the account.
 
 ### Option B — Cloudflare Tunnel
 
