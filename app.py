@@ -127,7 +127,7 @@ FACE_DATASET_STARTING = False
 
 
 def _set_generation_progress(task_id, *, asset_type, backend, status, progress, current_step=0, total_steps=0, stage="", message=""):
-    if backend == "runpod":
+    if backend in {"runpod", "cloud_gpu"}:
         backend = "cloud_gpu"
     if not re.fullmatch(r"[a-f0-9]{32}", str(task_id or "")):
         return
@@ -190,7 +190,7 @@ def api_generation_progress(task_id):
                     else:
                         remote_percent = max(93, int(progress.get("progress", 0)))
                         remote_stage = "transferring"
-                        remote_message = "GPU work finished; receiving the rendered file from RunPod…"
+                        remote_message = "GPU work finished; receiving the rendered file from the cloud worker…"
                 _set_generation_progress(
                     task_id, asset_type=progress["asset_type"], backend="cloud_gpu",
                     status=remote_status, progress=remote_percent,
@@ -322,7 +322,7 @@ def _compute_options(probe_cloud: bool = False) -> dict:
 
 
 def _resolve_compute_backend(form) -> str:
-    """OFF => CPU. ON => selected GPU; auto prefers local CUDA, then healthy RunPod."""
+    """OFF => CPU. ON => selected GPU; auto prefers local CUDA, then a healthy cloud worker."""
     gpu_enabled = _truthy(form.get("use_gpu", form.get("use_runpod")))
     if not gpu_enabled:
         return "cpu"
@@ -990,7 +990,7 @@ def api_start_face_dataset_job(profile_id):
 
 
 def _render_face_dataset_target(job: dict, target: dict, source_image, source_image_bytes: bytes, task_id: str, target_index: int):
-    """Render one target using the configured local or RunPod backend."""
+    """Render one target using the configured local or cloud GPU backend."""
     backend = job["backend"]
     profile = get_profile(job["profile_id"])
     lora_backend = "runpod" if backend in {"runpod", "cloud_gpu"} else "local"
@@ -1041,7 +1041,7 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
     if backend in {"runpod", "cloud_gpu"}:
         while not generation_lock.acquire(timeout=0.5):
             if _face_dataset_job_cancelled(job["id"]):
-                raise FaceDatasetJobCancelled("Cancellation requested while waiting for RunPod.")
+                raise FaceDatasetJobCancelled("Cancellation requested while waiting for the cloud GPU.")
         try:
             if _face_dataset_job_cancelled(job["id"]):
                 raise FaceDatasetJobCancelled("Cancellation requested.")
@@ -1073,7 +1073,7 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
                     result = ImageOps.exif_transpose(remote_image).convert("RGB")
                     result.load()
             except (UnidentifiedImageError, OSError, ValueError) as exc:
-                raise RuntimeError("RunPod returned an invalid image for " + target["label"] + ".") from exc
+                raise RuntimeError("Cloud GPU returned an invalid image for " + target["label"] + ".") from exc
             return result, "runpod", prompt, negative_prompt, yaw, pitch
         finally:
             generation_lock.release()
@@ -1725,15 +1725,15 @@ def api_preview_face_photo_edit(photo_id):
     if is_global_body_profile(profile_id):
         profile_id = None
     profile = get_profile(profile_id) if profile_id else None
-    if profile_id and (not profile or not profile_ready_for_backend(profile_id, "runpod" if backend == "runpod" else "local")):
+    if profile_id and (not profile or not profile_ready_for_backend(profile_id, "runpod" if backend in {"runpod", "cloud_gpu"} else "local")):
         # The source photo itself still conditions img2img; avoid forcing an untrained profile LoRA.
         profile_id = None
     if use_global_body_model:
         body_profile = ensure_global_body_profile()
-        body_backend = "runpod" if backend == "runpod" else "local"
+        body_backend = "runpod" if backend in {"runpod", "cloud_gpu"} else "local"
         if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, body_backend):
             return jsonify(error="The shared body model is not trained for this backend yet."), 400
-        if backend != "runpod":
+        if backend not in {"runpod", "cloud_gpu"}:
             prompt = GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
 
     try:
@@ -1749,7 +1749,7 @@ def api_preview_face_photo_edit(photo_id):
     if not generation_lock.acquire(blocking=False):
         return jsonify(error="Another generation is running. Please wait, then retry the preview."), 429
     try:
-        if backend == "runpod":
+        if backend in {"runpod", "cloud_gpu"}:
             data = {
                 "prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps),
                 "strength": str(strength), "seed": str(seed), "task_id": task_id,
@@ -2089,7 +2089,7 @@ def api_face_train_status(profile_id):
         )
     if backend == "cloud_gpu":
         backend = "runpod"
-    if backend != "runpod":
+    if backend not in {"runpod", "cloud_gpu"}:
         return jsonify(error="Backend must be local or cloud_gpu."), 400
     job_id = profile.get("runpod_training_job_id")
     if not job_id:
@@ -2314,13 +2314,13 @@ def generate():
     if use_global_body_model:
         try:
             body_profile = ensure_global_body_profile()
-            body_backend = "runpod" if backend == "runpod" else "local"
+            body_backend = "runpod" if backend in {"runpod", "cloud_gpu"} else "local"
             if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, body_backend):
                 return jsonify(error=(
                     "The shared body model is not trained for the selected backend. Open Training datasets, "
                     "generate body-type samples, train the shared body model on this backend, then retry."
                 )), 400
-            if backend != "runpod":
+            if backend not in {"runpod", "cloud_gpu"}:
                 prompt = f"{GLOBAL_BODY_PROFILE_TOKEN}, {prompt}"
         except (RuntimeError, ValueError) as exc:
             return jsonify(error=str(exc)), 400
@@ -2411,7 +2411,7 @@ def generate():
             )
 
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
-            return jsonify(error="This face profile has no locally trained LoRA. Train it using the System GPU or select RunPod GPU."), 400
+            return jsonify(error="This face profile has no locally trained LoRA. Train it using the System GPU or select the cloud GPU."), 400
         try:
             mode = "img2img" if init_image is not None else "txt2img"
             _set_generation_progress(
@@ -2522,7 +2522,7 @@ def generate_video():
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
     if backend == "cpu":
-        return jsonify(error="Video generation requires a GPU. Turn on GPU acceleration and select an available System GPU or RunPod GPU."), 400
+        return jsonify(error="Video generation requires a GPU. Turn on GPU acceleration and select an available System GPU or cloud GPU."), 400
 
     _set_generation_progress(
         task_id, asset_type="video", backend=backend, status="running", progress=1,
@@ -2584,7 +2584,7 @@ def generate_video():
             )
 
         if backend != "local_gpu" or not torch.cuda.is_available():
-            return jsonify(error="System GPU is not available to this Python environment. Select RunPod GPU."), 400
+            return jsonify(error="System GPU is not available to this Python environment. Select the cloud GPU."), 400
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
             return jsonify(error="This face profile has no locally trained LoRA. Train it using the System GPU or select RunPod GPU."), 400
         if not (MOTION_DIR / "config.json").is_file():
@@ -2649,7 +2649,7 @@ def generate_video():
             video_model_error = str(exc)
             message = str(exc)
             if "out of memory" in message.lower():
-                message = "The GPU ran out of memory. Try fewer frames or use the RunPod GPU."
+                message = "The GPU ran out of memory. Try fewer frames or use the cloud GPU."
             return jsonify(error=f"Video generation failed: {message}"), 500
         _set_generation_progress(
             task_id, asset_type="video", backend="local_gpu", status="running", progress=97,
