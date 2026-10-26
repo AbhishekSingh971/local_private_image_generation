@@ -127,6 +127,8 @@ FACE_DATASET_STARTING = False
 
 
 def _set_generation_progress(task_id, *, asset_type, backend, status, progress, current_step=0, total_steps=0, stage="", message=""):
+    if backend == "runpod":
+        backend = "cloud_gpu"
     if not re.fullmatch(r"[a-f0-9]{32}", str(task_id or "")):
         return
     now = time.time()
@@ -163,9 +165,9 @@ def api_generation_progress(task_id):
     if not progress:
         return jsonify(task_id=task_id, status="starting", progress=0, current_step=0,
                        total_steps=0, stage="starting", message="Waiting for the generation worker…")
-    if progress.get("backend") == "runpod" and progress.get("status") not in {"completed", "failed"}:
+    if progress.get("backend") == "cloud_gpu" and progress.get("status") not in {"completed", "failed", "cancelled"}:
         try:
-            response = runpod_request(
+            response = cloud_worker_request(
                 "GET", f"/api/remote/generation-progress/{task_id}", timeout=(3, 5)
             )
             remote_progress = response.json()
@@ -190,7 +192,7 @@ def api_generation_progress(task_id):
                         remote_stage = "transferring"
                         remote_message = "GPU work finished; receiving the rendered file from RunPod…"
                 _set_generation_progress(
-                    task_id, asset_type=progress["asset_type"], backend="runpod",
+                    task_id, asset_type=progress["asset_type"], backend="cloud_gpu",
                     status=remote_status, progress=remote_percent,
                     current_step=remote_progress.get("current_step", 0),
                     total_steps=remote_progress.get("total_steps", 0),
@@ -207,30 +209,33 @@ def _truthy(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def runpod_configured() -> bool:
+def cloud_worker_configured() -> bool:
+    """Whether a generic cloud worker is configured (new vars preferred)."""
     return bool(
-        os.environ.get("RUNPOD_WORKER_URL", "").strip()
-        and os.environ.get("RUNPOD_WORKER_TOKEN", "").strip()
+        (os.environ.get("GPU_WORKER_URL", "").strip() or os.environ.get("RUNPOD_WORKER_URL", "").strip())
+        and (os.environ.get("GPU_WORKER_TOKEN", "").strip() or os.environ.get("RUNPOD_WORKER_TOKEN", "").strip())
     )
 
 
-def _runpod_url(path: str) -> str:
-    base_url = os.environ.get("RUNPOD_WORKER_URL", "").strip().rstrip("/")
-    token = os.environ.get("RUNPOD_WORKER_TOKEN", "").strip()
-    if not base_url or not token:
+def cloud_worker_url(path: str) -> str:
+    base_url = (
+        os.environ.get("GPU_WORKER_URL", "").strip()
+        or os.environ.get("RUNPOD_WORKER_URL", "").strip()
+    ).rstrip("/")
+    if not base_url:
         raise RuntimeError(
-            "RunPod is not configured. Set RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN in .env, "
-            "then restart the app. The GPU toggle does not create or purchase a Pod."
+            "Cloud GPU worker is not configured. Set GPU_WORKER_URL and GPU_WORKER_TOKEN in .env, "
+            "then restart the app."
         )
     parsed = urlparse(base_url)
     if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
-        raise RuntimeError("The RunPod worker URL must use HTTPS.")
+        raise RuntimeError("The cloud GPU worker URL must use HTTPS.")
     return f"{base_url}{path}"
 
 
-def runpod_request(method: str, path: str, *, data=None, files=None, timeout=(15, 90)):
-    url = _runpod_url(path)
-    token = os.environ.get("RUNPOD_WORKER_TOKEN", "").strip()
+def cloud_worker_request(method: str, path: str, *, data=None, files=None, timeout=(15, 90)):
+    url = cloud_worker_url(path)
+    token = os.environ.get("GPU_WORKER_TOKEN", "").strip() or os.environ.get("RUNPOD_WORKER_TOKEN", "").strip()
     try:
         response = requests.request(
             method, url, headers={"Authorization": f"Bearer {token}"},
@@ -238,15 +243,22 @@ def runpod_request(method: str, path: str, *, data=None, files=None, timeout=(15
         )
     except requests.RequestException as exc:
         raise RuntimeError(
-            f"Could not reach the configured RunPod worker at {urlparse(url).netloc}: {exc}"
+            f"Could not reach the configured cloud GPU worker at {urlparse(url).netloc}: {exc}"
         ) from exc
     if not response.ok:
         try:
-            detail = response.json().get("error") or response.json().get("message") or response.text
+            body = response.json()
+            detail = body.get("error") or body.get("message") or response.text
         except (ValueError, AttributeError):
             detail = response.text
-        raise RuntimeError(f"RunPod worker returned HTTP {response.status_code}: {detail[:1200]}")
+        raise RuntimeError(f"Cloud GPU worker returned HTTP {response.status_code}: {detail[:1200]}")
     return response
+
+
+# Compatibility aliases keep older routes and integrations working.
+runpod_configured = cloud_worker_configured
+_runpod_url = cloud_worker_url
+runpod_request = cloud_worker_request
 
 
 def _local_gpu_details() -> dict:
@@ -267,21 +279,21 @@ def _local_gpu_details() -> dict:
 
 def _compute_options(probe_cloud: bool = False) -> dict:
     local = _local_gpu_details()
-    configured = runpod_configured()
+    configured = cloud_worker_configured()
     cloud = {"available": False, "name": None, "vram_gb": None}
     cloud_error = None
     if probe_cloud and configured:
         try:
-            response = runpod_request("GET", "/api/remote/health", timeout=(8, 12))
+            response = cloud_worker_request("GET", "/api/remote/health", timeout=(8, 12))
             payload = response.json()
             if payload.get("cuda_available") is True:
                 cloud.update({
                     "available": True,
-                    "name": payload.get("gpu_name") or "RunPod GPU",
+                    "name": payload.get("gpu_name") or "Cloud GPU",
                     "vram_gb": payload.get("vram_gb"),
                 })
             else:
-                cloud_error = payload.get("error") or "RunPod worker reports no CUDA GPU."
+                cloud_error = payload.get("error") or "Cloud worker reports no CUDA GPU."
         except (RuntimeError, ValueError) as exc:
             cloud_error = str(exc)
 
@@ -289,12 +301,13 @@ def _compute_options(probe_cloud: bool = False) -> dict:
     if local["available"]:
         available.append("local_gpu")
     if cloud["available"]:
-        available.append("runpod")
-    auto_backend = "local_gpu" if local["available"] else ("runpod" if cloud["available"] else "cpu")
+        available.append("cloud_gpu")
+    auto_backend = "local_gpu" if local["available"] else ("cloud_gpu" if cloud["available"] else "cpu")
     return {
         "local_gpu": local,
         "cloud_gpu": cloud,
         "runpod_configured": configured,
+        "cloud_worker_configured": configured,
         "available_backends": available,
         "auto_backend": auto_backend,
         "cloud_error": cloud_error,
@@ -302,8 +315,8 @@ def _compute_options(probe_cloud: bool = False) -> dict:
             f"Using local GPU: {local['name']}."
             if auto_backend == "local_gpu" else
             f"Local CUDA GPU not detected; cloud GPU available: {cloud['name']}."
-            if auto_backend == "runpod" else
-            "No usable GPU detected. CPU is available; configure a running RunPod GPU for acceleration."
+            if auto_backend == "cloud_gpu" else
+            "No usable GPU detected. CPU is available; configure a running cloud GPU worker for acceleration."
         ),
     }
 
@@ -315,13 +328,14 @@ def _resolve_compute_backend(form) -> str:
         return "cpu"
     requested = (form.get("compute_backend") or "auto").strip().lower()
     local_available = bool(torch.cuda.is_available())
-    probe_cloud = requested == "runpod" or (requested == "auto" and not local_available)
+    probe_cloud = requested in {"runpod", "cloud_gpu"} or (requested == "auto" and not local_available)
     options = _compute_options(probe_cloud=probe_cloud)
-    return select_compute_backend(
+    selected = select_compute_backend(
         True, requested,
         local_gpu_available=options["local_gpu"]["available"],
         cloud_gpu_available=options["cloud_gpu"]["available"],
     )
+    return "cloud_gpu" if selected == "runpod" else selected
 
 
 def _clean_prompt(value: str, field_name: str, limit: int) -> str:
