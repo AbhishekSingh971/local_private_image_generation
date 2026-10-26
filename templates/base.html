@@ -34,8 +34,8 @@
       <section class="compute-panel panel">
         <div class="compute-copy">
           <div class="eyebrow">Compute preference</div>
-          <label class="switchline" for="useRunpod"><input id="useRunpod" type="checkbox"> Enable GPU acceleration</label>
-          <p class="tiny">Off uses local CPU. On checks usable System GPU and configured RunPod GPU before offering choices.</p>
+          <label class="switchline" for="useGpuAcceleration"><input id="useGpuAcceleration" type="checkbox"> Enable GPU acceleration</label>
+          <p class="tiny">Off uses local CPU. On checks usable System GPU and the configured cloud GPU before offering choices. If no GPU is reachable, generation will stop with an error instead of silently switching to CPU.</p>
         </div>
         <div class="compute-controls">
           <div class="pill" id="gpuModePill">LOCAL · CPU</div>
@@ -60,9 +60,9 @@
       <div class="page-content">
         {% block content %}{% endblock %}
       </div>
-      <footer class="app-footer">Private Face Studio · Keep your .env, face photos and model weights private. GPU routing does not start or stop cloud Pods.</footer>
+      <footer class="app-footer">Private Face Studio · Keep your .env, face photos and model weights private. GPU routing does not start or stop cloud runtimes.</footer>
     </main>
   </div>
-  <script src="{{ url_for('static', filename='studio.js', v='20261026-06') }}" defer></script>
+  <script src="{{ url_for('static', filename='studio.js', v='20261027-01') }}" defer></script>
 </body>
 </html>

@@ -3,7 +3,7 @@
   const $ = (selector, root=document) => root.querySelector(selector);
   const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
   const page = document.body.dataset.page || "dashboard";
-  const useRunpod = $("#useRunpod");
+  const useGpuAcceleration = $("#useGpuAcceleration");
   const computeBackendWrap = $("#computeBackendWrap");
   const computeBackend = $("#computeBackend");
   const gpuStatus = $("#gpuStatus");
@@ -27,72 +27,76 @@
     return data;
   }
   function addComputeData(formData) {
-    if (useRunpod) {
-      formData.set("use_gpu", useRunpod.checked ? "true" : "false");
-      formData.set("compute_backend", useRunpod.checked ? (computeBackend?.value || "cpu") : "cpu");
+    if (useGpuAcceleration) {
+      formData.set("use_gpu", useGpuAcceleration.checked ? "true" : "false");
+      formData.set("compute_backend", useGpuAcceleration.checked ? (computeBackend?.value || "auto") : "cpu");
     }
     formData.delete("use_runpod");
     return formData;
   }
   function backendLabel(key, options) {
+    if (key === "auto") return "Auto · use available GPU";
     if (key === "local_gpu") {
       const gpu = options.local_gpu || {};
       return "System GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
     }
-    if (key === "runpod") {
+    if (key === "cloud_gpu" || key === "runpod") {
       const gpu = options.cloud_gpu || {};
-      return "RunPod GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
+      return "Cloud GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
     }
     return "Local CPU (fallback)";
   }
   function applyComputeStatus() {
-    if (!useRunpod || !gpuStatus || !gpuModePill) return;
-    const selected = useRunpod.checked ? (computeBackend?.value || "cpu") : "cpu";
-    if (!useRunpod.checked) {
+    if (!useGpuAcceleration || !gpuStatus || !gpuModePill) return;
+    const requested = useGpuAcceleration.checked ? (computeBackend?.value || "auto") : "cpu";
+    if (!useGpuAcceleration.checked) {
       gpuModePill.textContent = "LOCAL · CPU";
       gpuStatus.textContent = "GPU acceleration is off. Requests use the local CPU; no cloud request is made.";
       return;
     }
-    const labels = {cpu:"CPU FALLBACK", local_gpu:"SYSTEM GPU", runpod:"CLOUD GPU"};
-    gpuModePill.textContent = labels[selected] || "GPU ENABLED";
+    const selected = requested === "auto" ? (computeAvailability?.auto_backend || "auto") : requested;
+    const labels = {cpu:"CPU FALLBACK", local_gpu:"SYSTEM GPU", cloud_gpu:"CLOUD GPU", runpod:"CLOUD GPU", auto:"GPU UNAVAILABLE"};
+    gpuModePill.textContent = requested === "auto" ? "AUTO · " + (labels[selected] || "CHECKING GPU") : (labels[selected] || "GPU ENABLED");
     if (selected === "local_gpu") {
-      gpuStatus.textContent = "Using detected local GPU: " + (computeAvailability?.local_gpu?.name || "CUDA GPU") + ". This avoids cloud compute charges.";
-    } else if (selected === "runpod") {
-      gpuStatus.textContent = "Using connected RunPod GPU: " + (computeAvailability?.cloud_gpu?.name || "RunPod GPU") + ". This task will be sent to your configured cloud worker.";
+      gpuStatus.textContent = "GPU acceleration is ON. Image generation will run on the detected System GPU: " + (computeAvailability?.local_gpu?.name || "CUDA GPU") + ".";
+    } else if (selected === "cloud_gpu" || selected === "runpod") {
+      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected cloud GPU: " + (computeAvailability?.cloud_gpu?.name || "Cloud GPU") + ". Requests are sent securely from the app to your configured worker.";
+    } else if (requested === "auto") {
+      gpuStatus.textContent = "GPU acceleration is ON, but no usable GPU is currently available. Generation will not silently fall back to CPU. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
     } else {
-      gpuStatus.textContent = "No supported GPU was selected; using local CPU. " + (computeAvailability?.cloud_error || "You can choose a GPU if one is available.");
+      gpuStatus.textContent = "CPU fallback selected explicitly. Generation will run on the local CPU, not a GPU.";
     }
-    if (computeAvailability?.cloud_error && selected !== "runpod") gpuStatus.textContent += " RunPod unavailable: " + computeAvailability.cloud_error;
-    if (selected === "cpu" && !computeAvailability?.cloud_gpu?.available && !computeAvailability?.local_gpu?.available) {
-      gpuStatus.textContent += " No CUDA GPU was detected locally or remotely.";
-    }
+    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " Cloud GPU unavailable: " + computeAvailability.cloud_error;
   }
   function renderComputeOptions(options) {
     computeAvailability = options;
     if (!computeBackend) return;
     const previous = computeBackend.value;
     computeBackend.replaceChildren();
+    const autoOption = document.createElement("option");
+    autoOption.value = "auto";
+    autoOption.textContent = backendLabel("auto", options);
+    computeBackend.appendChild(autoOption);
     (options.available_backends || ["cpu"]).forEach(key => {
       const option = document.createElement("option");
       option.value = key;
       option.textContent = backendLabel(key, options);
       computeBackend.appendChild(option);
     });
-    const fallback = (options.available_backends || ["cpu"]).includes(previous)
-      ? previous : (options.auto_backend || "cpu");
-    computeBackend.value = fallback;
+    const choices = ["auto", ...(options.available_backends || ["cpu"])];
+    computeBackend.value = choices.includes(previous) ? previous : "auto";
     applyComputeStatus();
   }
-  async function probeRunpod() {
-    if (!useRunpod || !computeBackendWrap) return;
-    computeBackendWrap.hidden = !useRunpod.checked;
-    if (!useRunpod.checked) {
+  async function probeCloudGpu() {
+    if (!useGpuAcceleration || !computeBackendWrap) return;
+    computeBackendWrap.hidden = !useGpuAcceleration.checked;
+    if (!useGpuAcceleration.checked) {
       computeAvailability = null;
       renderComputeOptions({available_backends:["cpu"], auto_backend:"cpu", local_gpu:{}, cloud_gpu:{}, cloud_error:null});
       return;
     }
     if (gpuModePill) gpuModePill.textContent = "CHECKING GPUS…";
-    if (gpuStatus) gpuStatus.textContent = "Checking local CUDA support and testing the configured RunPod worker…";
+    if (gpuStatus) gpuStatus.textContent = "Checking local CUDA support and testing the configured cloud GPU worker…";
     if (computeBackend) computeBackend.disabled = true;
     try {
       const response = await fetch("/api/gpu-status?probe=1");
@@ -104,13 +108,13 @@
       if (computeBackend) computeBackend.disabled = false;
     }
   }
-  if (useRunpod) {
-    useRunpod.addEventListener("change", () => {
-      computeBackendWrap.hidden = !useRunpod.checked;
-      if (useRunpod.checked && computeBackend) computeBackend.value = "auto";
+  if (useGpuAcceleration) {
+    useGpuAcceleration.addEventListener("change", () => {
+      computeBackendWrap.hidden = !useGpuAcceleration.checked;
+      if (useGpuAcceleration.checked && computeBackend) computeBackend.value = "auto";
       else if (computeBackend) computeBackend.value = "cpu";
       applyComputeStatus();
-      probeRunpod();
+      probeCloudGpu();
     });
     computeBackend?.addEventListener("change", applyComputeStatus);
     computeBackendWrap.hidden = true;
@@ -129,7 +133,7 @@
       option.value = profile.id;
       option.textContent = profile.name + " · " + profile.image_count + " photo(s)"
         + (profile.local_model_ready ? " · local trained" : "")
-        + (profile.runpod_model_ready ? " · RunPod trained" : "");
+        + (profile.runpod_model_ready ? " · Cloud trained" : "");
       select.appendChild(option);
     });
     if (profiles.some(profile => profile.id === selected)) select.value = selected;
@@ -179,7 +183,7 @@
         const countTag = makeTag(profile.image_count + " photos", profile.image_count >= 5); top.appendChild(countTag);
         const badges = document.createElement("div"); badges.className = "badge-row";
         badges.append(makeTag("Local: " + (profile.local_model_ready ? "trained" : (profile.local_training_state || "not trained")), profile.local_model_ready));
-        badges.append(makeTag("RunPod: " + (profile.runpod_model_ready ? "trained" : (profile.runpod_training_state || "not trained")), profile.runpod_model_ready));
+        badges.append(makeTag("Cloud: " + (profile.runpod_model_ready ? "trained" : (profile.runpod_training_state || "not trained")), profile.runpod_model_ready));
         const actions = document.createElement("div"); actions.className = "profile-actions";
         const useButton = document.createElement("button"); useButton.type="button"; useButton.className="secondary-button"; useButton.textContent="Use for training";
         useButton.addEventListener("click", () => {
@@ -697,10 +701,11 @@
     try {
       globalBodyStatusCache=await readJson(await fetch("/api/global-body/status",{cache:"no-store"}));
       const info=globalBodyStatusCache;
-      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · RunPod: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
-      if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", RunPod: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
-      const selectedBackend=useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu";
-      const backendReady=selectedBackend==="runpod"?info.runpod_model_ready:info.local_model_ready;
+      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · Cloud GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
+      if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", cloud GPU: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
+      const requestedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
+      const selectedBackend=requestedBackend==="auto"?(computeAvailability?.auto_backend||"auto"):requestedBackend;
+      const backendReady=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?info.runpod_model_ready:(selectedBackend==="auto"?false:info.local_model_ready);
       const generationBodyCheckbox=$("#useGlobalBodyModel");
       if(generationBodyCheckbox){generationBodyCheckbox.disabled=!backendReady;if(!backendReady)generationBodyCheckbox.checked=false;}
       if(editBodyCheckbox){editBodyCheckbox.disabled=!backendReady;if(editBodyCheckbox.disabled)editBodyCheckbox.checked=false;}
@@ -714,7 +719,7 @@
     }
   }
   $("#trainingPhotoUseBodyModel")?.addEventListener("change",event=>{event.target.dataset.userTouched="1";});
-  useRunpod?.addEventListener("change",()=>loadGlobalBodyStatus(false));
+  useGpuAcceleration?.addEventListener("change",()=>loadGlobalBodyStatus(false));
   computeBackend?.addEventListener("change",()=>loadGlobalBodyStatus(false));
 
   const generateBodyDatasetButton=$("#generateBodyDatasetButton");
@@ -788,8 +793,9 @@
     if(!info||!info.profile_id){if(status)status.textContent="Could not load the shared body profile.";return;}
     if(Number(info.image_count||0)<5){if(status)status.textContent="Generate or add at least five body-type photos first.";return;}
     const formData=new FormData();formData.set("steps","800");formData.set("resolution","512");addComputeData(formData);
-    const selectedBackend=useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu";
-    const backend=selectedBackend==="runpod"?"runpod":(selectedBackend==="local_gpu"?"local":"cpu");
+    const requestedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
+    const selectedBackend=requestedBackend==="auto"?(computeAvailability?.auto_backend||"auto"):requestedBackend;
+    const backend=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?"runpod":(selectedBackend==="local_gpu"?"local":"cpu");
     button.disabled=true;
     try {
       const response=await readJson(await fetch("/api/face-profiles/"+info.profile_id+"/train",{method:"POST",body:formData}));
@@ -833,12 +839,13 @@
     if(!id){if(status)status.textContent="Create or select a face profile first.";return;}
     if(!profile||profile.image_count<5){if(status)status.textContent="Add at least 5 good photos to this profile before training.";return;}
     button.disabled=true;if(status)status.textContent="Checking selected compute backend and submitting the face training job…";
-    const backend=useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu";
+    const backend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
     try{
       const data=await readJson(await fetch("/api/face-profiles/"+id+"/train",{method:"POST",body:addComputeData(new FormData(trainForm))}));
       if(status)status.textContent=data.message||"Training started.";
       await refreshProfiles();
-      await pollTraining(id,backend==="runpod"?"runpod":"local");
+      const resolvedBackend=data.backend||backend;
+      await pollTraining(id,(resolvedBackend==="runpod"||resolvedBackend==="cloud_gpu")?"runpod":"local");
     }catch(error){if(status)status.textContent=error.message;}
     finally{button.disabled=false;await refreshProfiles().catch(()=>{});}
   });
@@ -881,7 +888,7 @@
     if(step){
       step.textContent=Number(data.total_steps)>0
         ? "Denoising step "+Number(data.current_step||0)+" of "+Number(data.total_steps)
-        : (data.backend==="runpod"?"RunPod GPU":"Local compute");
+        : (data.backend==="cloud_gpu"||data.backend==="runpod"?"Cloud GPU":"Local compute");
       if(data.status==="completed")step.textContent="All steps finished · Saved to your library";
       if(data.status==="failed")step.textContent="The task ended before completion.";
     }
@@ -920,7 +927,7 @@
     button.disabled=true;button.textContent="Generating image…";
     const progress=$("#imageProgress");if(progress)progress.hidden=false;
     updateGenerationProgress("image",{status:"starting",progress:0,stage:"starting",message:"Submitting image generation request…"});
-    if(status)status.textContent=useRunpod?.checked?"Sending this image task to the selected GPU worker…":"Loading the model and generating locally. CPU inference may be slow.";
+    if(status)status.textContent=useGpuAcceleration?.checked?"Sending this image task to the selected GPU worker…":"Loading the model and generating locally. CPU inference may be slow.";
     const preview=$("#resultPreview");const placeholder=$("#resultPlaceholder");const download=$("#downloadImage");const pill=$("#imageSavedPill");
     preview.hidden=true;placeholder.hidden=false;download.hidden=true;
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
@@ -947,7 +954,7 @@
     button.disabled=true;button.textContent="Generating video…";
     const progress=$("#videoProgress");if(progress)progress.hidden=false;
     updateGenerationProgress("video",{status:"starting",progress:0,stage:"starting",message:"Submitting video generation request…"});
-    if(status)status.textContent=useRunpod?.checked?"Sending this video task to the selected GPU worker…":"Checking local CUDA and video model files…";
+    if(status)status.textContent=useGpuAcceleration?.checked?"Sending this video task to the selected GPU worker…":"Checking local CUDA and video model files…";
     const preview=$("#videoPreview");const placeholder=$("#videoPlaceholder");const download=$("#downloadVideo");const pill=$("#videoSavedPill");
     preview.hidden=true;preview.removeAttribute("src");placeholder.hidden=false;download.hidden=true;
     const formData=addComputeData(new FormData(videoForm));formData.set("task_id",taskId);
@@ -1296,7 +1303,7 @@
     try{
       const data=await readJson(await fetch("/health"));
       const gpu=data.local_gpu||{};
-      if(gpuStatus)gpuStatus.textContent="GPU acceleration is off by default. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.runpod_configured?"RunPod is configured; toggle on to check cloud availability.":"RunPod is not configured; local CPU remains available.");
+      if(gpuStatus)gpuStatus.textContent="GPU acceleration is off by default. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"Cloud GPU worker is configured; toggle on to check availability.":"Cloud GPU worker is not configured; local CPU remains available.");
     }catch(error){if(gpuStatus)gpuStatus.textContent=error.message;}
   }
   loadStatus();

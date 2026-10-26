@@ -1,6 +1,6 @@
 """Pure compute-backend selection logic; hardware probing is performed by app.py."""
 
-BACKENDS = ("cpu", "local_gpu", "runpod")
+BACKENDS = ("cpu", "local_gpu", "cloud_gpu", "runpod")
 
 
 def select_compute_backend(
@@ -10,11 +10,11 @@ def select_compute_backend(
     local_gpu_available: bool,
     cloud_gpu_available: bool,
 ) -> str:
-    """Select CPU/local CUDA/RunPod after checking actual availability.
+    """Select CPU/local CUDA/cloud GPU after checking actual availability.
 
-    With acceleration disabled, always use CPU. In automatic mode, prefer a
-    local CUDA GPU, then a reachable cloud GPU, then CPU fallback. Explicit
-    unavailable selections fail clearly instead of silently routing elsewhere.
+    ``runpod`` remains a legacy alias for ``cloud_gpu``. When acceleration is
+    disabled, always use CPU. Automatic mode prefers a local CUDA GPU, then a
+    reachable cloud worker, then CPU fallback.
     """
     if not gpu_enabled:
         return "cpu"
@@ -24,13 +24,15 @@ def select_compute_backend(
         if local_gpu_available:
             return "local_gpu"
         if cloud_gpu_available:
-            return "runpod"
+            return "cloud_gpu"
         return "cpu"
 
+    if choice == "runpod":
+        choice = "cloud_gpu"
     if choice not in BACKENDS:
-        raise ValueError("Compute backend must be auto, cpu, local_gpu, or runpod.")
+        raise ValueError("Compute backend must be auto, cpu, local_gpu, or cloud_gpu.")
     if choice == "local_gpu" and not local_gpu_available:
         raise ValueError("System GPU is not available to PyTorch. Install compatible CUDA-enabled PyTorch and drivers.")
-    if choice == "runpod" and not cloud_gpu_available:
-        raise ValueError("RunPod GPU is not currently available. Check the worker URL/token and confirm the Pod is running.")
+    if choice == "cloud_gpu" and not cloud_gpu_available:
+        raise ValueError("Cloud GPU is not currently available. Check the worker URL/token and confirm the runtime is running.")
     return choice

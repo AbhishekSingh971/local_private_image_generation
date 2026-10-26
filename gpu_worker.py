@@ -1,7 +1,7 @@
-"""Authenticated HTTP worker intended to run on a user-created RunPod GPU Pod.
+"""Authenticated GPU worker for a user-managed Colab or cloud GPU runtime.
 
-Set REMOTE_API_TOKEN to a strong random secret. Expose port 8000 only over HTTPS
-through RunPod's Pod proxy. This worker does not create, start, or stop Pods.
+Set REMOTE_API_TOKEN to a strong random secret and expose port 8000 only through
+an HTTPS tunnel/proxy. This worker does not provision, purchase, or keep a runtime alive.
 """
 import hmac
 import io
@@ -192,7 +192,7 @@ def remote_health():
 @worker.post("/api/remote/train-profile")
 def remote_train_profile():
     if not torch.cuda.is_available():
-        return jsonify(error="This RunPod worker has no CUDA GPU attached."), 503
+        return jsonify(error="This cloud GPU worker has no CUDA GPU attached."), 503
     try:
         profile_id = validate_profile_id(request.form.get("profile_id", ""))
         name = (request.form.get("name") or "").strip()
@@ -333,7 +333,7 @@ def remote_generate():
     if use_global_body_model:
         body_profile = local_engine.ensure_global_body_profile()
         if not local_engine.profile_ready_for_backend(local_engine.GLOBAL_BODY_PROFILE_ID, "local"):
-            return jsonify(error="The shared body-type LoRA is not trained on this RunPod worker. Train it using the global body model first."), 400
+            return jsonify(error="The shared body-type LoRA is not trained on this cloud GPU worker. Train it using the global body model first."), 400
         prompt = local_engine.GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
     image = None
     pose_control_image = None
@@ -357,7 +357,7 @@ def remote_generate():
             return jsonify(error="Face-pose control image is not a valid image."), 400
         if image is None:
             return jsonify(error="Pose control requires a source reference image."), 400
-    _set_generation_progress(task_id, asset_type="image", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the image model and selected face on RunPod…")
+    _set_generation_progress(task_id, asset_type="image", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the image model and selected face on the cloud GPU…")
     if not local_engine.generation_lock.acquire(blocking=False):
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="busy", message="Another GPU generation is already running.")
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
@@ -366,7 +366,7 @@ def remote_generate():
         pipeline = local_engine._load_cpu_or_gpu_pipeline(
             mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model
         )
-        _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on RunPod…")
+        _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the cloud GPU…")
         def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
             if _remote_generation_cancelled(task_id):
                 raise RemoteGenerationCancelled("Generation cancelled by the user.")
@@ -376,7 +376,7 @@ def remote_generate():
             _set_generation_progress(
                 task_id, asset_type="image", status="running", progress=percent,
                 current_step=current, total_steps=scheduler_steps, stage="denoising",
-                message=f"Generating image on RunPod · step {current} of {scheduler_steps}",
+                message=f"Generating image on the cloud GPU · step {current} of {scheduler_steps}",
             )
             return callback_kwargs
         generator = torch.Generator(device="cuda").manual_seed(seed)
@@ -404,7 +404,7 @@ def remote_generate():
         output = io.BytesIO()
         result.save(output, format="PNG")
         output.seek(0)
-        _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on RunPod.")
+        _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on the cloud GPU.")
         return send_file(output, mimetype="image/png", download_name="generated.png")
     except RemoteGenerationCancelled:
         _set_generation_progress(
@@ -413,7 +413,7 @@ def remote_generate():
         )
         return jsonify(status="cancelled", task_id=task_id, message="Generation cancelled."), 409
     except Exception as exc:
-        _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="Image generation failed on RunPod.")
+        _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="Image generation failed on the cloud GPU.")
         message = str(exc)
         if "out of memory" in message.lower():
             message = "GPU out of memory. Try fewer steps or a smaller request."
@@ -452,7 +452,7 @@ def remote_generate_video():
         profile = get_profile(profile_id)
         if not profile or not profile.get("local_model_ready"):
             return jsonify(error="The selected face LoRA is not trained on this GPU worker."), 400
-    _set_generation_progress(task_id, asset_type="video", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the video model and selected face on RunPod…")
+    _set_generation_progress(task_id, asset_type="video", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the video model and selected face on the cloud GPU…")
     if not local_engine.generation_lock.acquire(blocking=False):
         _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="busy", message="Another GPU generation is already running.")
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
@@ -478,7 +478,7 @@ def remote_generate_video():
                 if profile_id:
                     VIDEO_PIPE.load_lora_weights(str(model_path(profile_id)))
                     VIDEO_ACTIVE_LORA = profile_id
-        _set_generation_progress(task_id, asset_type="video", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting video denoising steps on RunPod…")
+        _set_generation_progress(task_id, asset_type="video", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting video denoising steps on the cloud GPU…")
         def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
             scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
             current = min(step_index + 1, scheduler_steps)
@@ -486,7 +486,7 @@ def remote_generate_video():
             _set_generation_progress(
                 task_id, asset_type="video", status="running", progress=percent,
                 current_step=current, total_steps=scheduler_steps, stage="denoising",
-                message=f"Generating video on RunPod · step {current} of {scheduler_steps} · {frames} frames",
+                message=f"Generating video on the cloud GPU · step {current} of {scheduler_steps} · {frames} frames",
             )
             return callback_kwargs
         generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
@@ -500,10 +500,10 @@ def remote_generate_video():
         filename = f"gpu_{uuid.uuid4().hex}.mp4"
         video_path = local_engine.VIDEO_OUTPUT_DIR / filename
         export_to_video(result.frames[0], str(video_path), fps=8)
-        _set_generation_progress(task_id, asset_type="video", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Video generation completed on RunPod.")
+        _set_generation_progress(task_id, asset_type="video", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Video generation completed on the cloud GPU.")
         return send_file(video_path, mimetype="video/mp4", download_name="generated.mp4")
     except Exception as exc:
-        _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="Video generation failed on RunPod.")
+        _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="Video generation failed on the cloud GPU.")
         message = str(exc)
         if "out of memory" in message.lower():
             message = "GPU out of memory. Try fewer frames."
@@ -516,8 +516,8 @@ if __name__ == "__main__":
     if not os.environ.get("REMOTE_API_TOKEN", "").strip():
         raise SystemExit("Set REMOTE_API_TOKEN to a strong secret before starting the GPU worker.")
     if not torch.cuda.is_available():
-        raise SystemExit("CUDA is not available. Start a CUDA-enabled RunPod Pod and verify PyTorch sees the GPU.")
-    print(f"RunPod GPU worker starting on port {int(os.environ.get('GPU_WORKER_PORT', '8000'))}")
+        raise SystemExit("CUDA is not available. Start a CUDA-enabled cloud GPU Pod and verify PyTorch sees the GPU.")
+    print(f"cloud GPU worker starting on port {int(os.environ.get('GPU_WORKER_PORT', '8000'))}")
     worker.run(
         host="0.0.0.0",
         port=int(os.environ.get("GPU_WORKER_PORT", "8000")),
