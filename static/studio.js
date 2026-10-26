@@ -697,10 +697,10 @@
     try {
       globalBodyStatusCache=await readJson(await fetch("/api/global-body/status",{cache:"no-store"}));
       const info=globalBodyStatusCache;
-      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · RunPod: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
-      if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", RunPod: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
+      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · Cloud GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
+      if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", cloud GPU: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
       const selectedBackend=useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu";
-      const backendReady=selectedBackend==="runpod"?info.runpod_model_ready:info.local_model_ready;
+      const backendReady=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?info.runpod_model_ready:info.local_model_ready;
       const generationBodyCheckbox=$("#useGlobalBodyModel");
       if(generationBodyCheckbox){generationBodyCheckbox.disabled=!backendReady;if(!backendReady)generationBodyCheckbox.checked=false;}
       if(editBodyCheckbox){editBodyCheckbox.disabled=!backendReady;if(editBodyCheckbox.disabled)editBodyCheckbox.checked=false;}
@@ -789,7 +789,7 @@
     if(Number(info.image_count||0)<5){if(status)status.textContent="Generate or add at least five body-type photos first.";return;}
     const formData=new FormData();formData.set("steps","800");formData.set("resolution","512");addComputeData(formData);
     const selectedBackend=useRunpod?.checked?(computeBackend?.value||"cpu"):"cpu";
-    const backend=selectedBackend==="runpod"?"runpod":(selectedBackend==="local_gpu"?"local":"cpu");
+    const backend=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?"runpod":(selectedBackend==="local_gpu"?"local":"cpu");
     button.disabled=true;
     try {
       const response=await readJson(await fetch("/api/face-profiles/"+info.profile_id+"/train",{method:"POST",body:formData}));
@@ -881,7 +881,7 @@
     if(step){
       step.textContent=Number(data.total_steps)>0
         ? "Denoising step "+Number(data.current_step||0)+" of "+Number(data.total_steps)
-        : (data.backend==="runpod"?"RunPod GPU":"Local compute");
+        : (data.backend==="cloud_gpu"||data.backend==="runpod"?"Cloud GPU":"Local compute");
       if(data.status==="completed")step.textContent="All steps finished · Saved to your library";
       if(data.status==="failed")step.textContent="The task ended before completion.";
     }
