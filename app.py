@@ -368,6 +368,53 @@ def _parse_uploads(file_storages, *, max_files=30):
     return prepared
 
 
+OUTPUT_RESOLUTIONS = {"native": None, "hd": 1280, "1080p": 1920, "4k": 3840}
+
+def _parse_output_resolution(value: str) -> tuple[str, int | None]:
+    key = (value or "native").strip().lower()
+    if key not in OUTPUT_RESOLUTIONS:
+        raise ValueError("Choose Native, HD, Full HD 1080p, or 4K output.")
+    return key, OUTPUT_RESOLUTIONS[key]
+
+def _resize_image_file(path: Path, max_edge: int | None) -> None:
+    """Lanczos resize changes pixel dimensions, not generated detail."""
+    if not max_edge:
+        return
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        edge = max(image.size)
+        if edge >= max_edge:
+            return
+        ratio = max_edge / edge
+        size = (max(1, round(image.width * ratio)), max(1, round(image.height * ratio)))
+        image.resize(size, Image.Resampling.LANCZOS).save(path, format="PNG", optimize=True)
+
+def _resize_video_file(path: Path, max_edge: int | None) -> None:
+    """Resize video with bundled imageio-ffmpeg while preserving aspect ratio."""
+    if not max_edge:
+        return
+    import imageio_ffmpeg
+    executable = imageio_ffmpeg.get_ffmpeg_exe()
+    temp_path = path.with_name(path.stem + "_resized.mp4")
+    scale_filter = (
+        f"scale='if(gte(iw,ih),{max_edge},-2)':"
+        f"'if(gte(iw,ih),-2,{max_edge})':flags=lanczos"
+    )
+    try:
+        completed = subprocess.run(
+            [executable, "-y", "-i", str(path), "-vf", scale_filter,
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+             "-pix_fmt", "yuv420p", "-c:a", "copy", str(temp_path)],
+            capture_output=True, text=True, timeout=900, check=False,
+        )
+        if completed.returncode != 0 or not temp_path.is_file() or temp_path.stat().st_size == 0:
+            detail = (completed.stderr or "FFmpeg did not create a valid resized video.")[-1200:]
+            raise RuntimeError("Video resizing failed: " + detail)
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
 def _save_generated_png(image) -> str:
     filename = f"{uuid.uuid4().hex}.png"
     image.save(OUTPUT_DIR / filename, format="PNG", optimize=True)
@@ -2273,6 +2320,12 @@ def generate():
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
         image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
+        generation_profile = (request.form.get("generation_profile") or "custom").strip().lower()
+        if generation_profile not in {"preserve_reference", "photorealistic", "custom"}:
+            raise ValueError("Choose Preserve reference, Photorealistic, or Custom generation.")
+        output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
+        if generation_profile == "photorealistic":
+            image_preset = "photorealistic"
         width, height = resolve_image_dimensions(aspect_ratio)
         backend = _resolve_compute_backend(request.form)
         seed = resolve_generation_seed(request.form.get("seed"))
@@ -2340,6 +2393,8 @@ def generate():
             init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
+    if generation_profile == "preserve_reference" and init_image is None:
+        return jsonify(error="Upload a reference image to use Preserve reference mode."), 400
 
     _set_generation_progress(
         task_id, asset_type="image", backend=backend, status="running", progress=1,
@@ -2388,7 +2443,13 @@ def generate():
                 total_steps=steps, stage="saving", message="Cloud GPU generation finished; saving image to the library…",
             )
             filename = f"{uuid.uuid4().hex}.png"
-            (OUTPUT_DIR / filename).write_bytes(response.content)
+            output_path = OUTPUT_DIR / filename
+            output_path.write_bytes(response.content)
+            try:
+                _resize_image_file(output_path, output_max_edge)
+            except Exception as exc:
+                output_path.unlink(missing_ok=True)
+                return jsonify(error=f"Could not resize image to the selected output resolution: {exc}"), 500
             try:
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
@@ -2467,6 +2528,11 @@ def generate():
                 message = "The selected device ran out of memory. Try fewer steps or switch to another available compute backend."
             return jsonify(error=f"Generation failed: {message}"), 500
         filename = _save_generated_png(result)
+        try:
+            _resize_image_file(OUTPUT_DIR / filename, output_max_edge)
+        except Exception as exc:
+            (OUTPUT_DIR / filename).unlink(missing_ok=True)
+            return jsonify(error=f"Could not resize image to the selected output resolution: {exc}"), 500
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="running", progress=97,
             current_step=steps, total_steps=steps, stage="saving", message="Saving image bytes and generation details to the database…",
@@ -2510,6 +2576,7 @@ def generate_video():
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
+        output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
         backend = _resolve_compute_backend(request.form)
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
@@ -2562,7 +2629,13 @@ def generate_video():
                 total_steps=steps, stage="saving", message="Cloud GPU generation finished; saving video to the library…",
             )
             filename = f"{uuid.uuid4().hex}.mp4"
-            (VIDEO_OUTPUT_DIR / filename).write_bytes(response.content)
+            output_path = VIDEO_OUTPUT_DIR / filename
+            output_path.write_bytes(response.content)
+            try:
+                _resize_video_file(output_path, output_max_edge)
+            except Exception as exc:
+                output_path.unlink(missing_ok=True)
+                return jsonify(error=f"Could not resize video to the selected output resolution: {exc}"), 500
             try:
                 asset = _persist_generated_asset(
                     "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
@@ -2642,7 +2715,9 @@ def generate_video():
                 current_step=steps, total_steps=steps, stage="encoding", message="Encoding video frames into MP4…",
             )
             filename = f"{uuid.uuid4().hex}.mp4"
-            export_to_video(result.frames[0], str(VIDEO_OUTPUT_DIR / filename), fps=8)
+            output_path = VIDEO_OUTPUT_DIR / filename
+            export_to_video(result.frames[0], str(output_path), fps=8)
+            _resize_video_file(output_path, output_max_edge)
         except Exception as exc:
             _set_generation_progress(
                 task_id, asset_type="video", backend=backend, status="failed", progress=0,
