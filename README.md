@@ -73,7 +73,9 @@ Older versions stored all uploaded photos in `data/face_dataset/`. New named pro
 
 ## Google Colab GPU mode (free runtime, optional)
 
-You can run the same authenticated `gpu_worker.py` worker on a Colab GPU rather than a RunPod Pod. Start with [COLAB_GPU_SETUP.md](COLAB_GPU_SETUP.md) and [run_colab_worker.sh](run_colab_worker.sh). The setup uses the existing `/api/remote/*` endpoints, so the app can route image generation, video generation, face LoRA training, and background face-angle/expression jobs to the remote worker. Set `GPU_WORKER_URL` and `GPU_WORKER_TOKEN` in your local `.env`; these settings take precedence over legacy `RUNPOD_WORKER_URL` and `RUNPOD_WORKER_TOKEN`.
+You can experiment with the same authenticated `gpu_worker.py` worker from a Colab notebook. Start with [COLAB_GPU_SETUP.md](COLAB_GPU_SETUP.md) and [run_colab_worker.sh](run_colab_worker.sh). The app code supports the existing `/api/remote/*` endpoints, with `GPU_WORKER_URL` and `GPU_WORKER_TOKEN` taking precedence over legacy RunPod environment variables.
+
+**Important:** Google's current Colab FAQ warns that free managed runtimes may be terminated when used as a web service for content generation. This worker exposes an HTTP image/video-generation API, so free Colab is not a reliable supported deployment target; use this section for limited experimentation only and check Google's [current policy](https://research.google.com/colaboratory/faq.html) before using it.
 
 Colab's free runtime is temporary and may be disconnected or reclaim its GPU. A stable ngrok Dev Domain can keep the same HTTPS hostname, but it does not keep the Colab session or tunnel alive. Model weights and LoRA files on Colab storage can be lost when the runtime is reset; save trained adapters and important outputs to durable storage. Do not expose the worker without a strong `REMOTE_API_TOKEN` and HTTPS.
 
