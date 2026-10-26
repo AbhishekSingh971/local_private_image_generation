@@ -1,6 +1,6 @@
 # Private Face Studio
 
-A local-first Windows/Flask application for generating photos, training separate face-identity LoRAs, managing a persistent face library, and optionally using a RunPod NVIDIA GPU (such as an RTX 3090) for training and generation.
+A local-first Windows/Flask application for generating photos, training separate face-identity LoRAs, managing a persistent face library, and optionally using a remote CUDA GPU through the authenticated cloud worker API. RunPod remains supported; Google Colab can also host the temporary GPU worker.
 
 ## Features
 
@@ -17,9 +17,9 @@ A local-first Windows/Flask application for generating photos, training separate
 - A separate Training datasets page displays grouped source/angle photos over time and links back to the selected face profile for retraining and later image generation. Dataset groups can be renamed or deleted as a whole. Individual grouped photos can be previewed, relabeled, replaced by a local image, or deleted; local and saved-library photos can also be added to an existing group. Deleting a group/photo removes its training-dataset copy and metadata, but leaves the original generated-library image intact.
 - Reusable LoRA adapters stored under `models/face_loras/<profile-id>/`.
 - Face selector for photo and video generation.
-- A GPU acceleration toggle that is OFF by default: OFF forces local CPU; ON checks actual local CUDA and RunPod GPU availability.
-- A backend selector that appears when acceleration is on: supported local System GPU, connected RunPod GPU, and CPU fallback. Auto mode prefers a usable local CUDA GPU first, then the configured cloud GPU, then CPU if neither GPU is available.
-- Authenticated RunPod worker endpoints for face training, photo generation, video generation and status polling.
+- A GPU acceleration toggle that is OFF by default: OFF forces local CPU; ON checks actual local CUDA and connected cloud GPU availability.
+- A backend selector that appears when acceleration is on: supported local System GPU, connected cloud GPU (Colab or RunPod), and CPU fallback. Auto mode prefers a usable local CUDA GPU first, then the configured cloud GPU, then CPU if neither GPU is available.
+- Authenticated provider-neutral cloud worker endpoints for face training, photo generation, video generation and status polling.
 - Local output copies saved under `data/outputs/` and `data/videos/`.
 
 Use your own face or images of a person who has given permission. A LoRA adapter is not a guarantee of perfect identity consistency, and identity may drift between video frames.
@@ -65,11 +65,17 @@ The original Stable Diffusion 1.5 checkpoint often produces less convincing huma
 - Each training job reads only its selected profile's local working dataset and writes an adapter to models/face_loras/<profile-id>/. When PostgreSQL is configured, successful local training also writes a ZIP backup of the adapter to the database. A completed RunPod training job is similarly backed up to the database when the local app polls its final status.
 - Select the same face in the image or video panel. Include the displayed prompt token in your prompt, such as photo of face_a1b2c3d4 person, natural studio light.
 
-Local LoRA training requires a CUDA-enabled NVIDIA GPU. Your local Windows venv will normally report `torch.cuda.is_available() == False`; on that machine, turn on RunPod after you configure a running GPU worker.
+Local LoRA training requires a CUDA-enabled NVIDIA GPU. Your local Windows venv will normally report `torch.cuda.is_available() == False`; on that machine, select a connected cloud GPU worker (Colab or RunPod) after configuring it.
 
 ### Existing ungrouped dataset note
 
 Older versions stored all uploaded photos in `data/face_dataset/`. New named profiles use `data/face_profiles/<profile-id>/dataset/`. Review and manually copy any old images into the correct new profile through the UI; the app deliberately will not guess which person those old images belong to.
+
+## Google Colab GPU mode (free runtime, optional)
+
+You can run the same authenticated `gpu_worker.py` worker on a Colab GPU rather than a RunPod Pod. Start with [COLAB_GPU_SETUP.md](COLAB_GPU_SETUP.md) and [run_colab_worker.sh](run_colab_worker.sh). The setup uses the existing `/api/remote/*` endpoints, so the app can route image generation, video generation, face LoRA training, and background face-angle/expression jobs to the remote worker. Set `GPU_WORKER_URL` and `GPU_WORKER_TOKEN` in your local `.env`; these settings take precedence over legacy `RUNPOD_WORKER_URL` and `RUNPOD_WORKER_TOKEN`.
+
+Colab's free runtime is temporary and may be disconnected or reclaim its GPU. A stable ngrok Dev Domain can keep the same HTTPS hostname, but it does not keep the Colab session or tunnel alive. Model weights and LoRA files on Colab storage can be lost when the runtime is reset; save trained adapters and important outputs to durable storage. Do not expose the worker without a strong `REMOTE_API_TOKEN` and HTTPS.
 
 ## RunPod GPU mode (optional, OFF by default)
 
