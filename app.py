@@ -2348,12 +2348,12 @@ def generate():
         )
         return jsonify(error="Another generation is running. Please wait."), 429
     try:
-        if backend == "runpod":
+        if backend == "cloud_gpu":
             if profile_id and not profile.get("runpod_model_ready"):
-                return jsonify(error="This face profile has no RunPod-trained model. Select Train and choose RunPod GPU first."), 400
+                return jsonify(error="This face profile has no cloud-trained model. Train it using the cloud GPU first."), 400
             _set_generation_progress(
-                task_id, asset_type="image", backend="runpod", status="running", progress=2,
-                total_steps=steps, stage="connecting", message="Connecting to RunPod GPU worker…",
+                task_id, asset_type="image", backend="cloud_gpu", status="running", progress=2,
+                total_steps=steps, stage="connecting", message="Connecting to cloud GPU worker…",
             )
             data = {
                 "prompt": prompt, "negative_prompt": negative_prompt,
@@ -2375,29 +2375,29 @@ def generate():
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
-                    task_id, asset_type="image", backend="runpod", status="failed", progress=0,
+                    task_id, asset_type="image", backend="cloud_gpu", status="failed", progress=0,
                     total_steps=steps, stage="failed", message=str(exc),
                 )
                 return jsonify(error=str(exc)), 502
             _set_generation_progress(
-                task_id, asset_type="image", backend="runpod", status="running", progress=96,
-                total_steps=steps, stage="saving", message="GPU generation finished; saving image to the library…",
+                task_id, asset_type="image", backend="cloud_gpu", status="running", progress=96,
+                total_steps=steps, stage="saving", message="Cloud GPU generation finished; saving image to the library…",
             )
             filename = f"{uuid.uuid4().hex}.png"
             (OUTPUT_DIR / filename).write_bytes(response.content)
             try:
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
-                    profile=profile, backend="runpod", generation_mode="img2img" if init_image is not None else "txt2img",
+                    profile=profile, backend="cloud_gpu", generation_mode="img2img" if init_image is not None else "txt2img",
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
-                    task_id, asset_type="image", backend="runpod", status="failed", progress=96,
+                    task_id, asset_type="image", backend="cloud_gpu", status="failed", progress=96,
                     total_steps=steps, stage="failed", message=str(exc),
                 )
                 return jsonify(error=str(exc)), 503
             _set_generation_progress(
-                task_id, asset_type="image", backend="runpod", status="completed", progress=100,
+                task_id, asset_type="image", backend="cloud_gpu", status="completed", progress=100,
                 current_step=steps, total_steps=steps, stage="completed", message="Image saved to the library.",
             )
             return jsonify(
@@ -2405,7 +2405,7 @@ def generate():
                 asset_id=asset["id"], title=asset["title"],
                 mode="img2img" if init_image is not None else "txt2img",
                 face_profile=profile["name"] if profile else None,
-                backend="runpod", message="Generated on the selected RunPod GPU and saved to the database library.",
+                backend="cloud_gpu", message="Generated on the selected cloud GPU and saved to the database library.",
             )
 
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
@@ -2533,12 +2533,12 @@ def generate_video():
         )
         return jsonify(error="Another generation is running. Please wait."), 429
     try:
-        if backend == "runpod":
+        if backend == "cloud_gpu":
             if profile_id and not profile.get("runpod_model_ready"):
-                return jsonify(error="This face profile has no RunPod-trained model. Train it using RunPod GPU first."), 400
+                return jsonify(error="This face profile has no cloud-trained model. Train it using the cloud GPU first."), 400
             _set_generation_progress(
-                task_id, asset_type="video", backend="runpod", status="running", progress=2,
-                total_steps=steps, stage="connecting", message="Connecting to RunPod GPU worker…",
+                task_id, asset_type="video", backend="cloud_gpu", status="running", progress=2,
+                total_steps=steps, stage="connecting", message="Connecting to cloud GPU worker…",
             )
             data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames), "task_id": task_id}
             if profile_id:
@@ -2549,36 +2549,36 @@ def generate_video():
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
-                    task_id, asset_type="video", backend="runpod", status="failed", progress=0,
+                    task_id, asset_type="video", backend="cloud_gpu", status="failed", progress=0,
                     total_steps=steps, stage="failed", message=str(exc),
                 )
                 return jsonify(error=str(exc)), 502
             _set_generation_progress(
-                task_id, asset_type="video", backend="runpod", status="running", progress=96,
-                total_steps=steps, stage="saving", message="GPU generation finished; saving video to the library…",
+                task_id, asset_type="video", backend="cloud_gpu", status="running", progress=96,
+                total_steps=steps, stage="saving", message="Cloud GPU generation finished; saving video to the library…",
             )
             filename = f"{uuid.uuid4().hex}.mp4"
             (VIDEO_OUTPUT_DIR / filename).write_bytes(response.content)
             try:
                 asset = _persist_generated_asset(
                     "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
-                    profile=profile, backend="runpod", generation_mode="animatediff",
+                    profile=profile, backend="cloud_gpu", generation_mode="animatediff",
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
-                    task_id, asset_type="video", backend="runpod", status="failed", progress=96,
+                    task_id, asset_type="video", backend="cloud_gpu", status="failed", progress=96,
                     total_steps=steps, stage="failed", message=str(exc),
                 )
                 return jsonify(error=str(exc)), 503
             _set_generation_progress(
-                task_id, asset_type="video", backend="runpod", status="completed", progress=100,
+                task_id, asset_type="video", backend="cloud_gpu", status="completed", progress=100,
                 current_step=steps, total_steps=steps, stage="completed", message="Video saved to the library.",
             )
             return jsonify(
                 status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
                 asset_id=asset["id"], title=asset["title"],
-                face_profile=profile["name"] if profile else None, backend="runpod",
-                message="Generated on the selected RunPod GPU and saved to the database library.",
+                face_profile=profile["name"] if profile else None, backend="cloud_gpu",
+                message="Generated on the selected cloud GPU and saved to the database library.",
             )
 
         if backend != "local_gpu" or not torch.cuda.is_available():
