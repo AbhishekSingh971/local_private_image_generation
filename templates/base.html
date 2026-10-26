@@ -34,14 +34,14 @@
       <section class="compute-panel panel">
         <div class="compute-copy">
           <div class="eyebrow">Compute preference</div>
-          <label class="switchline" for="useGpuAcceleration"><input id="useGpuAcceleration" type="checkbox"> Enable GPU acceleration</label>
+          <label class="switchline" for="useGpuAcceleration"><input id="useGpuAcceleration" type="checkbox" checked> Enable GPU acceleration</label>
           <p class="tiny">Off uses local CPU. On checks usable System GPU and the configured cloud GPU before offering choices. If no GPU is reachable, generation will stop with an error instead of silently switching to CPU.</p>
         </div>
         <div class="compute-controls">
           <div class="pill" id="gpuModePill">LOCAL · CPU</div>
           <div id="computeBackendWrap" hidden><label for="computeBackend">Choose available device</label><select id="computeBackend"><option value="cpu">Local CPU (fallback)</option></select></div>
         </div>
-        <div id="gpuStatus" class="status" role="status" aria-live="polite">GPU acceleration is off. Requests use local CPU.</div>
+        <div id="gpuStatus" class="status" role="status" aria-live="polite">GPU acceleration is enabled. Checking available GPUs…</div>
       </section>
       {% if storage_status.connected and not storage_status.configured_postgresql %}
         <div class="note">DATABASE_URL is not set, so the app is using its local SQLite development database. Add DATABASE_URL to your private .env to make PostgreSQL the source of truth.</div>
@@ -63,6 +63,6 @@
       <footer class="app-footer">Private Face Studio · Keep your .env, face photos and model weights private. GPU routing does not start or stop cloud runtimes.</footer>
     </main>
   </div>
-  <script src="{{ url_for('static', filename='studio.js', v='20261027-01') }}" defer></script>
+  <script src="{{ url_for('static', filename='studio.js', v='20261027-02') }}" defer></script>
 </body>
 </html>
