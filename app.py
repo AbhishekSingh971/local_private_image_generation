@@ -934,8 +934,8 @@ def api_start_face_dataset_job(profile_id):
         image = images[0]
         if image.width < 128 or image.height < 128:
             return jsonify(error="The source image must be at least 128 × 128 pixels."), 400
-        if backend == "runpod" and not runpod_configured():
-            return jsonify(error="RunPod is not configured. Choose Local CPU or configure a running RunPod worker."), 400
+        if backend == "cloud_gpu" and not cloud_worker_configured():
+            return jsonify(error="Cloud GPU worker is not configured. Set GPU_WORKER_URL and GPU_WORKER_TOKEN first."), 400
 
         ensure_schema()
         if not get_face_profile_record(profile_id):
@@ -993,7 +993,7 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
     """Render one target using the configured local or RunPod backend."""
     backend = job["backend"]
     profile = get_profile(job["profile_id"])
-    lora_backend = "runpod" if backend == "runpod" else "local"
+    lora_backend = "runpod" if backend in {"runpod", "cloud_gpu"} else "local"
     use_face_lora = bool(profile and profile_ready_for_backend(job["profile_id"], lora_backend))
     profile_id_for_generation = job["profile_id"] if use_face_lora else None
     dataset_type = job["dataset_type"]
@@ -1038,7 +1038,7 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
             yaw, pitch, width, height, source_image=source_image
         )
 
-    if backend == "runpod":
+    if backend in {"runpod", "cloud_gpu"}:
         while not generation_lock.acquire(timeout=0.5):
             if _face_dataset_job_cancelled(job["id"]):
                 raise FaceDatasetJobCancelled("Cancellation requested while waiting for RunPod.")
@@ -1062,7 +1062,7 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
                 pose_control_image.save(pose_buffer, format="PNG")
                 pose_buffer.seek(0)
                 remote_files["pose_control_image"] = ("target-face-pose.png", pose_buffer, "image/png")
-            response = runpod_request(
+            response = cloud_worker_request(
                 "POST", "/api/remote/generate", data=data,
                 files=remote_files, timeout=(20, 600),
             )
@@ -1388,9 +1388,9 @@ def api_cancel_face_dataset_job(job_id):
             if event is not None:
                 event.set()
         current_task_id = job.get("current_task_id")
-        if current_task_id and job.get("backend") == "runpod":
+        if current_task_id and job.get("backend") in {"runpod", "cloud_gpu"}:
             try:
-                runpod_request("POST", f"/api/remote/generation-cancel/{current_task_id}", timeout=(5, 8))
+                cloud_worker_request("POST", f"/api/remote/generation-cancel/{current_task_id}", timeout=(5, 8))
             except Exception as exc:
                 app.logger.warning("RunPod cancel request could not be confirmed for dataset job %s: %s", job_id, str(exc)[:300])
         return jsonify(status="cancelling", job_id=job_id, message="Cancellation requested. Any completed images are preserved.")
@@ -1761,7 +1761,7 @@ def api_preview_face_photo_edit(photo_id):
             buffer = io.BytesIO()
             init_image.save(buffer, format="PNG")
             buffer.seek(0)
-            response = runpod_request(
+            response = cloud_worker_request(
                 "POST", "/api/remote/generate", data=data,
                 files={"image": ("training-photo.png", buffer, "image/png")}, timeout=(20, 600),
             )
@@ -2003,11 +2003,11 @@ def api_train_face_profile(profile_id):
             "System GPU or RunPod GPU. CPU fallback is not supported for this training workflow."
         )), 400
 
-    if backend == "runpod":
-        if not runpod_configured():
+    if backend == "cloud_gpu":
+        if not cloud_worker_configured():
             return jsonify(error=(
-                "RunPod is not configured. Set RUNPOD_WORKER_URL and RUNPOD_WORKER_TOKEN in .env, "
-                "deploy the worker on your RTX 3090 Pod, then restart the local app."
+                "Cloud GPU worker is not configured. Set GPU_WORKER_URL and GPU_WORKER_TOKEN in .env, "
+                "start the Colab/remote worker, then restart the local app."
             )), 400
         opened_files = []
         try:
@@ -2023,7 +2023,7 @@ def api_train_face_profile(profile_id):
                     opened_files.append(caption_handle)
                     files.append(("captions", (path.name, caption_handle, "text/plain")))
 
-            response = runpod_request(
+            response = cloud_worker_request(
                 "POST", "/api/remote/train-profile",
                 data={
                     "profile_id": profile_id,
@@ -2048,7 +2048,7 @@ def api_train_face_profile(profile_id):
             profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
             runpod_training_error=None, runpod_model_ready=False,
         )
-        return jsonify(status="running", backend="runpod", job_id=job_id, message="RunPod face training has started."), 202
+        return jsonify(status="running", backend="runpod", job_id=job_id, message="Cloud GPU face training has started."), 202
 
     if not torch.cuda.is_available():
         return jsonify(error=(
@@ -2087,20 +2087,22 @@ def api_face_train_status(profile_id):
             job=local_job,
             profile=get_profile(profile_id),
         )
+    if backend == "cloud_gpu":
+        backend = "runpod"
     if backend != "runpod":
-        return jsonify(error="Backend must be local or runpod."), 400
+        return jsonify(error="Backend must be local or cloud_gpu."), 400
     job_id = profile.get("runpod_training_job_id")
     if not job_id:
         return jsonify(status=profile.get("runpod_training_state", "not_trained"), profile=profile)
     try:
-        payload = runpod_request("GET", f"/api/remote/jobs/{job_id}", timeout=(10, 15)).json()
+        payload = cloud_worker_request("GET", f"/api/remote/jobs/{job_id}", timeout=(10, 15)).json()
     except RuntimeError as exc:
         return jsonify(error=str(exc), status="running", profile=profile), 502
     state = payload.get("status", "running")
     if state == "completed":
         if database_url_configured() and profile.get("runpod_training_state") != "completed":
             try:
-                model_response = runpod_request(
+                model_response = cloud_worker_request(
                     "GET", f"/api/remote/models/{profile_id}", timeout=(15, 120)
                 )
                 file_count = int(model_response.headers.get("X-Model-File-Count", "1"))
