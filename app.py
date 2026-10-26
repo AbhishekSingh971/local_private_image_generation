@@ -212,19 +212,18 @@ def _truthy(value) -> bool:
 def cloud_worker_configured() -> bool:
     """Whether a generic cloud worker is configured (new vars preferred)."""
     return bool(
-        (os.environ.get("GPU_WORKER_URL", "").strip() or os.environ.get("RUNPOD_WORKER_URL", "").strip())
-        and (os.environ.get("GPU_WORKER_TOKEN", "").strip() or os.environ.get("RUNPOD_WORKER_TOKEN", "").strip())
+        os.environ.get("GPU_WORKER_URL", "").strip()
+        and os.environ.get("REMOTE_API_TOKEN", "").strip()
     )
 
 
 def cloud_worker_url(path: str) -> str:
     base_url = (
         os.environ.get("GPU_WORKER_URL", "").strip()
-        or os.environ.get("RUNPOD_WORKER_URL", "").strip()
     ).rstrip("/")
     if not base_url:
         raise RuntimeError(
-            "Cloud GPU worker is not configured. Set GPU_WORKER_URL and GPU_WORKER_TOKEN in .env, "
+            "Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN in .env, "
             "then restart the app."
         )
     parsed = urlparse(base_url)
@@ -235,7 +234,7 @@ def cloud_worker_url(path: str) -> str:
 
 def cloud_worker_request(method: str, path: str, *, data=None, files=None, timeout=(15, 90)):
     url = cloud_worker_url(path)
-    token = os.environ.get("GPU_WORKER_TOKEN", "").strip() or os.environ.get("RUNPOD_WORKER_TOKEN", "").strip()
+    token = os.environ.get("REMOTE_API_TOKEN", "").strip()
     try:
         response = requests.request(
             method, url, headers={"Authorization": f"Bearer {token}"},
@@ -306,7 +305,7 @@ def _compute_options(probe_cloud: bool = False) -> dict:
     return {
         "local_gpu": local,
         "cloud_gpu": cloud,
-        "runpod_configured": configured,
+        "gpu_worker_configured": configured,
         "cloud_worker_configured": configured,
         "available_backends": available,
         "auto_backend": auto_backend,
@@ -330,6 +329,9 @@ def _resolve_compute_backend(form) -> str:
     local_available = bool(torch.cuda.is_available())
     probe_cloud = requested in {"runpod", "cloud_gpu"} or (requested == "auto" and not local_available)
     options = _compute_options(probe_cloud=probe_cloud)
+    if requested == "auto" and not (options["local_gpu"]["available"] or options["cloud_gpu"]["available"]):
+        detail = options.get("cloud_error") or "No usable local or cloud CUDA GPU was detected."
+        raise ValueError("GPU acceleration is enabled, but no GPU is available. " + detail)
     selected = select_compute_backend(
         True, requested,
         local_gpu_available=options["local_gpu"]["available"],
@@ -935,7 +937,7 @@ def api_start_face_dataset_job(profile_id):
         if image.width < 128 or image.height < 128:
             return jsonify(error="The source image must be at least 128 × 128 pixels."), 400
         if backend == "cloud_gpu" and not cloud_worker_configured():
-            return jsonify(error="Cloud GPU worker is not configured. Set GPU_WORKER_URL and GPU_WORKER_TOKEN first."), 400
+            return jsonify(error="Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN first."), 400
 
         ensure_schema()
         if not get_face_profile_record(profile_id):
@@ -1885,7 +1887,7 @@ def health():
         face_profiles=len(list_profiles()),
         video_model_loaded=video_pipe is not None,
         video_adapter_ready=(MOTION_DIR / "config.json").is_file(),
-        runpod_configured=runpod_configured(),
+        gpu_worker_configured=cloud_worker_configured(),
         local_gpu=_local_gpu_details(),
         note="GPU toggle off means local CPU. When on, available GPU backends can be selected.",
     )
@@ -1895,7 +1897,7 @@ def health():
 def gpu_status():
     probe_cloud = _truthy(request.args.get("probe"))
     result = _compute_options(probe_cloud=probe_cloud)
-    result["configured"] = result["runpod_configured"]
+    result["configured"] = result["gpu_worker_configured"]
     result["connected"] = result["cloud_gpu"]["available"]
     result["worker"] = {
         "cuda_available": result["cloud_gpu"]["available"],
@@ -2006,7 +2008,7 @@ def api_train_face_profile(profile_id):
     if backend == "cloud_gpu":
         if not cloud_worker_configured():
             return jsonify(error=(
-                "Cloud GPU worker is not configured. Set GPU_WORKER_URL and GPU_WORKER_TOKEN in .env, "
+                "Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN in .env, "
                 "start the Colab/remote worker, then restart the local app."
             )), 400
         opened_files = []
