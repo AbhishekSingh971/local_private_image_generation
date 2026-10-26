@@ -39,9 +39,9 @@
       const gpu = options.local_gpu || {};
       return "System GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
     }
-    if (key === "runpod") {
+    if (key === "cloud_gpu" || key === "runpod") {
       const gpu = options.cloud_gpu || {};
-      return "RunPod GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
+      return "Cloud GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
     }
     return "Local CPU (fallback)";
   }
@@ -53,16 +53,16 @@
       gpuStatus.textContent = "GPU acceleration is off. Requests use the local CPU; no cloud request is made.";
       return;
     }
-    const labels = {cpu:"CPU FALLBACK", local_gpu:"SYSTEM GPU", runpod:"CLOUD GPU"};
+    const labels = {cpu:"CPU FALLBACK", local_gpu:"SYSTEM GPU", cloud_gpu:"CLOUD GPU", runpod:"CLOUD GPU"};
     gpuModePill.textContent = labels[selected] || "GPU ENABLED";
     if (selected === "local_gpu") {
       gpuStatus.textContent = "Using detected local GPU: " + (computeAvailability?.local_gpu?.name || "CUDA GPU") + ". This avoids cloud compute charges.";
-    } else if (selected === "runpod") {
-      gpuStatus.textContent = "Using connected RunPod GPU: " + (computeAvailability?.cloud_gpu?.name || "RunPod GPU") + ". This task will be sent to your configured cloud worker.";
+    } else if (selected === "cloud_gpu" || selected === "runpod") {
+      gpuStatus.textContent = "Using connected cloud GPU: " + (computeAvailability?.cloud_gpu?.name || "Cloud GPU") + ". This task will be sent to your configured cloud worker.";
     } else {
       gpuStatus.textContent = "No supported GPU was selected; using local CPU. " + (computeAvailability?.cloud_error || "You can choose a GPU if one is available.");
     }
-    if (computeAvailability?.cloud_error && selected !== "runpod") gpuStatus.textContent += " RunPod unavailable: " + computeAvailability.cloud_error;
+    if (computeAvailability?.cloud_error && selected !== "runpod" && selected !== "cloud_gpu") gpuStatus.textContent += " Cloud GPU unavailable: " + computeAvailability.cloud_error;
     if (selected === "cpu" && !computeAvailability?.cloud_gpu?.available && !computeAvailability?.local_gpu?.available) {
       gpuStatus.textContent += " No CUDA GPU was detected locally or remotely.";
     }
@@ -129,7 +129,7 @@
       option.value = profile.id;
       option.textContent = profile.name + " · " + profile.image_count + " photo(s)"
         + (profile.local_model_ready ? " · local trained" : "")
-        + (profile.runpod_model_ready ? " · RunPod trained" : "");
+        + (profile.runpod_model_ready ? " · Cloud trained" : "");
       select.appendChild(option);
     });
     if (profiles.some(profile => profile.id === selected)) select.value = selected;
@@ -179,7 +179,7 @@
         const countTag = makeTag(profile.image_count + " photos", profile.image_count >= 5); top.appendChild(countTag);
         const badges = document.createElement("div"); badges.className = "badge-row";
         badges.append(makeTag("Local: " + (profile.local_model_ready ? "trained" : (profile.local_training_state || "not trained")), profile.local_model_ready));
-        badges.append(makeTag("RunPod: " + (profile.runpod_model_ready ? "trained" : (profile.runpod_training_state || "not trained")), profile.runpod_model_ready));
+        badges.append(makeTag("Cloud: " + (profile.runpod_model_ready ? "trained" : (profile.runpod_training_state || "not trained")), profile.runpod_model_ready));
         const actions = document.createElement("div"); actions.className = "profile-actions";
         const useButton = document.createElement("button"); useButton.type="button"; useButton.className="secondary-button"; useButton.textContent="Use for training";
         useButton.addEventListener("click", () => {
@@ -1296,7 +1296,7 @@
     try{
       const data=await readJson(await fetch("/health"));
       const gpu=data.local_gpu||{};
-      if(gpuStatus)gpuStatus.textContent="GPU acceleration is off by default. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.runpod_configured?"RunPod is configured; toggle on to check cloud availability.":"RunPod is not configured; local CPU remains available.");
+      if(gpuStatus)gpuStatus.textContent="GPU acceleration is off by default. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.runpod_configured?"Cloud GPU worker is configured; toggle on to check availability.":"Cloud GPU worker is not configured; local CPU remains available.");
     }catch(error){if(gpuStatus)gpuStatus.textContent=error.message;}
   }
   loadStatus();
