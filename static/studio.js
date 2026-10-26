@@ -117,8 +117,9 @@
       probeCloudGpu();
     });
     computeBackend?.addEventListener("change", applyComputeStatus);
-    computeBackendWrap.hidden = true;
+    computeBackendWrap.hidden = !useGpuAcceleration.checked;
     applyComputeStatus();
+    if (useGpuAcceleration.checked) probeCloudGpu();
   }
 
   function buildProfileOptions(select, firstLabel, selected) {
@@ -1303,7 +1304,7 @@
     try{
       const data=await readJson(await fetch("/health"));
       const gpu=data.local_gpu||{};
-      if(gpuStatus)gpuStatus.textContent="GPU acceleration is off by default. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"Cloud GPU worker is configured; toggle on to check availability.":"Cloud GPU worker is not configured; local CPU remains available.");
+      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"Cloud GPU worker is configured; enable GPU acceleration to check availability.":"Cloud GPU worker is not configured; local CPU remains available.");
     }catch(error){if(gpuStatus)gpuStatus.textContent=error.message;}
   }
   loadStatus();
