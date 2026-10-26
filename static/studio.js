@@ -857,7 +857,22 @@
     if(!file){preview.hidden=true;preview.removeAttribute("src");placeholder.hidden=false;return;}
     preview.src=URL.createObjectURL(file);preview.hidden=false;placeholder.hidden=true;
   });
-  $("#strength")?.addEventListener("input",event=>{const label=$("#strengthValue");if(label)label.textContent=Number(event.target.value).toFixed(2);});
+  const strengthSlider = $("#strength");
+  const strengthNumber = $("#strengthNumber");
+  function syncStrength(source, target) {
+    if (!source || !target) return;
+    const parsed = Number(source.value);
+    if (!Number.isFinite(parsed)) return;
+    const value = Math.min(0.95, Math.max(0.20, Math.round(parsed * 100) / 100));
+    target.value = value.toFixed(2);
+    if (source !== strengthSlider && strengthSlider) strengthSlider.value = String(value);
+    if (source !== strengthNumber && strengthNumber) strengthNumber.value = value.toFixed(2);
+  }
+  strengthSlider?.addEventListener("input", () => syncStrength(strengthSlider, strengthNumber));
+  strengthNumber?.addEventListener("input", () => {
+    if (strengthNumber.value !== "") syncStrength(strengthNumber, strengthSlider);
+  });
+  strengthNumber?.addEventListener("change", () => syncStrength(strengthNumber, strengthSlider));
 
   function newGenerationTaskId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
