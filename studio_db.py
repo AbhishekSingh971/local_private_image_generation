@@ -595,8 +595,9 @@ def create_face_dataset_job(
 ) -> dict:
     if dataset_type not in {"face_angles", "expressions"}:
         raise ValueError("Unsupported face dataset generation type.")
-    if backend not in {"cpu", "local_gpu", "runpod"}:
+    if backend not in {"cpu", "local_gpu", "runpod", "cloud_gpu"}:
         raise ValueError("Unsupported generation backend.")
+    # Accept the generic cloud_gpu name alongside the legacy runpod alias.
     if not 1 <= int(expected_count) <= 20:
         raise ValueError("Expected target count must be between 1 and 20.")
     normalized_targets = [item for item in (target_manifest or []) if isinstance(item, dict)]
