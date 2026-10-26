@@ -160,3 +160,31 @@ The worker stores the uploaded face datasets and generated LoRAs on the Pod's fi
 - **GPU worker shows not configured:** fill `GPU_WORKER_URL` and `REMOTE_API_TOKEN` in `.env` (use the same token on the worker), then restart the app.
 - **Cloud GPU health request fails:** check the worker runtime, exposed HTTP port 8000, HTTPS URL, shared `REMOTE_API_TOKEN`, and worker logs.
 - **Model download fails:** review model terms and access requirements and check any required Hugging Face token.
+
+
+## Face-angle dataset: identity-first training strategy
+
+The nine-angle workflow is pose-guided synthesis, not literal rotation of a 2D photograph. A single image contains no true texture for the hidden side of the nose, cheek, ear, or hair; rotating a 2D face mesh can estimate target geometry but cannot recover unseen pixels. The application combines a rotated MediaPipe landmark map, image-to-image conditioning, and IP-Adapter / profile LoRA identity guidance when available. Pose estimates are approximate; every generated view must be validated before it is trusted as training data.
+
+### Why the previous samples became distorted
+
+- The old middle-angle targets used img2img strength 0.62, three-quarter targets 0.74, and profile targets 0.82. Higher img2img strength injects more noise and allows more of the original face to be redrawn, so identity can drift and eyes, lips, and makeup can become corrupted.
+- ControlNet strength 1.35 could overpower image/identity conditioning, especially because the rotated MediaPipe mesh is a pseudo-3D estimate rather than a complete 3D face reconstruction.
+- Pose validation checks estimated yaw/pitch, not whether the person still looks like the same identity. A pose-matched but distorted face must still be rejected manually.
+
+### Mitigations committed
+
+- Reduced img2img strength for middle angles to 0.38, three-quarter views to 0.46, side profiles to 0.52, and up/down views to 0.38.
+- Reduced default face-pose ControlNet conditioning scale to 0.75 (override with `FACE_POSE_CONTROLNET_SCALE`).
+- Increased default full-face IP-Adapter scale from 0.45 to 0.65 (override with `FACE_IDENTITY_IP_ADAPTER_SCALE`).
+- Kept pose validation and review states. These changes reduce the chance of distortion but cannot guarantee perfect novel-view synthesis from one photo.
+
+### Research comparison and recommended long-term design
+
+1. **Identity LoRA / DreamBooth** learns a person-specific appearance token from several real, diverse views. It is not itself a 3D rotation engine; with only one frontal image it has no real examples of the hidden side. The original DreamBooth method uses few-shot subject images plus prior-preservation to reduce overfitting ([paper](https://arxiv.org/abs/2208.12242)).
+2. **IP-Adapter / face-ID conditioning** supplies identity features at inference time. Pair it with pose control; neither prompt text nor identity embeddings alone enforce accurate geometry.
+3. **3D face reconstruction / morphable models** estimate shape and pose, then render a proxy face at the target yaw/pitch. A 3D mesh provides more coherent geometry than rotating a 2D landmark cloud, but unseen skin/hair texture still needs generative completion.
+4. **Multi-view novel-view synthesis** methods such as CAfCA report strong results from as few as three casual views, using a learned volumetric prior plus sparse per-person fitting ([Google Research summary](https://research.google/pubs/cafca-high-quality-novel-view-synthesis-of-expressive-faces-from-casual-few-shot-captures/)). This is a better target architecture if users can supply 3+ real views.
+5. **MediaPipe landmarks and transformation matrices** are useful for estimating pose and driving effects, but the 478 landmarks and matrix are not a complete identity-preserving 3D texture model ([documentation](https://developers.google.com/edge/mediapipe/solutions/vision/face_landmarker)).
+
+Recommended next engineering stage: add a dedicated 3D face reconstruction stage (for example, a FLAME/3DMM-based estimator), render target-pose geometry, then run low-strength diffusion with face-ID conditioning. Train the identity LoRA only on real source images plus generated views that pass both pose checks and a face-identity similarity check. Do not automatically train on every generated output or photos marked **Needs review**. A single image cannot uniquely determine the true unseen side of a face; for reliable nine-angle identity, ask for multiple real views whenever possible.
