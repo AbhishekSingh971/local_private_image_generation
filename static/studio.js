@@ -934,6 +934,23 @@
     }
   }
 
+  const generationProfile = $("#generationProfile");
+  const strengthControl = $("#strength");
+  const strengthNumber = $("#strengthNumber");
+  const stepsControl = $("#steps");
+  generationProfile?.addEventListener("change", () => {
+    if (generationProfile.value === "preserve_reference") {
+      if (strengthControl) strengthControl.value = "0.30";
+      if (strengthNumber) strengthNumber.value = "0.30";
+      if (stepsControl) stepsControl.value = "25";
+    } else if (generationProfile.value === "photorealistic") {
+      if (strengthControl) strengthControl.value = "0.45";
+      if (strengthNumber) strengthNumber.value = "0.45";
+      if (stepsControl) stepsControl.value = "25";
+      const preset = $("#imagePreset");
+      if (preset) preset.value = "photorealistic";
+    }
+  });
   const generationForm = $("#generationForm");
   generationForm?.addEventListener("submit",async event=>{
     event.preventDefault();
