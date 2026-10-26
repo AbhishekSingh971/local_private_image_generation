@@ -1392,7 +1392,7 @@ def api_cancel_face_dataset_job(job_id):
             try:
                 cloud_worker_request("POST", f"/api/remote/generation-cancel/{current_task_id}", timeout=(5, 8))
             except Exception as exc:
-                app.logger.warning("RunPod cancel request could not be confirmed for dataset job %s: %s", job_id, str(exc)[:300])
+                app.logger.warning("Cloud GPU cancel request could not be confirmed for dataset job %s: %s", job_id, str(exc)[:300])
         return jsonify(status="cancelling", job_id=job_id, message="Cancellation requested. Any completed images are preserved.")
     except Exception:
         app.logger.exception("Could not request cancellation for face dataset job")
@@ -1768,7 +1768,7 @@ def api_preview_face_photo_edit(photo_id):
             image_data = response.content
         else:
             if backend == "local_gpu" and not torch.cuda.is_available():
-                return jsonify(error="System GPU is unavailable in this Python environment. Select RunPod or local CPU."), 400
+                return jsonify(error="System GPU is unavailable in this Python environment. select the cloud GPU or local CPU."), 400
             pipeline = _load_cpu_or_gpu_pipeline(
                 "img2img", profile_id, backend, use_global_body_model=use_global_body_model
             )
@@ -1797,13 +1797,13 @@ def api_preview_face_photo_edit(photo_id):
         app.logger.warning("Photo edit preview failed: %s", str(exc)[:500])
         message = str(exc)
         if "out of memory" in message.lower() or "memory" in message.lower():
-            message = "The selected device ran out of memory. Try fewer steps or local CPU/RunPod."
+            message = "The selected device ran out of memory. Try fewer steps or local CPU or the cloud GPU."
         return jsonify(error="Preview generation failed: " + message), 502
     except Exception as exc:
         app.logger.exception("Unexpected photo edit preview failure")
         message = str(exc)
         if "out of memory" in message.lower() or "memory" in message.lower():
-            message = "The selected device ran out of memory. Try fewer steps or local CPU/RunPod."
+            message = "The selected device ran out of memory. Try fewer steps or local CPU or the cloud GPU."
         return jsonify(error="Preview generation failed: " + message), 500
     finally:
         generation_lock.release()
@@ -2000,7 +2000,7 @@ def api_train_face_profile(profile_id):
     if backend == "cpu":
         return jsonify(error=(
             "Face LoRA training needs a GPU. Turn on Enable GPU acceleration, then select an available "
-            "System GPU or RunPod GPU. CPU fallback is not supported for this training workflow."
+            "System GPU or cloud GPU. CPU fallback is not supported for this training workflow."
         )), 400
 
     if backend == "cloud_gpu":
@@ -2043,7 +2043,7 @@ def api_train_face_profile(profile_id):
                 handle.close()
         job_id = job.get("job_id")
         if not job_id:
-            return jsonify(error="RunPod worker did not return a training job ID."), 502
+            return jsonify(error="Cloud GPU worker did not return a training job ID."), 502
         update_profile(
             profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
             runpod_training_error=None, runpod_model_ready=False,
@@ -2053,7 +2053,7 @@ def api_train_face_profile(profile_id):
     if not torch.cuda.is_available():
         return jsonify(error=(
             "System GPU was selected, but this Python environment cannot access a CUDA GPU. "
-            "Choose RunPod GPU or install a compatible CUDA-enabled PyTorch build."
+            "Choose cloud GPU or install a compatible CUDA-enabled PyTorch build."
         )), 400
 
     job_id = uuid.uuid4().hex
@@ -2108,7 +2108,7 @@ def api_face_train_status(profile_id):
                 file_count = int(model_response.headers.get("X-Model-File-Count", "1"))
                 _persist_face_model_bundle(profile_id, "runpod", model_response.content, file_count)
             except Exception as exc:
-                app.logger.warning("Could not back up RunPod LoRA bundle to PostgreSQL: %s", type(exc).__name__)
+                app.logger.warning("Could not back up cloud GPU LoRA bundle to PostgreSQL: %s", type(exc).__name__)
         update_profile(
             profile_id, runpod_training_state="completed", runpod_training_error=None,
             runpod_model_ready=True,
@@ -2116,7 +2116,7 @@ def api_face_train_status(profile_id):
     elif state == "failed":
         update_profile(
             profile_id, runpod_training_state="failed",
-            runpod_training_error=(payload.get("error") or "RunPod training failed")[-3500:],
+            runpod_training_error=(payload.get("error") or "Cloud GPU training failed")[-3500:],
             runpod_model_ready=False,
         )
     updated_profile = get_profile(profile_id)
@@ -2242,7 +2242,7 @@ def _load_cpu_or_gpu_pipeline(
             if profile_id:
                 identity_path = model_path(profile_id)
                 if not profile_ready_for_backend(profile_id, "local") or not identity_path.is_dir():
-                    raise ValueError("This face profile has no locally trained LoRA. Train it locally or turn on RunPod.")
+                    raise ValueError("This face profile has no locally trained LoRA. Train it locally or turn on GPU acceleration and select the cloud GPU.")
                 pipe.load_lora_weights(str(identity_path), adapter_name="face_identity")
                 adapter_names.append("face_identity")
                 adapter_weights.append(1.0)
@@ -2586,7 +2586,7 @@ def generate_video():
         if backend != "local_gpu" or not torch.cuda.is_available():
             return jsonify(error="System GPU is not available to this Python environment. Select the cloud GPU."), 400
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
-            return jsonify(error="This face profile has no locally trained LoRA. Train it using the System GPU or select RunPod GPU."), 400
+            return jsonify(error="This face profile has no locally trained LoRA. Train it using the System GPU or select the cloud GPU."), 400
         if not (MOTION_DIR / "config.json").is_file():
             return jsonify(error="AnimateDiff motion adapter is missing. Run download_video_model.bat first."), 400
         try:
