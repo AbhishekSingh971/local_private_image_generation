@@ -1172,7 +1172,10 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
         }
         if pose_control_image is not None:
             pipeline_kwargs["control_image"] = pose_control_image
-            pipeline_kwargs["controlnet_conditioning_scale"] = 1.35
+            # Keep geometry guidance moderate so it does not overpower source identity.
+            pipeline_kwargs["controlnet_conditioning_scale"] = float(
+                os.environ.get("FACE_POSE_CONTROLNET_SCALE", "0.75")
+            )
             if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
                 pipeline_kwargs["ip_adapter_image"] = init_image
         result = pipeline(**pipeline_kwargs).images[0].convert("RGB")
@@ -2266,7 +2269,7 @@ def _load_cpu_or_gpu_pipeline(
                             subfolder="models",
                             weight_name=os.environ.get("FACE_IDENTITY_IP_ADAPTER_FILE", "ip-adapter-full-face_sd15.bin").strip() or "ip-adapter-full-face_sd15.bin",
                         )
-                        adapter_scale = float(os.environ.get("FACE_IDENTITY_IP_ADAPTER_SCALE", "0.45"))
+                        adapter_scale = float(os.environ.get("FACE_IDENTITY_IP_ADAPTER_SCALE", "0.65"))
                         loaded.set_ip_adapter_scale(max(0.0, min(1.0, adapter_scale)))
                         loaded._private_face_ip_adapter_loaded = True
                     except Exception as adapter_exc:
