@@ -703,8 +703,9 @@
       const info=globalBodyStatusCache;
       if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · Cloud GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
       if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", cloud GPU: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
-      const selectedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"cpu"):"cpu";
-      const backendReady=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?info.runpod_model_ready:info.local_model_ready;
+      const requestedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
+      const selectedBackend=requestedBackend==="auto"?(computeAvailability?.auto_backend||"auto"):requestedBackend;
+      const backendReady=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?info.runpod_model_ready:(selectedBackend==="auto"?false:info.local_model_ready);
       const generationBodyCheckbox=$("#useGlobalBodyModel");
       if(generationBodyCheckbox){generationBodyCheckbox.disabled=!backendReady;if(!backendReady)generationBodyCheckbox.checked=false;}
       if(editBodyCheckbox){editBodyCheckbox.disabled=!backendReady;if(editBodyCheckbox.disabled)editBodyCheckbox.checked=false;}
@@ -792,7 +793,8 @@
     if(!info||!info.profile_id){if(status)status.textContent="Could not load the shared body profile.";return;}
     if(Number(info.image_count||0)<5){if(status)status.textContent="Generate or add at least five body-type photos first.";return;}
     const formData=new FormData();formData.set("steps","800");formData.set("resolution","512");addComputeData(formData);
-    const selectedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"cpu"):"cpu";
+    const requestedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
+    const selectedBackend=requestedBackend==="auto"?(computeAvailability?.auto_backend||"auto"):requestedBackend;
     const backend=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?"runpod":(selectedBackend==="local_gpu"?"local":"cpu");
     button.disabled=true;
     try {
@@ -837,12 +839,13 @@
     if(!id){if(status)status.textContent="Create or select a face profile first.";return;}
     if(!profile||profile.image_count<5){if(status)status.textContent="Add at least 5 good photos to this profile before training.";return;}
     button.disabled=true;if(status)status.textContent="Checking selected compute backend and submitting the face training job…";
-    const backend=useGpuAcceleration?.checked?(computeBackend?.value||"cpu"):"cpu";
+    const backend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
     try{
       const data=await readJson(await fetch("/api/face-profiles/"+id+"/train",{method:"POST",body:addComputeData(new FormData(trainForm))}));
       if(status)status.textContent=data.message||"Training started.";
       await refreshProfiles();
-      await pollTraining(id,backend==="runpod"?"runpod":"local");
+      const resolvedBackend=data.backend||backend;
+      await pollTraining(id,(resolvedBackend==="runpod"||resolvedBackend==="cloud_gpu")?"runpod":"local");
     }catch(error){if(status)status.textContent=error.message;}
     finally{button.disabled=false;await refreshProfiles().catch(()=>{});}
   });
