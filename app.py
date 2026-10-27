@@ -1967,34 +1967,45 @@ def gpu_status():
 
 @app.get("/api/face-profiles")
 def api_face_profiles():
-    # Run the legacy migration first, then read directly from the configured database.
-    # This makes the database the source of truth for the face library and avoids
-    # returning an empty/stale profile list if the compatibility layer is out of sync.
-    try:
-        profiles = list_profiles()
-        if database_url_configured():
+    profiles = []
+    if database_url_configured():
+        # Read the configured database even if a legacy-cache migration has a problem.
+        # A migration/cache error must not hide profiles that already exist in Supabase.
+        try:
+            list_profiles()
+        except Exception:
+            app.logger.exception("Legacy profile migration/cache read failed; continuing with database records")
+        try:
             database_profiles = list_face_profile_records()
-            by_id = {profile["id"]: profile for profile in profiles}
+            cached_profiles = {}
+            try:
+                cached_profiles = {profile["id"]: profile for profile in list_profiles()}
+            except Exception:
+                app.logger.exception("Could not enrich database profiles from the compatibility layer")
             for record in database_profiles:
                 if record.get("id") == GLOBAL_BODY_PROFILE_ID:
                     continue
-                existing = by_id.get(record["id"], {})
-                by_id[record["id"]] = {
+                existing = cached_profiles.get(record["id"], {})
+                profiles.append({
                     **record,
                     **existing,
                     "image_count": int(record.get("image_count", 0) or 0),
-                }
-            profiles = sorted(
-                by_id.values(),
-                key=lambda item: item.get("created_at", ""),
-            )
-        response = jsonify(profiles=profiles, count=len(profiles))
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        return response
-    except Exception:
-        app.logger.exception("Could not load face profiles from the configured database")
-        return jsonify(error="Could not load face profiles. Check the database connection and server logs."), 503
+                })
+            profiles.sort(key=lambda item: item.get("created_at", ""))
+        except Exception:
+            app.logger.exception("Could not read face profiles from the configured database")
+            return jsonify(error="Could not load face profiles. Check the database connection and server logs."), 503
+    else:
+        try:
+            profiles = list_profiles()
+        except Exception:
+            app.logger.exception("Could not load local face profiles")
+            return jsonify(error="Could not load face profiles. Check the application logs."), 503
+
+    response = jsonify(profiles=profiles, count=len(profiles))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.post("/api/face-profiles")
