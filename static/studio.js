@@ -62,7 +62,7 @@
     } else if (selected === "cloud_gpu" || selected === "runpod") {
       gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected cloud GPU: " + (computeAvailability?.cloud_gpu?.name || "Cloud GPU") + ". Requests are sent securely from the app to your configured worker.";
     } else if (requested === "auto") {
-      gpuStatus.textContent = "GPU acceleration is ON, but no usable GPU is currently available. Generation will not silently fall back to CPU. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
+      gpuStatus.textContent = "GPU acceleration is ON, but no usable GPU is available. Auto mode is falling back to local CPU; image generation may be very slow. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
     } else {
       gpuStatus.textContent = "CPU fallback selected explicitly. Generation will run on the local CPU, not a GPU.";
     }
@@ -969,7 +969,6 @@
 
   const generationProfile = $("#generationProfile");
   const strengthControl = $("#strength");
-  const strengthNumber = $("#strengthNumber");
   const stepsControl = $("#steps");
   generationProfile?.addEventListener("change", () => {
     if (generationProfile.value === "preserve_reference") {
