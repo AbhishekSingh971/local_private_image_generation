@@ -24,17 +24,24 @@ A local-first Windows/Flask application for generating photos, training separate
 
 Use your own face or images of a person who has given permission. A LoRA adapter is not a guarantee of perfect identity consistency, and identity may drift between video frames.
 
-## PostgreSQL configuration
+## Supabase PostgreSQL configuration
 
-Create a PostgreSQL database before starting the app. Copy .env.example to .env if you do not already have a private .env, then set DATABASE_URL to the connection URI for your database. Supported examples are postgresql://USER:PASSWORD@HOST:5432/DATABASE and a provider URL that includes its required SSL options. The app normalizes the standard postgresql:// format to the psycopg 3 driver. If the password contains reserved URL characters, URL-encode them.
+Use Supabase as the PostgreSQL provider for persistent face profiles, face-training photos, trained LoRA ZIP backups, and generated image/video media. The application already reads the database connection from the `DATABASE_URL` environment variable, so changing the private `.env` value switches future database operations to Supabase; no Supabase SDK or separate API key is required.
 
-Keep the real connection URL only in your local .env; never commit it or paste its credentials into an issue. The application creates the required tables when it connects. When DATABASE_URL is configured, it imports existing profiles and face photos from the previous JSON/filesystem layout into PostgreSQL the first time the profile store is read. The original files are left in place as a working cache.
+1. Create a Supabase project and open **Connect** in the project dashboard.
+2. Copy the PostgreSQL connection URI. For a local Flask app, use the **Session pooler** URI if the direct database host is not reachable from your network; otherwise the direct URI is also supported.
+3. Put the URI in your private `.env` file as `DATABASE_URL=...`. Keep the password private and URL-encode reserved characters in it. Keep the required `sslmode=require` option.
+4. Restart the Flask app and check the app's database status. The app creates its tables in the configured Supabase database when it first connects.
+
+The expected URI shape is provider-specific, so copy the exact URI from the Supabase dashboard rather than typing the host or password manually. Do not commit `.env`, paste its credentials into issues, or use the Supabase `service_role` key as a database password.
+
+**Important:** changing `DATABASE_URL` does not automatically copy old records from Neon into Supabase. New writes will go to Supabase after the app restarts; existing Neon data remains in Neon unless you explicitly migrate it. The app can import its supported legacy local JSON/filesystem data on first access, but that is not a Neon-to-Supabase database migration.
 
 On first library access, existing generated files already present under `data/outputs/` and `data/videos/` are imported into the library when missing from the database, so older locally generated files can appear alongside new results. Their old prompts may not be recoverable, so those records use an imported/unknown metadata label.
 
-The database stores generated image/video file bytes in PostgreSQL binary columns, as well as media metadata. Profile photo bytes are stored in PostgreSQL and mirrored as working files for the training script. Trained LoRA model folders remain on the compute host so Diffusers can load them directly, and ZIP backups are saved in PostgreSQL after successful training when DATABASE_URL is configured. Binary storage can increase database size quickly, so monitor database storage and backups.
+The database stores generated image/video file bytes, profile photo bytes, and trained LoRA ZIP backups in PostgreSQL binary columns, in addition to metadata. Local LoRA model folders remain on the compute host so Diffusers can load them directly. **Supabase free-tier database storage is limited, and generated media can consume it quickly**; monitor usage and keep local backups. If the library grows substantially, consider storing large media files in Supabase Storage and keeping only their metadata in PostgreSQL as a separate future change.
 
-If DATABASE_URL is empty, the app shows a storage warning and uses a local SQLite development database for media instead; this is not the intended PostgreSQL setup for persistent use.
+If `DATABASE_URL` is empty, the app uses a local SQLite development database instead; this is not the intended persistent setup.
 
 ## Local Windows setup
 
