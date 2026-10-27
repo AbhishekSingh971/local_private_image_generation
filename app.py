@@ -335,9 +335,8 @@ def _resolve_compute_backend(form) -> str:
     local_available = bool(torch.cuda.is_available())
     probe_cloud = requested in {"runpod", "cloud_gpu"} or (requested == "auto" and not local_available)
     options = _compute_options(probe_cloud=probe_cloud)
-    if requested == "auto" and not (options["local_gpu"]["available"] or options["cloud_gpu"]["available"]):
-        detail = options.get("cloud_error") or "No usable local or cloud CUDA GPU was detected."
-        raise ValueError("GPU acceleration is enabled, but no GPU is available. " + detail)
+    # Auto mode remains usable when no GPU/worker is configured: route to CPU.
+    # Explicit local_gpu/cloud_gpu choices still fail clearly when unavailable.
     selected = select_compute_backend(
         True, requested,
         local_gpu_available=options["local_gpu"]["available"],
