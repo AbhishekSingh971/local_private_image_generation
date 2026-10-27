@@ -56,6 +56,7 @@ from face_profiles import (
 )
 from pose_validation import build_pose_control_image, estimate_head_pose, validate_pose_target
 from training_generation import targets_for_dataset_type
+from image_quality import assess_image_quality
 
 from studio_db import (
     count_assets,
@@ -1267,6 +1268,14 @@ def _run_face_dataset_generation_job(job_id: str) -> None:
                 else:
                     validation_status = "needs_review"
                     validation_message = source_pose_error or actual_pose_error or "Could not verify that the expression output preserved the source head pose."
+
+                quality_report = assess_image_quality(result)
+                if quality_report.status != "technical_checks_passed":
+                    validation_status = "needs_review"
+                    quality_reasons = "; ".join(quality_report.reasons)
+                    validation_message = (validation_message + " " + quality_reasons).strip()
+                else:
+                    validation_message = (validation_message + " Technical image checks passed; identity and anatomy still require visual review.").strip()
 
                 filename = _save_generated_png(result)
                 profile = get_profile(job["profile_id"])
