@@ -209,12 +209,17 @@ def _truthy(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def cloud_worker_configured() -> bool:
-    """Whether a generic cloud worker is configured (new vars preferred)."""
-    return bool(
-        os.environ.get("GPU_WORKER_URL", "").strip()
-        and os.environ.get("REMOTE_API_TOKEN", "").strip()
+def _cloud_worker_token() -> str:
+    """Read the worker token using the current name or the documented alias."""
+    return (
+        os.environ.get("REMOTE_API_TOKEN", "").strip()
+        or os.environ.get("GPU_WORKER_TOKEN", "").strip()
     )
+
+
+def cloud_worker_configured() -> bool:
+    """Whether the generic cloud GPU worker URL and token are configured."""
+    return bool(os.environ.get("GPU_WORKER_URL", "").strip() and _cloud_worker_token())
 
 
 def cloud_worker_url(path: str) -> str:
@@ -223,8 +228,8 @@ def cloud_worker_url(path: str) -> str:
     ).rstrip("/")
     if not base_url:
         raise RuntimeError(
-            "Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN in .env, "
-            "then restart the app."
+            "Cloud GPU worker is not configured. Set GPU_WORKER_URL and either REMOTE_API_TOKEN "
+            "or GPU_WORKER_TOKEN in .env, then restart the app."
         )
     parsed = urlparse(base_url)
     if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
@@ -234,7 +239,7 @@ def cloud_worker_url(path: str) -> str:
 
 def cloud_worker_request(method: str, path: str, *, data=None, files=None, timeout=(15, 90)):
     url = cloud_worker_url(path)
-    token = os.environ.get("REMOTE_API_TOKEN", "").strip()
+    token = _cloud_worker_token()
     try:
         response = requests.request(
             method, url, headers={"Authorization": f"Bearer {token}"},
