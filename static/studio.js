@@ -98,13 +98,29 @@
     if (gpuModePill) gpuModePill.textContent = "CHECKING GPUS…";
     if (gpuStatus) gpuStatus.textContent = "Checking local CUDA support and testing the configured cloud GPU worker…";
     if (computeBackend) computeBackend.disabled = true;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 25000);
     try {
-      const response = await fetch("/api/gpu-status?probe=1");
+      const response = await fetch("/api/gpu-status?probe=1", {
+        cache: "no-store",
+        signal: controller.signal,
+        headers: { "Accept": "application/json" }
+      });
       const data = await readJson(response);
       renderComputeOptions(data);
     } catch (error) {
-      renderComputeOptions({available_backends:["cpu"], auto_backend:"cpu", local_gpu:{available:false}, cloud_gpu:{available:false}, cloud_error:error.message});
+      const message = error.name === "AbortError"
+        ? "GPU check timed out after 25 seconds. Verify the Flask app, GPU_WORKER_URL, and worker token, then retry."
+        : error.message || "Could not check GPU availability.";
+      renderComputeOptions({
+        available_backends: ["cpu"],
+        auto_backend: "cpu",
+        local_gpu: {available:false},
+        cloud_gpu: {available:false},
+        cloud_error: message
+      });
     } finally {
+      window.clearTimeout(timeoutId);
       if (computeBackend) computeBackend.disabled = false;
     }
   }
