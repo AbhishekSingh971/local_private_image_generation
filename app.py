@@ -2010,6 +2010,12 @@ def api_face_profiles():
 
 @app.post("/api/face-profiles")
 def api_create_face_profile():
+    # Browser fetch requests receive JSON; ordinary HTML form submissions should
+    # return to the Face Models page rather than rendering a JSON document.
+    wants_json = (
+        request.headers.get("X-Requested-With") == "XMLHttpRequest"
+        or "application/json" in request.headers.get("Accept", "").lower()
+    )
     try:
         name = _clean_prompt(request.form.get("name"), "Profile name", 80)
         token = (request.form.get("token") or "").strip() or None
@@ -2021,9 +2027,17 @@ def api_create_face_profile():
             save_profile_image(profile["id"], image)
         profile = get_profile(profile["id"])
     except ValueError as exc:
+        if not wants_json:
+            return redirect(url_for("faces_page", profile_error=str(exc)), code=303)
         return jsonify(error=str(exc)), 400
     except RuntimeError as exc:
+        app.logger.exception("Could not create face profile")
+        if not wants_json:
+            return redirect(url_for("faces_page", profile_error="Could not save the face profile. Check database connectivity."), code=303)
         return jsonify(error=str(exc)), 500
+
+    if not wants_json:
+        return redirect(url_for("faces_page", profile_created=profile["name"]), code=303)
     return jsonify(status="created", profile=profile), 201
 
 
