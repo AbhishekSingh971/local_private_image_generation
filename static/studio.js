@@ -255,6 +255,23 @@
   }
   profileDescriptionInput?.addEventListener("input", updateProfileDescriptionCount);
   updateProfileDescriptionCount();
+  const facePageParams = new URLSearchParams(window.location.search);
+  const profileCreatedName = facePageParams.get("profile_created");
+  const profileCreationError = facePageParams.get("profile_error");
+  if (profileCreatedName) {
+    const status = $("#createProfileStatus");
+    if (status) status.textContent = "Created “" + profileCreatedName + "” successfully and returned to the Face Models page.";
+    facePageParams.delete("profile_created");
+    const cleanQuery = facePageParams.toString();
+    history.replaceState(null, "", window.location.pathname + (cleanQuery ? "?" + cleanQuery : ""));
+  } else if (profileCreationError) {
+    const status = $("#createProfileStatus");
+    if (status) status.textContent = profileCreationError;
+    facePageParams.delete("profile_error");
+    const cleanQuery = facePageParams.toString();
+    history.replaceState(null, "", window.location.pathname + (cleanQuery ? "?" + cleanQuery : ""));
+  }
+
   createProfileForm?.addEventListener("submit", async event => {
     event.preventDefault();
     const button = $("#createProfileButton");
@@ -267,7 +284,7 @@
     if (button) {button.disabled=true;button.textContent="Creating profile…";}
     if (status) status.textContent="Validating photos and saving face profile…";
     try {
-      const data = await readJson(await fetch("/api/face-profiles", {method:"POST", body:new FormData(createProfileForm)}));
+      const data = await readJson(await fetch("/api/face-profiles", {method:"POST", headers:{"Accept":"application/json","X-Requested-With":"XMLHttpRequest"}, body:new FormData(createProfileForm)}));
       createProfileForm.reset();
       updateProfileDescriptionCount();
       await refreshProfiles();
