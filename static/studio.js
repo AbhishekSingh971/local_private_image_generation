@@ -228,7 +228,7 @@
     loadGeneratedPhotoPicker();
   }
   async function refreshProfiles() {
-    const response = await fetch("/api/face-profiles");
+    const response = await fetch("/api/face-profiles", {cache:"no-store", headers:{"Accept":"application/json"}});
     const data = await readJson(response);
     profiles = data.profiles || [];
     renderProfiles();
