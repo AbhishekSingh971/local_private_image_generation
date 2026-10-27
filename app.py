@@ -72,6 +72,7 @@ from studio_db import (
     get_face_profile_record,
     insert_face_profile_record,
     list_face_dataset_groups,
+    list_face_profile_records,
     update_face_dataset_group,
     update_face_photo,
     update_face_dataset_job,
@@ -1966,7 +1967,34 @@ def gpu_status():
 
 @app.get("/api/face-profiles")
 def api_face_profiles():
-    return jsonify(profiles=list_profiles())
+    # Run the legacy migration first, then read directly from the configured database.
+    # This makes the database the source of truth for the face library and avoids
+    # returning an empty/stale profile list if the compatibility layer is out of sync.
+    try:
+        profiles = list_profiles()
+        if database_url_configured():
+            database_profiles = list_face_profile_records()
+            by_id = {profile["id"]: profile for profile in profiles}
+            for record in database_profiles:
+                if record.get("id") == GLOBAL_BODY_PROFILE_ID:
+                    continue
+                existing = by_id.get(record["id"], {})
+                by_id[record["id"]] = {
+                    **record,
+                    **existing,
+                    "image_count": int(record.get("image_count", 0) or 0),
+                }
+            profiles = sorted(
+                by_id.values(),
+                key=lambda item: item.get("created_at", ""),
+            )
+        response = jsonify(profiles=profiles, count=len(profiles))
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
+    except Exception:
+        app.logger.exception("Could not load face profiles from the configured database")
+        return jsonify(error="Could not load face profiles. Check the database connection and server logs."), 503
 
 
 @app.post("/api/face-profiles")
