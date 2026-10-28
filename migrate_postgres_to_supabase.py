@@ -151,8 +151,16 @@ def main() -> int:
             raise RuntimeError("OLD_DATABASE_URL and DATABASE_URL must be different.")
         return migrate(source, target)
     except Exception as exc:
-        # Do not print connection URIs or exception strings that may contain secrets.
-        print(f"Migration failed: {type(exc).__name__}. Check connectivity, credentials, and schema.", file=sys.stderr)
+        # Show useful diagnostics while redacting any URI credentials if a driver
+        # includes a connection string in its error message.
+        import re
+        detail = str(exc)
+        detail = re.sub(
+            r"(?i)(postgres(?:ql)?://[^:/@\s]+:)[^@/\s]+(@)",
+            r"\1[REDACTED]\2",
+            detail,
+        )
+        print(f"Migration failed: {type(exc).__name__}: {detail}", file=sys.stderr)
         return 1
 
 
