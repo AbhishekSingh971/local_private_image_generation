@@ -10,7 +10,6 @@ imageio>=2.34,<3
 imageio-ffmpeg>=0.5,<1
 requests>=2.31,<3
 python-dotenv>=1.0,<2
-SQLAlchemy>=2.0,<3
 psycopg[binary]>=3.2,<4
 mediapipe==0.10.35  # Legacy Face Mesh API required by pose_validation.py; 0.10.30+ removed solutions
 
