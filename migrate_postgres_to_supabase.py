@@ -80,11 +80,9 @@ def migrate(source_uri: str, target_uri: str) -> int:
     with psycopg.connect(source_uri, row_factory=tuple_row) as source, psycopg.connect(
         target_uri, row_factory=tuple_row
     ) as target:
-        # Create/upgrade the known application schema in the target through the
-        # application's database layer. This runs only against DATABASE_URL.
-        os.environ["DATABASE_URL"] = target_uri
-        from studio_db import ensure_schema
-        ensure_schema()
+        # Create the target schema directly with psycopg. The migration utility
+        # does not depend on SQLAlchemy or import the application's runtime.
+        _ensure_target_schema(target)
 
         total_inserted = 0
         total_skipped = 0
@@ -160,3 +158,85 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+def _ensure_target_schema(conn) -> None:
+    """Create the application's PostgreSQL tables if absent; preserve existing data."""
+    statements = (
+        """CREATE TABLE IF NOT EXISTS face_profiles (
+            id VARCHAR(32) PRIMARY KEY, name VARCHAR(80) NOT NULL,
+            name_key VARCHAR(80) UNIQUE NOT NULL, token VARCHAR(48) UNIQUE NOT NULL,
+            description TEXT NOT NULL DEFAULT '', created_at VARCHAR(40) NOT NULL,
+            local_model_ready BOOLEAN NOT NULL DEFAULT FALSE,
+            runpod_model_ready BOOLEAN NOT NULL DEFAULT FALSE,
+            local_training_state VARCHAR(32) NOT NULL DEFAULT 'not_trained',
+            runpod_training_state VARCHAR(32) NOT NULL DEFAULT 'not_trained',
+            local_training_error TEXT, local_training_job_id VARCHAR(128),
+            runpod_training_error TEXT, runpod_training_job_id VARCHAR(128))""",
+        """CREATE TABLE IF NOT EXISTS face_dataset_groups (
+            id VARCHAR(32) PRIMARY KEY, profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+            title VARCHAR(120) NOT NULL, dataset_type VARCHAR(24) NOT NULL DEFAULT 'face_angles',
+            prompt TEXT NOT NULL DEFAULT '', status VARCHAR(24) NOT NULL DEFAULT 'generating',
+            expected_count INTEGER NOT NULL DEFAULT 5, generated_count INTEGER NOT NULL DEFAULT 0,
+            error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+        """CREATE TABLE IF NOT EXISTS face_photos (
+            id VARCHAR(32) PRIMARY KEY, profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+            filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL DEFAULT 'image/jpeg',
+            byte_size INTEGER NOT NULL, image_data BYTEA NOT NULL, group_id VARCHAR(32),
+            angle_label VARCHAR(80), photo_kind VARCHAR(16) NOT NULL DEFAULT 'manual',
+            validation_status VARCHAR(24) NOT NULL DEFAULT 'not_checked', validation_message TEXT,
+            training_caption TEXT NOT NULL DEFAULT '', target_yaw DOUBLE PRECISION, target_pitch DOUBLE PRECISION,
+            actual_yaw DOUBLE PRECISION, actual_pitch DOUBLE PRECISION,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+        """CREATE TABLE IF NOT EXISTS face_dataset_jobs (
+            id VARCHAR(32) PRIMARY KEY, group_id VARCHAR(32) NOT NULL REFERENCES face_dataset_groups(id) ON DELETE CASCADE,
+            profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+            dataset_type VARCHAR(24) NOT NULL, status VARCHAR(24) NOT NULL DEFAULT 'queued',
+            backend VARCHAR(24) NOT NULL DEFAULT 'cpu', expected_count INTEGER NOT NULL,
+            generated_count INTEGER NOT NULL DEFAULT 0, current_index INTEGER NOT NULL DEFAULT 0,
+            current_label VARCHAR(80) NOT NULL DEFAULT '', current_task_id VARCHAR(32),
+            source_photo_id VARCHAR(32) NOT NULL, group_count_base INTEGER NOT NULL DEFAULT 0,
+            target_manifest TEXT NOT NULL DEFAULT '[]', cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+            failed_targets TEXT NOT NULL DEFAULT '[]', review_targets TEXT NOT NULL DEFAULT '[]',
+            error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+        """CREATE TABLE IF NOT EXISTS face_model_artifacts (
+            id VARCHAR(32) PRIMARY KEY, profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+            backend VARCHAR(16) NOT NULL, filename VARCHAR(255) NOT NULL, file_count INTEGER NOT NULL,
+            bundle_size INTEGER NOT NULL, bundle_data BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT uq_face_model_profile_backend UNIQUE(profile_id, backend))""",
+        """CREATE TABLE IF NOT EXISTS generated_assets (
+            id VARCHAR(32) PRIMARY KEY, asset_type VARCHAR(12) NOT NULL, title VARCHAR(160) NOT NULL,
+            filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL, prompt TEXT NOT NULL DEFAULT '',
+            negative_prompt TEXT NOT NULL DEFAULT '', profile_id VARCHAR(32), profile_name VARCHAR(80),
+            backend VARCHAR(32) NOT NULL DEFAULT 'cpu', generation_mode VARCHAR(32) NOT NULL DEFAULT '',
+            media_size INTEGER NOT NULL, media_data BYTEA NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+        "CREATE INDEX IF NOT EXISTS ix_face_dataset_groups_profile_id ON face_dataset_groups(profile_id)",
+        "CREATE INDEX IF NOT EXISTS ix_face_photos_profile_id ON face_photos(profile_id)",
+        "CREATE INDEX IF NOT EXISTS ix_face_photos_group_id ON face_photos(group_id)",
+        "CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_group_id ON face_dataset_jobs(group_id)",
+        "CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_profile_id ON face_dataset_jobs(profile_id)",
+        "CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_status ON face_dataset_jobs(status)",
+        "CREATE INDEX IF NOT EXISTS ix_face_model_artifacts_profile_id ON face_model_artifacts(profile_id)",
+        "CREATE INDEX IF NOT EXISTS ix_generated_assets_asset_type ON generated_assets(asset_type)",
+        "CREATE INDEX IF NOT EXISTS ix_generated_assets_profile_id ON generated_assets(profile_id)",
+    )
+    with conn.cursor() as cur:
+        for statement in statements:
+            cur.execute(statement)
+        # Add columns introduced by newer app versions to older target tables.
+        cur.execute("ALTER TABLE face_profiles ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
+        cur.execute("ALTER TABLE face_dataset_groups ADD COLUMN IF NOT EXISTS dataset_type VARCHAR(24) NOT NULL DEFAULT 'face_angles'")
+        cur.execute("ALTER TABLE face_dataset_groups ADD COLUMN IF NOT EXISTS prompt TEXT NOT NULL DEFAULT ''")
+        cur.execute("ALTER TABLE face_dataset_jobs ADD COLUMN IF NOT EXISTS group_count_base INTEGER NOT NULL DEFAULT 0")
+        cur.execute("ALTER TABLE face_dataset_jobs ADD COLUMN IF NOT EXISTS target_manifest TEXT NOT NULL DEFAULT '[]'")
+        for name, definition in (
+            ("group_id", "VARCHAR(32)"), ("angle_label", "VARCHAR(80)"),
+            ("photo_kind", "VARCHAR(16) NOT NULL DEFAULT 'manual'"),
+            ("validation_status", "VARCHAR(24) NOT NULL DEFAULT 'not_checked'"),
+            ("validation_message", "TEXT"), ("training_caption", "TEXT NOT NULL DEFAULT ''"),
+            ("target_yaw", "DOUBLE PRECISION"), ("target_pitch", "DOUBLE PRECISION"),
+            ("actual_yaw", "DOUBLE PRECISION"), ("actual_pitch", "DOUBLE PRECISION"),
+        ):
+            cur.execute(sql.SQL("ALTER TABLE face_photos ADD COLUMN IF NOT EXISTS {} ").format(sql.Identifier(name)) + sql.SQL(definition))
+    conn.commit()
+
