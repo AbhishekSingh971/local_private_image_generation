@@ -14,6 +14,7 @@ import sys
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
+from dotenv import load_dotenv
 from psycopg import sql
 from psycopg.rows import tuple_row
 
@@ -144,6 +145,9 @@ def migrate(source_uri: str, target_uri: str) -> int:
 
 
 def main() -> int:
+    # Load project .env explicitly; the standalone script does not inherit the
+    # environment loading performed by the Flask application.
+    load_dotenv()
     try:
         source = _connection_uri(os.environ.get("OLD_DATABASE_URL", ""), "OLD_DATABASE_URL")
         target = _connection_uri(os.environ.get("DATABASE_URL", ""), "DATABASE_URL")
