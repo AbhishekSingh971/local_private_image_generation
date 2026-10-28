@@ -223,7 +223,7 @@ def update_face_profile_record(profile_id, fields):
     if not fields: return get_face_profile_record(profile_id)
     assignments=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in fields)
     try:
-        _run(sql.SQL("UPDATE face_profiles SET {}{} WHERE id=%s").format(assignments,sql.SQL(", name_key=name_key")), tuple(fields.values())+(profile_id,))
+        _run(sql.SQL("UPDATE face_profiles SET {} WHERE id=%s").format(assignments), tuple(fields.values())+(profile_id,))
     except UniqueViolation as exc:
         raise ValueError("That prompt token is already assigned to another profile.") from exc
     result=get_face_profile_record(profile_id)
