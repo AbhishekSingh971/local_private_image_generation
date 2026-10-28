@@ -126,15 +126,6 @@ def ensure_schema() -> None:
                 backend VARCHAR(32) NOT NULL DEFAULT 'cpu', generation_mode VARCHAR(32) NOT NULL DEFAULT '',
                 media_size INTEGER NOT NULL, media_data BYTEA NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
-            "CREATE INDEX IF NOT EXISTS ix_face_dataset_groups_profile_id ON face_dataset_groups(profile_id)",
-            "CREATE INDEX IF NOT EXISTS ix_face_photos_profile_id ON face_photos(profile_id)",
-            "CREATE INDEX IF NOT EXISTS ix_face_photos_group_id ON face_photos(group_id)",
-            "CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_group_id ON face_dataset_jobs(group_id)",
-            "CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_profile_id ON face_dataset_jobs(profile_id)",
-            "CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_status ON face_dataset_jobs(status)",
-            "CREATE INDEX IF NOT EXISTS ix_face_model_artifacts_profile_id ON face_model_artifacts(profile_id)",
-            "CREATE INDEX IF NOT EXISTS ix_generated_assets_asset_type ON generated_assets(asset_type)",
-            "CREATE INDEX IF NOT EXISTS ix_generated_assets_profile_id ON generated_assets(profile_id)",
         ]
         with psycopg.connect(url, row_factory=dict_row, connect_timeout=10) as conn:
             with conn.cursor() as cur:
@@ -153,6 +144,16 @@ def ensure_schema() -> None:
                 ("target_yaw", "DOUBLE PRECISION"), ("target_pitch", "DOUBLE PRECISION"),
                 ("actual_yaw", "DOUBLE PRECISION"), ("actual_pitch", "DOUBLE PRECISION")):
                 _ensure_column(conn, "face_photos", name, definition)
+            with conn.cursor() as cur:
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_groups_profile_id ON face_dataset_groups(profile_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_face_photos_profile_id ON face_photos(profile_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_face_photos_group_id ON face_photos(group_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_group_id ON face_dataset_jobs(group_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_profile_id ON face_dataset_jobs(profile_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_status ON face_dataset_jobs(status)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_face_model_artifacts_profile_id ON face_model_artifacts(profile_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_asset_type ON generated_assets(asset_type)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_profile_id ON generated_assets(profile_id)")
         _SCHEMA_READY.add(url)
 
 
