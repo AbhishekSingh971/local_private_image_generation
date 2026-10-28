@@ -1,7 +1,7 @@
-"""PostgreSQL-backed metadata and media storage.
+"""Supabase PostgreSQL-backed metadata and media storage.
 
-DATABASE_URL is loaded from the application's .env before this module is imported.
-When it is absent, a local SQLite database is used for development only.
+DATABASE_URL must be loaded from the application's .env before this module is imported.
+The application intentionally does not fall back to a local SQLite database.
 """
 from __future__ import annotations
 
@@ -259,9 +259,8 @@ def database_status() -> dict:
             "connected": True,
             "engine": "postgresql" if url.startswith("postgresql") else "sqlite",
             "configured_postgresql": url.startswith("postgresql"),
-            "message": "PostgreSQL connected." if url.startswith("postgresql") else
-                ("Connected to an explicitly configured SQLite database." if database_url_configured()
-                 else "DATABASE_URL is not set; using the local SQLite development database."),
+            "message": "Supabase PostgreSQL connected." if url.startswith("postgresql")
+                else "Unsupported database configuration.",
         }
     except Exception:
         # Do not return SQLAlchemy exceptions here: they may contain connection details.
