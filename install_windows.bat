@@ -44,6 +44,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo Removing legacy SQLAlchemy package if it exists...
+"%PYTHON%" -m pip uninstall -y SQLAlchemy >nul 2>nul
+
 echo Verifying PyTorch and TorchVision native operators...
 "%PYTHON%" -c "import torch, torchvision; print('torch:', torch.__version__); print('torchvision:', torchvision.__version__); from torchvision.ops import nms; print('TorchVision native ops OK')"
 if errorlevel 1 (
