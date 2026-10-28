@@ -13,6 +13,11 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
+# Some managed Windows environments block SQLAlchemy's optional compiled
+# extensions. Disable the optional C-extension runtime before importing SQLAlchemy;
+# the pure-Python implementation still supports the Supabase connection.
+os.environ.setdefault("DISABLE_SQLALCHEMY_CEXT_RUNTIME", "1")
+
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, event, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -39,11 +44,17 @@ def database_url_configured() -> bool:
 
 def current_database_url() -> str:
     configured = _normalise_url(os.environ.get("DATABASE_URL", ""))
-    if configured:
-        return configured
-    local_path = ROOT / "data" / "private_face_studio.db"
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    return "sqlite:///" + local_path.as_posix()
+    if not configured:
+        raise RuntimeError(
+            "DATABASE_URL is required. Set it in .env to your Supabase PostgreSQL "
+            "pooler connection string; this project does not fall back to local SQLite."
+        )
+    if not configured.startswith("postgresql+psycopg://"):
+        raise RuntimeError(
+            "DATABASE_URL must be a PostgreSQL URI from Supabase. Use the pooler "
+            "connection string and ensure reserved password characters are URL-encoded."
+        )
+    return configured
 
 
 class Base(DeclarativeBase):
