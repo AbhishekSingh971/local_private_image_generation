@@ -156,9 +156,6 @@ def main() -> int:
         return 1
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
 def _ensure_target_schema(conn) -> None:
     """Create the application's PostgreSQL tables if absent; preserve existing data."""
     statements = (
@@ -221,8 +218,11 @@ def _ensure_target_schema(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_generated_assets_profile_id ON generated_assets(profile_id)",
     )
     with conn.cursor() as cur:
+        # Defer indexes until compatibility columns have been added to older tables.
+        index_statements = [statement for statement in statements if statement.startswith("CREATE INDEX")]
         for statement in statements:
-            cur.execute(statement)
+            if not statement.startswith("CREATE INDEX"):
+                cur.execute(statement)
         # Add columns introduced by newer app versions to older target tables.
         cur.execute("ALTER TABLE face_profiles ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
         cur.execute("ALTER TABLE face_dataset_groups ADD COLUMN IF NOT EXISTS dataset_type VARCHAR(24) NOT NULL DEFAULT 'face_angles'")
@@ -238,5 +238,11 @@ def _ensure_target_schema(conn) -> None:
             ("actual_yaw", "DOUBLE PRECISION"), ("actual_pitch", "DOUBLE PRECISION"),
         ):
             cur.execute(sql.SQL("ALTER TABLE face_photos ADD COLUMN IF NOT EXISTS {} ").format(sql.Identifier(name)) + sql.SQL(definition))
+        for statement in index_statements:
+            cur.execute(statement)
     conn.commit()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
