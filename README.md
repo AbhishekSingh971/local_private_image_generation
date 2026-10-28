@@ -55,7 +55,7 @@ On first library access, existing generated files already present under `data/ou
 
 The database stores generated image/video file bytes, profile photo bytes, and trained LoRA ZIP backups in PostgreSQL binary columns, in addition to metadata. Local LoRA model folders remain on the compute host so Diffusers can load them directly. **Supabase free-tier database storage is limited, and generated media can consume it quickly**; monitor usage and keep local backups. If the library grows substantially, consider storing large media files in Supabase Storage and keeping only their metadata in PostgreSQL as a separate future change.
 
-If `DATABASE_URL` is empty, the app uses a local SQLite development database instead; this is not the intended persistent setup.
+`DATABASE_URL` must point to PostgreSQL/Supabase. The app does not use a local SQLite database.
 
 ## Local Windows setup
 
