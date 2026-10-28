@@ -35,7 +35,21 @@ Use Supabase as the PostgreSQL provider for persistent face profiles, face-train
 
 The expected URI shape is provider-specific, so copy the exact URI from the Supabase dashboard rather than typing the host or password manually. Do not commit `.env`, paste its credentials into issues, or use the Supabase `service_role` key as a database password.
 
-**Important:** changing `DATABASE_URL` does not automatically copy old records from Neon into Supabase. New writes will go to Supabase after the app restarts; existing Neon data remains in Neon unless you explicitly migrate it. The app can import its supported legacy local JSON/filesystem data on first access, but that is not a Neon-to-Supabase database migration.
+**Important:** changing `DATABASE_URL` does not automatically copy old records from a previous PostgreSQL database into Supabase. New writes go to Supabase after the app restarts; existing source data remains in the old database unless you explicitly migrate it.
+
+### Migrate an existing PostgreSQL database to Supabase
+
+The repository includes `migrate_postgres_to_supabase.py` for a non-destructive copy of the application's database tables.
+
+1. Back up both databases first.
+2. Set `OLD_DATABASE_URL` to the old PostgreSQL database URI and `DATABASE_URL` to the Supabase PostgreSQL URI in your private shell environment. Do not commit either URI or share passwords.
+3. Install the project requirements, then run `python migrate_postgres_to_supabase.py`.
+4. Review the per-table counts. The script copies parent tables before dependent tables and uses `ON CONFLICT DO NOTHING`: rows conflicting with a primary key or unique constraint are skipped, never overwritten. It reports inserted and skipped/conflicting counts.
+5. Verify profiles, training photos, jobs, model bundles, and generated assets in the Supabase-backed app before retiring the old database.
+
+The script is safe to rerun for ordinary primary-key/unique-constraint duplicates, but it is not a substitute for a database backup. It does not delete source records. It copies only the application's known tables and matching columns; review any schema changes or custom tables separately. Keep both connection strings private.
+
+
 
 On first library access, existing generated files already present under `data/outputs/` and `data/videos/` are imported into the library when missing from the database, so older locally generated files can appear alongside new results. Their old prompts may not be recoverable, so those records use an imported/unknown metadata label.
 
