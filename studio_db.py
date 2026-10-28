@@ -1,8 +1,4 @@
-"""Supabase PostgreSQL-backed metadata and media storage.
-
-DATABASE_URL must be loaded from the application's .env before this module is imported.
-The application intentionally does not fall back to a local SQLite database.
-"""
+"""Supabase PostgreSQL storage using psycopg directly (no SQLAlchemy)."""
 from __future__ import annotations
 
 import json
@@ -10,32 +6,17 @@ import os
 import threading
 import uuid
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
-# Some managed Windows environments block SQLAlchemy's optional compiled
-# extensions. Disable the optional C-extension runtime before importing SQLAlchemy;
-# the pure-Python implementation still supports the Supabase connection.
-os.environ.setdefault("DISABLE_SQLALCHEMY_CEXT_RUNTIME", "1")
-
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, event, func, inspect, select, text
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+import psycopg
+from psycopg.rows import dict_row
+from psycopg import sql
+from psycopg.errors import UniqueViolation
 
 ROOT = Path(__file__).resolve().parent
 _SCHEMA_LOCK = threading.RLock()
-_SCHEMA_READY = set()
-
-
-def _normalise_url(value: str) -> str:
-    url = (value or "").strip()
-    if url.startswith("postgres://"):
-        url = "postgresql+psycopg://" + url[len("postgres://"):]
-    elif url.startswith("postgresql://"):
-        url = "postgresql+psycopg://" + url[len("postgresql://"):]
-    elif url.startswith("postgresql+psycopg2://"):
-        url = "postgresql+psycopg://" + url[len("postgresql+psycopg2://"):]
-    return url
+_SCHEMA_READY: set[str] = set()
 
 
 def database_url_configured() -> bool:
@@ -43,165 +24,54 @@ def database_url_configured() -> bool:
 
 
 def current_database_url() -> str:
-    configured = _normalise_url(os.environ.get("DATABASE_URL", ""))
-    if not configured:
-        raise RuntimeError(
-            "DATABASE_URL is required. Set it in .env to your Supabase PostgreSQL "
-            "pooler connection string; this project does not fall back to local SQLite."
-        )
-    if not configured.startswith("postgresql+psycopg://"):
-        raise RuntimeError(
-            "DATABASE_URL must be a PostgreSQL URI from Supabase. Use the pooler "
-            "connection string and ensure reserved password characters are URL-encoded."
-        )
-    return configured
+    value = (os.environ.get("DATABASE_URL") or "").strip()
+    if not value:
+        raise RuntimeError("DATABASE_URL is required. Set it to your Supabase PostgreSQL connection URI in .env.")
+    if value.startswith("postgres://"):
+        value = "postgresql://" + value[len("postgres://"):]
+    if value.startswith("postgresql+psycopg://"):
+        value = "postgresql://" + value[len("postgresql+psycopg://"):]
+    if value.startswith("postgresql+psycopg2://"):
+        value = "postgresql://" + value[len("postgresql+psycopg2://"):]
+    if not value.startswith("postgresql://"):
+        raise RuntimeError("DATABASE_URL must be a PostgreSQL URI from Supabase. SQLite is not supported.")
+    return value
 
 
-class Base(DeclarativeBase):
-    pass
+def _connect():
+    return psycopg.connect(current_database_url(), row_factory=dict_row, connect_timeout=10)
 
 
-class FaceProfileRow(Base):
-    __tablename__ = "face_profiles"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    name: Mapped[str] = mapped_column(String(80), nullable=False)
-    name_key: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
-    token: Mapped[str] = mapped_column(String(48), unique=True, nullable=False)
-    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    created_at: Mapped[str] = mapped_column(String(40), nullable=False)
-    local_model_ready: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    runpod_model_ready: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    local_training_state: Mapped[str] = mapped_column(String(32), default="not_trained", nullable=False)
-    runpod_training_state: Mapped[str] = mapped_column(String(32), default="not_trained", nullable=False)
-    local_training_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    local_training_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    runpod_training_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    runpod_training_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+def _now():
+    return datetime.now(timezone.utc)
 
 
-class FaceDatasetGroupRow(Base):
-    __tablename__ = "face_dataset_groups"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    profile_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("face_profiles.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    title: Mapped[str] = mapped_column(String(120), nullable=False)
-    dataset_type: Mapped[str] = mapped_column(String(24), nullable=False, default="face_angles")
-    prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    status: Mapped[str] = mapped_column(String(24), nullable=False, default="generating")
-    expected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-    generated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+def _iso(value):
+    return value.isoformat() if hasattr(value, "isoformat") else value
 
 
-class FacePhotoRow(Base):
-    __tablename__ = "face_photos"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    profile_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("face_profiles.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    mime_type: Mapped[str] = mapped_column(String(100), default="image/jpeg", nullable=False)
-    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
-    image_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    group_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    angle_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    photo_kind: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
-    validation_status: Mapped[str] = mapped_column(String(24), default="not_checked", nullable=False)
-    validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    training_caption: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    target_yaw: Mapped[float | None] = mapped_column(Float, nullable=True)
-    target_pitch: Mapped[float | None] = mapped_column(Float, nullable=True)
-    actual_yaw: Mapped[float | None] = mapped_column(Float, nullable=True)
-    actual_pitch: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+def _one(query, params=()):
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(query, params)
+        return cur.fetchone()
 
 
-class FaceDatasetJobRow(Base):
-    __tablename__ = "face_dataset_jobs"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    group_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("face_dataset_groups.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    profile_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("face_profiles.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    dataset_type: Mapped[str] = mapped_column(String(24), nullable=False)
-    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued", index=True)
-    backend: Mapped[str] = mapped_column(String(24), nullable=False, default="cpu")
-    expected_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    generated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    current_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    current_label: Mapped[str] = mapped_column(String(80), nullable=False, default="")
-    current_task_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    source_photo_id: Mapped[str] = mapped_column(String(32), nullable=False)
-    group_count_base: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    target_manifest: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    failed_targets: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    review_targets: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+def _all(query, params=()):
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(query, params)
+        return cur.fetchall()
 
 
-class FaceModelArtifactRow(Base):
-    __tablename__ = "face_model_artifacts"
-    __table_args__ = (UniqueConstraint("profile_id", "backend", name="uq_face_model_profile_backend"),)
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    profile_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("face_profiles.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    backend: Mapped[str] = mapped_column(String(16), nullable=False)
-    filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    file_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    bundle_size: Mapped[int] = mapped_column(Integer, nullable=False)
-    bundle_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+def _run(query, params=(), returning=False):
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(query, params)
+        return cur.fetchone() if returning else cur.rowcount
 
 
-class GeneratedAssetRow(Base):
-    __tablename__ = "generated_assets"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    asset_type: Mapped[str] = mapped_column(String(12), nullable=False, index=True)
-    title: Mapped[str] = mapped_column(String(160), nullable=False)
-    filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    negative_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    profile_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    profile_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    backend: Mapped[str] = mapped_column(String(32), nullable=False, default="cpu")
-    generation_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="")
-    media_size: Mapped[int] = mapped_column(Integer, nullable=False)
-    media_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
-
-
-@lru_cache(maxsize=4)
-def _engine_for_url(url: str):
-    if url.startswith("sqlite:"):
-        engine = create_engine(url, connect_args={"check_same_thread": False})
-        @event.listens_for(engine, "connect")
-        def _sqlite_foreign_keys(dbapi_connection, _connection_record):
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.close()
-        return engine
-    return create_engine(url, pool_pre_ping=True, pool_recycle=300)
-
-
-def _session_factory():
-    return sessionmaker(bind=_engine_for_url(current_database_url()), expire_on_commit=False)
+def _ensure_column(conn, table, name, definition):
+    with conn.cursor() as cur:
+        cur.execute(sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} ").format(
+            sql.Identifier(table), sql.Identifier(name)) + sql.SQL(definition))
 
 
 def ensure_schema() -> None:
@@ -209,840 +79,469 @@ def ensure_schema() -> None:
     with _SCHEMA_LOCK:
         if url in _SCHEMA_READY:
             return
-        engine = _engine_for_url(url)
-        Base.metadata.create_all(engine)
-        # create_all does not add columns to a table created by an earlier version.
-        # Add this column in-place so existing SQLite and PostgreSQL databases keep working.
-        profile_columns = {column["name"] for column in inspect(engine).get_columns("face_profiles")}
-        with engine.begin() as connection:
-            if "description" not in profile_columns:
-                connection.execute(text("ALTER TABLE face_profiles ADD COLUMN description TEXT NOT NULL DEFAULT ''"))
-        group_columns = {column["name"] for column in inspect(engine).get_columns("face_dataset_groups")}
-        with engine.begin() as connection:
-            if "dataset_type" not in group_columns:
-                connection.execute(text("ALTER TABLE face_dataset_groups ADD COLUMN dataset_type VARCHAR(24) NOT NULL DEFAULT 'face_angles'"))
-            if "prompt" not in group_columns:
-                connection.execute(text("ALTER TABLE face_dataset_groups ADD COLUMN prompt TEXT NOT NULL DEFAULT ''"))
-        job_columns = {column["name"] for column in inspect(engine).get_columns("face_dataset_jobs")}
-        with engine.begin() as connection:
-            if "group_count_base" not in job_columns:
-                connection.execute(text("ALTER TABLE face_dataset_jobs ADD COLUMN group_count_base INTEGER NOT NULL DEFAULT 0"))
-            if "target_manifest" not in job_columns:
-                connection.execute(text("ALTER TABLE face_dataset_jobs ADD COLUMN target_manifest TEXT NOT NULL DEFAULT '[]'"))
-        photo_columns = {column["name"] for column in inspect(engine).get_columns("face_photos")}
-        with engine.begin() as connection:
-            if "group_id" not in photo_columns:
-                connection.execute(text("ALTER TABLE face_photos ADD COLUMN group_id VARCHAR(32)"))
-            if "angle_label" not in photo_columns:
-                connection.execute(text("ALTER TABLE face_photos ADD COLUMN angle_label VARCHAR(80)"))
-            if "photo_kind" not in photo_columns:
-                connection.execute(text("ALTER TABLE face_photos ADD COLUMN photo_kind VARCHAR(16) NOT NULL DEFAULT 'manual'"))
-            if "validation_status" not in photo_columns:
-                connection.execute(text("ALTER TABLE face_photos ADD COLUMN validation_status VARCHAR(24) NOT NULL DEFAULT 'not_checked'"))
-            if "validation_message" not in photo_columns:
-                connection.execute(text("ALTER TABLE face_photos ADD COLUMN validation_message TEXT"))
-            if "training_caption" not in photo_columns:
-                connection.execute(text("ALTER TABLE face_photos ADD COLUMN training_caption TEXT NOT NULL DEFAULT ''"))
-            for column_name in ("target_yaw", "target_pitch", "actual_yaw", "actual_pitch"):
-                if column_name not in photo_columns:
-                    connection.execute(text(f"ALTER TABLE face_photos ADD COLUMN {column_name} FLOAT"))
+        statements = [
+            """CREATE TABLE IF NOT EXISTS face_profiles (
+                id VARCHAR(32) PRIMARY KEY, name VARCHAR(80) NOT NULL,
+                name_key VARCHAR(80) UNIQUE NOT NULL, token VARCHAR(48) UNIQUE NOT NULL,
+                description TEXT NOT NULL DEFAULT '', created_at VARCHAR(40) NOT NULL,
+                local_model_ready BOOLEAN NOT NULL DEFAULT FALSE, runpod_model_ready BOOLEAN NOT NULL DEFAULT FALSE,
+                local_training_state VARCHAR(32) NOT NULL DEFAULT 'not_trained',
+                runpod_training_state VARCHAR(32) NOT NULL DEFAULT 'not_trained',
+                local_training_error TEXT, local_training_job_id VARCHAR(128),
+                runpod_training_error TEXT, runpod_training_job_id VARCHAR(128))""",
+            """CREATE TABLE IF NOT EXISTS face_dataset_groups (
+                id VARCHAR(32) PRIMARY KEY, profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+                title VARCHAR(120) NOT NULL, dataset_type VARCHAR(24) NOT NULL DEFAULT 'face_angles',
+                prompt TEXT NOT NULL DEFAULT '', status VARCHAR(24) NOT NULL DEFAULT 'generating',
+                expected_count INTEGER NOT NULL DEFAULT 5, generated_count INTEGER NOT NULL DEFAULT 0,
+                error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+            """CREATE TABLE IF NOT EXISTS face_photos (
+                id VARCHAR(32) PRIMARY KEY, profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+                filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL DEFAULT 'image/jpeg',
+                byte_size INTEGER NOT NULL, image_data BYTEA NOT NULL, group_id VARCHAR(32),
+                angle_label VARCHAR(80), photo_kind VARCHAR(16) NOT NULL DEFAULT 'manual',
+                validation_status VARCHAR(24) NOT NULL DEFAULT 'not_checked', validation_message TEXT,
+                training_caption TEXT NOT NULL DEFAULT '', target_yaw DOUBLE PRECISION, target_pitch DOUBLE PRECISION,
+                actual_yaw DOUBLE PRECISION, actual_pitch DOUBLE PRECISION, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+            """CREATE TABLE IF NOT EXISTS face_dataset_jobs (
+                id VARCHAR(32) PRIMARY KEY, group_id VARCHAR(32) NOT NULL REFERENCES face_dataset_groups(id) ON DELETE CASCADE,
+                profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+                dataset_type VARCHAR(24) NOT NULL, status VARCHAR(24) NOT NULL DEFAULT 'queued',
+                backend VARCHAR(24) NOT NULL DEFAULT 'cpu', expected_count INTEGER NOT NULL,
+                generated_count INTEGER NOT NULL DEFAULT 0, current_index INTEGER NOT NULL DEFAULT 0,
+                current_label VARCHAR(80) NOT NULL DEFAULT '', current_task_id VARCHAR(32),
+                source_photo_id VARCHAR(32) NOT NULL, group_count_base INTEGER NOT NULL DEFAULT 0,
+                target_manifest TEXT NOT NULL DEFAULT '[]', cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+                failed_targets TEXT NOT NULL DEFAULT '[]', review_targets TEXT NOT NULL DEFAULT '[]',
+                error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+            """CREATE TABLE IF NOT EXISTS face_model_artifacts (
+                id VARCHAR(32) PRIMARY KEY, profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+                backend VARCHAR(16) NOT NULL, filename VARCHAR(255) NOT NULL, file_count INTEGER NOT NULL,
+                bundle_size INTEGER NOT NULL, bundle_data BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT uq_face_model_profile_backend UNIQUE(profile_id, backend))""",
+            """CREATE TABLE IF NOT EXISTS generated_assets (
+                id VARCHAR(32) PRIMARY KEY, asset_type VARCHAR(12) NOT NULL, title VARCHAR(160) NOT NULL,
+                filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL, prompt TEXT NOT NULL DEFAULT '',
+                negative_prompt TEXT NOT NULL DEFAULT '', profile_id VARCHAR(32), profile_name VARCHAR(80),
+                backend VARCHAR(32) NOT NULL DEFAULT 'cpu', generation_mode VARCHAR(32) NOT NULL DEFAULT '',
+                media_size INTEGER NOT NULL, media_data BYTEA NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+            "CREATE INDEX IF NOT EXISTS ix_face_dataset_groups_profile_id ON face_dataset_groups(profile_id)",
+            "CREATE INDEX IF NOT EXISTS ix_face_photos_profile_id ON face_photos(profile_id)",
+            "CREATE INDEX IF NOT EXISTS ix_face_photos_group_id ON face_photos(group_id)",
+            "CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_group_id ON face_dataset_jobs(group_id)",
+            "CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_profile_id ON face_dataset_jobs(profile_id)",
+            "CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_status ON face_dataset_jobs(status)",
+            "CREATE INDEX IF NOT EXISTS ix_face_model_artifacts_profile_id ON face_model_artifacts(profile_id)",
+            "CREATE INDEX IF NOT EXISTS ix_generated_assets_asset_type ON generated_assets(asset_type)",
+            "CREATE INDEX IF NOT EXISTS ix_generated_assets_profile_id ON generated_assets(profile_id)",
+        ]
+        with psycopg.connect(url, row_factory=dict_row, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                for statement in statements:
+                    cur.execute(statement)
+            _ensure_column(conn, "face_profiles", "description", "TEXT NOT NULL DEFAULT ''")
+            for name, definition in (("dataset_type", "VARCHAR(24) NOT NULL DEFAULT 'face_angles'"), ("prompt", "TEXT NOT NULL DEFAULT ''")):
+                _ensure_column(conn, "face_dataset_groups", name, definition)
+            for name, definition in (("group_count_base", "INTEGER NOT NULL DEFAULT 0"), ("target_manifest", "TEXT NOT NULL DEFAULT '[]'")):
+                _ensure_column(conn, "face_dataset_jobs", name, definition)
+            for name, definition in (
+                ("group_id", "VARCHAR(32)"), ("angle_label", "VARCHAR(80)"),
+                ("photo_kind", "VARCHAR(16) NOT NULL DEFAULT 'manual'"),
+                ("validation_status", "VARCHAR(24) NOT NULL DEFAULT 'not_checked'"),
+                ("validation_message", "TEXT"), ("training_caption", "TEXT NOT NULL DEFAULT ''"),
+                ("target_yaw", "DOUBLE PRECISION"), ("target_pitch", "DOUBLE PRECISION"),
+                ("actual_yaw", "DOUBLE PRECISION"), ("actual_pitch", "DOUBLE PRECISION")):
+                _ensure_column(conn, "face_photos", name, definition)
         _SCHEMA_READY.add(url)
 
 
 def database_status() -> dict:
-    url = current_database_url()
     try:
         ensure_schema()
-        with _engine_for_url(url).connect() as connection:
-            connection.execute(select(1))
-        return {
-            "connected": True,
-            "engine": "postgresql" if url.startswith("postgresql") else "sqlite",
-            "configured_postgresql": url.startswith("postgresql"),
-            "message": "Supabase PostgreSQL connected." if url.startswith("postgresql")
-                else "Unsupported database configuration.",
-        }
+        _one("SELECT 1")
+        return {"connected": True, "engine": "postgresql", "configured_postgresql": True, "message": "Supabase PostgreSQL connected."}
     except Exception:
-        # Do not return SQLAlchemy exceptions here: they may contain connection details.
-        return {
-            "connected": False,
-            "engine": "postgresql" if url.startswith("postgresql") else "sqlite",
-            "configured_postgresql": url.startswith("postgresql"),
-            "message": "Database connection failed. Check DATABASE_URL and the database network/access settings in .env.",
-        }
+        return {"connected": False, "engine": "postgresql", "configured_postgresql": database_url_configured(),
+                "message": "Database connection failed. Check DATABASE_URL and Supabase network/access settings in .env."}
 
 
-def _profile_dict(row: FaceProfileRow) -> dict:
-    return {
-        "id": row.id, "name": row.name, "token": row.token, "description": row.description or "", "created_at": row.created_at,
-        "local_model_ready": bool(row.local_model_ready), "runpod_model_ready": bool(row.runpod_model_ready),
-        "local_training_state": row.local_training_state, "runpod_training_state": row.runpod_training_state,
-        "local_training_error": row.local_training_error, "local_training_job_id": row.local_training_job_id,
-        "runpod_training_error": row.runpod_training_error, "runpod_training_job_id": row.runpod_training_job_id,
-    }
+def _profile_dict(row):
+    if not row: return None
+    return {k: row.get(k) for k in ("id","name","token","description","created_at","local_model_ready","runpod_model_ready",
+        "local_training_state","runpod_training_state","local_training_error","local_training_job_id","runpod_training_error","runpod_training_job_id")}
 
 
-def get_face_profile_record(profile_id: str) -> dict | None:
+def get_face_profile_record(profile_id):
     ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(FaceProfileRow, profile_id)
-        if not row:
-            return None
-        result = _profile_dict(row)
-        result["image_count"] = session.scalar(
-            select(func.count()).select_from(FacePhotoRow).where(FacePhotoRow.profile_id == profile_id)
-        ) or 0
-        return result
+    row = _one("SELECT p.*, (SELECT count(*) FROM face_photos f WHERE f.profile_id=p.id) AS image_count FROM face_profiles p WHERE p.id=%s", (profile_id,))
+    return dict(_profile_dict(row), image_count=int(row["image_count"])) if row else None
 
 
-def list_face_profile_records() -> list[dict]:
+def list_face_profile_records():
     ensure_schema()
-    with _session_factory()() as session:
-        rows = session.scalars(select(FaceProfileRow).order_by(FaceProfileRow.created_at.asc())).all()
-        result = []
-        for row in rows:
-            record = _profile_dict(row)
-            record["image_count"] = session.scalar(
-                select(func.count()).select_from(FacePhotoRow).where(FacePhotoRow.profile_id == row.id)
-            ) or 0
-            result.append(record)
-        return result
+    rows = _all("SELECT p.*, (SELECT count(*) FROM face_photos f WHERE f.profile_id=p.id) AS image_count FROM face_profiles p ORDER BY p.created_at ASC")
+    return [dict(_profile_dict(r), image_count=int(r["image_count"])) for r in rows]
 
 
-def insert_face_profile_record(record: dict) -> dict:
+def _profile_values(record):
+    return (record["id"],record["name"],record["name"].casefold(),record["token"],record.get("description","") or "",record["created_at"],
+        bool(record.get("local_model_ready",False)),bool(record.get("runpod_model_ready",False)),
+        record.get("local_training_state","not_trained"),record.get("runpod_training_state","not_trained"),
+        record.get("local_training_error"),record.get("local_training_job_id"),record.get("runpod_training_error"),record.get("runpod_training_job_id"))
+
+
+def insert_face_profile_record(record):
     ensure_schema()
-    values = {
-        "id": record["id"], "name": record["name"], "name_key": record["name"].casefold(),
-        "token": record["token"], "description": record.get("description", "") or "", "created_at": record["created_at"],
-        "local_model_ready": bool(record.get("local_model_ready", False)),
-        "runpod_model_ready": bool(record.get("runpod_model_ready", False)),
-        "local_training_state": record.get("local_training_state", "not_trained"),
-        "runpod_training_state": record.get("runpod_training_state", "not_trained"),
-        "local_training_error": record.get("local_training_error"),
-        "local_training_job_id": record.get("local_training_job_id"),
-        "runpod_training_error": record.get("runpod_training_error"),
-        "runpod_training_job_id": record.get("runpod_training_job_id"),
-    }
-    with _session_factory()() as session:
-        try:
-            row = session.get(FaceProfileRow, values["id"])
-            if row:
-                return _profile_dict(row)
-            row = FaceProfileRow(**values)
-            session.add(row)
-            session.commit()
-            return _profile_dict(row)
-        except IntegrityError as exc:
-            session.rollback()
-            raise ValueError("A face profile name or prompt token already exists in PostgreSQL.") from exc
+    values=_profile_values(record)
+    try:
+        _run("""INSERT INTO face_profiles(id,name,name_key,token,description,created_at,local_model_ready,runpod_model_ready,
+            local_training_state,runpod_training_state,local_training_error,local_training_job_id,runpod_training_error,runpod_training_job_id)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING""", values)
+    except UniqueViolation as exc:
+        raise ValueError("A face profile name or prompt token already exists in PostgreSQL.") from exc
+    return get_face_profile_record(record["id"])
 
 
-def create_face_profile_record(record: dict) -> dict:
+def create_face_profile_record(record):
     ensure_schema()
-    with _session_factory()() as session:
-        try:
-            existing = session.get(FaceProfileRow, record["id"])
-            if existing:
-                return _profile_dict(existing)
-            row = FaceProfileRow(
-                id=record["id"], name=record["name"], name_key=record["name"].casefold(),
-                token=record["token"], description=record.get("description", "") or "", created_at=record["created_at"],
-                local_model_ready=False, runpod_model_ready=False,
-                local_training_state="not_trained", runpod_training_state="not_trained",
-                local_training_error=None, local_training_job_id=None,
-                runpod_training_error=None, runpod_training_job_id=None,
-            )
-            session.add(row)
-            session.commit()
-            return _profile_dict(row)
-        except IntegrityError as exc:
-            session.rollback()
-            raise ValueError("A face profile with that name or prompt token already exists. Choose a unique value.") from exc
+    values=_profile_values(record)
+    try:
+        _run("""INSERT INTO face_profiles(id,name,name_key,token,description,created_at,local_model_ready,runpod_model_ready,
+            local_training_state,runpod_training_state,local_training_error,local_training_job_id,runpod_training_error,runpod_training_job_id)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING""", values)
+    except UniqueViolation as exc:
+        raise ValueError("A face profile with that name or prompt token already exists. Choose a unique value.") from exc
+    return get_face_profile_record(record["id"])
 
 
-def update_face_profile_record(profile_id: str, fields: dict) -> dict:
-    ensure_schema()
-    allowed = {
-        "local_model_ready", "runpod_model_ready", "local_training_state", "runpod_training_state",
-        "local_training_error", "local_training_job_id", "runpod_training_error", "runpod_training_job_id", "token", "description",
-    }
-    unknown = set(fields) - allowed
-    if unknown:
-        raise ValueError("Unsupported profile fields: " + ", ".join(sorted(unknown)))
-    with _session_factory()() as session:
-        row = session.get(FaceProfileRow, profile_id)
-        if not row:
-            raise ValueError("Face profile not found.")
-        for key, value in fields.items():
-            setattr(row, key, value)
-        try:
-            session.commit()
-        except IntegrityError as exc:
-            session.rollback()
-            raise ValueError("That prompt token is already assigned to another profile.") from exc
-        return _profile_dict(row)
-
-
-def delete_face_profile_record(profile_id: str) -> bool:
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(FaceProfileRow, profile_id)
-        if not row:
-            return False
-        session.delete(row)
-        session.commit()
-        return True
-
-
-def add_face_photo(
-    profile_id: str, filename: str, image_data: bytes, mime_type: str = "image/jpeg",
-    group_id: str | None = None, angle_label: str | None = None,
-    photo_kind: str = "manual", validation_status: str = "not_checked",
-    validation_message: str | None = None, training_caption: str = "",
-    target_yaw: float | None = None, target_pitch: float | None = None,
-    actual_yaw: float | None = None, actual_pitch: float | None = None,
-) -> str:
-    if photo_kind not in {"source", "angle", "expression", "body", "manual"}:
-        raise ValueError("Photo kind must be source, angle, expression, body or manual.")
-    ensure_schema()
-    with _session_factory()() as session:
-        if not session.get(FaceProfileRow, profile_id):
-            raise ValueError("Face profile is not present in the configured database.")
-        if group_id:
-            group = session.get(FaceDatasetGroupRow, group_id)
-            if not group or group.profile_id != profile_id:
-                raise ValueError("Dataset group was not found for this face profile.")
-        if validation_status not in {"not_checked", "passed", "needs_review", "not_applicable"}:
-            raise ValueError("Invalid photo validation status.")
-        row = FacePhotoRow(
-            id=uuid.uuid4().hex, profile_id=profile_id, filename=filename, mime_type=mime_type,
-            byte_size=len(image_data), image_data=image_data, group_id=group_id,
-            angle_label=(angle_label or "")[:80] or None, photo_kind=photo_kind,
-            validation_status=validation_status,
-            validation_message=(validation_message or "")[:1200] or None,
-            training_caption=(training_caption or "")[:1200],
-            target_yaw=target_yaw, target_pitch=target_pitch,
-            actual_yaw=actual_yaw, actual_pitch=actual_pitch,
-        )
-        session.add(row)
-        session.commit()
-        return row.id
-
-
-def _dataset_group_dict(row: FaceDatasetGroupRow) -> dict:
-    return {
-        "id": row.id, "profile_id": row.profile_id, "title": row.title,
-        "dataset_type": row.dataset_type or "face_angles", "prompt": row.prompt or "",
-        "status": row.status, "expected_count": row.expected_count,
-        "generated_count": row.generated_count, "error": row.error,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    }
-
-
-def create_face_dataset_group(
-    profile_id: str, title: str, expected_count: int = 5,
-    dataset_type: str = "face_angles", prompt: str = "",
-) -> dict:
-    title = (title or "").strip()
-    dataset_type = (dataset_type or "face_angles").strip().lower()
-    prompt = (prompt or "").strip()
-    if not title or len(title) > 120:
-        raise ValueError("Dataset group title must contain 1–120 characters.")
-    if not 1 <= int(expected_count) <= 30:
-        raise ValueError("Dataset group expected count must be between 1 and 30.")
-    if dataset_type not in {"face_angles", "expressions", "body_type"}:
-        raise ValueError("Dataset type must be face_angles, expressions or body_type.")
-    if len(prompt) > 1200:
-        raise ValueError("Dataset prompt must be 1200 characters or fewer.")
-    ensure_schema()
-    with _session_factory()() as session:
-        if not session.get(FaceProfileRow, profile_id):
-            raise ValueError("Face profile is not present in the configured database.")
-        row = FaceDatasetGroupRow(
-            id=uuid.uuid4().hex, profile_id=profile_id, title=title,
-            dataset_type=dataset_type, prompt=prompt,
-            status="generating", expected_count=int(expected_count), generated_count=0,
-        )
-        session.add(row)
-        session.commit()
-        return _dataset_group_dict(row)
-
-
-def get_face_dataset_group(group_id: str) -> dict | None:
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(FaceDatasetGroupRow, group_id)
-        return _dataset_group_dict(row) if row else None
-
-
-def list_face_dataset_group_photo_records(group_id: str) -> list[dict]:
-    """List local file metadata for all photos in a group without loading image blobs."""
-    ensure_schema()
-    with _session_factory()() as session:
-        rows = session.scalars(
-            select(FacePhotoRow).where(FacePhotoRow.group_id == group_id)
-            .order_by(FacePhotoRow.created_at.asc(), FacePhotoRow.id.asc())
-        ).all()
-        return [
-            {
-                "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
-                "group_id": row.group_id, "angle_label": row.angle_label,
-                "photo_kind": row.photo_kind, "validation_status": row.validation_status,
-                "validation_message": row.validation_message, "training_caption": row.training_caption or "", "target_yaw": row.target_yaw,
-                "target_pitch": row.target_pitch, "actual_yaw": row.actual_yaw,
-                "actual_pitch": row.actual_pitch,
-            }
-            for row in rows
-        ]
-
-
-def update_face_dataset_group(
-    group_id: str, *, title: str | None = None, status: str | None = None,
-    generated_count: int | None = None, expected_count: int | None = None,
-    error: str | None = None,
-) -> dict | None:
-    allowed_statuses = {"generating", "completed", "partial", "failed", "cancelled"}
-    if status is not None and status not in allowed_statuses:
-        raise ValueError("Invalid dataset group status.")
-    normalized_title = None
-    if title is not None:
-        normalized_title = str(title).strip()
-        if not normalized_title or len(normalized_title) > 120:
-            raise ValueError("Dataset group name must contain 1–120 characters.")
-    if expected_count is not None:
-        expected_count = int(expected_count)
-        if not 1 <= expected_count <= 30:
-            raise ValueError("Expected photo count must be between 1 and 30.")
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(FaceDatasetGroupRow, group_id)
-        if not row:
-            return None
-        if normalized_title is not None:
-            row.title = normalized_title
-        if expected_count is not None:
-            row.expected_count = max(expected_count, int(generated_count or row.generated_count or 0))
-        if generated_count is not None:
-            count = int(generated_count)
-            if count < 0 or count > max(row.expected_count, int(expected_count or 0)):
-                raise ValueError("Generated count is outside the expected range.")
-            row.generated_count = count
-        if status is not None:
-            row.status = status
-        if error is not None:
-            row.error = str(error)[:1200] or None
-        row.updated_at = datetime.now(timezone.utc)
-        session.commit()
-        return _dataset_group_dict(row)
-
-
-def list_face_dataset_groups(profile_id: str | None = None, limit: int = 200) -> list[dict]:
-    ensure_schema()
-    with _session_factory()() as session:
-        query = select(FaceDatasetGroupRow)
-        if profile_id:
-            query = query.where(FaceDatasetGroupRow.profile_id == profile_id)
-        rows = session.scalars(
-            query.order_by(FaceDatasetGroupRow.created_at.desc()).limit(max(1, min(int(limit), 500)))
-        ).all()
-        result = []
-        for row in rows:
-            record = _dataset_group_dict(row)
-            record["profile_name"] = (
-                session.get(FaceProfileRow, row.profile_id).name
-                if session.get(FaceProfileRow, row.profile_id) else "Unknown profile"
-            )
-            photos = session.scalars(
-                select(FacePhotoRow).where(FacePhotoRow.group_id == row.id)
-                .order_by(FacePhotoRow.created_at.asc(), FacePhotoRow.id.asc())
-            ).all()
-            record["photos"] = [
-                {
-                    "id": photo.id, "filename": photo.filename,
-                    "angle_label": photo.angle_label or "Training photo",
-                    "photo_kind": photo.photo_kind,
-                    "validation_status": photo.validation_status or "not_checked",
-                    "validation_message": photo.validation_message,
-                    "target_yaw": photo.target_yaw, "target_pitch": photo.target_pitch,
-                    "actual_yaw": photo.actual_yaw, "actual_pitch": photo.actual_pitch,
-                    "mime_type": photo.mime_type, "byte_size": photo.byte_size,
-                    "created_at": photo.created_at.isoformat() if photo.created_at else None,
-                }
-                for photo in photos
-            ]
-            record["photo_count"] = len(photos)
-            result.append(record)
-        return result
-
-
-def _dataset_job_dict(row: FaceDatasetJobRow) -> dict:
-    def parse_list(value):
-        try:
-            decoded = json.loads(value or "[]")
-            return decoded if isinstance(decoded, list) else []
-        except (TypeError, json.JSONDecodeError):
-            return []
-    return {
-        "id": row.id, "group_id": row.group_id, "profile_id": row.profile_id,
-        "dataset_type": row.dataset_type, "status": row.status, "backend": row.backend,
-        "expected_count": row.expected_count, "generated_count": row.generated_count,
-        "current_index": row.current_index, "current_label": row.current_label,
-        "current_task_id": row.current_task_id, "cancel_requested": bool(row.cancel_requested),
-        "group_count_base": int(row.group_count_base or 0),
-        "target_manifest": parse_list(row.target_manifest),
-        "failed_targets": parse_list(row.failed_targets), "review_targets": parse_list(row.review_targets),
-        "source_photo_id": row.source_photo_id, "error": row.error,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    }
-
-
-def create_face_dataset_job(
-    *, job_id: str, group_id: str, profile_id: str, dataset_type: str,
-    backend: str, expected_count: int, source_photo_id: str,
-    target_manifest: list[dict] | None = None, group_count_base: int = 0,
-) -> dict:
-    if dataset_type not in {"face_angles", "expressions"}:
-        raise ValueError("Unsupported face dataset generation type.")
-    if backend not in {"cpu", "local_gpu", "runpod", "cloud_gpu"}:
-        raise ValueError("Unsupported generation backend.")
-    # Accept the generic cloud_gpu name alongside the legacy runpod alias.
-    if not 1 <= int(expected_count) <= 20:
-        raise ValueError("Expected target count must be between 1 and 20.")
-    normalized_targets = [item for item in (target_manifest or []) if isinstance(item, dict)]
-    if normalized_targets and len(normalized_targets) != int(expected_count):
-        raise ValueError("Target manifest count must match expected_count.")
-    if int(group_count_base) < 0:
-        raise ValueError("Base group photo count cannot be negative.")
-    if not all(isinstance(value, str) and len(value) == 32 for value in (job_id, group_id, profile_id, source_photo_id)):
-        raise ValueError("Invalid dataset generation job identifiers.")
-    ensure_schema()
-    with _session_factory()() as session:
-        group = session.get(FaceDatasetGroupRow, group_id)
-        if not group or group.profile_id != profile_id or group.dataset_type != dataset_type:
-            raise ValueError("Dataset group does not match the requested generation job.")
-        source = session.get(FacePhotoRow, source_photo_id)
-        if not source or source.profile_id != profile_id or source.group_id != group_id:
-            raise ValueError("Source photo does not belong to the target dataset group.")
-        row = FaceDatasetJobRow(
-            id=job_id, group_id=group_id, profile_id=profile_id,
-            dataset_type=dataset_type, status="queued", backend=backend,
-            expected_count=int(expected_count), generated_count=0, current_index=0,
-            current_label="", current_task_id=None, source_photo_id=source_photo_id,
-            group_count_base=int(group_count_base),
-            target_manifest=json.dumps(normalized_targets, ensure_ascii=False),
-            cancel_requested=False, failed_targets="[]", review_targets="[]", error=None,
-        )
-        session.add(row)
-        session.commit()
-        return _dataset_job_dict(row)
-
-
-def get_face_dataset_job(job_id: str) -> dict | None:
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(FaceDatasetJobRow, job_id)
-        return _dataset_job_dict(row) if row else None
-
-
-def list_face_dataset_jobs(
-    *, profile_id: str | None = None, group_id: str | None = None,
-    active_only: bool = False, limit: int = 50,
-) -> list[dict]:
-    ensure_schema()
-    with _session_factory()() as session:
-        query = select(FaceDatasetJobRow)
-        if profile_id:
-            query = query.where(FaceDatasetJobRow.profile_id == profile_id)
-        if group_id:
-            query = query.where(FaceDatasetJobRow.group_id == group_id)
-        if active_only:
-            query = query.where(FaceDatasetJobRow.status.in_({"queued", "running", "cancelling"}))
-        rows = session.scalars(
-            query.order_by(FaceDatasetJobRow.created_at.desc()).limit(max(1, min(int(limit), 100)))
-        ).all()
-        return [_dataset_job_dict(row) for row in rows]
-
-
-def update_face_dataset_job(job_id: str, **fields) -> dict | None:
-    allowed = {
-        "status", "generated_count", "current_index", "current_label",
-        "current_task_id", "cancel_requested", "failed_targets", "review_targets", "error",
-    }
-    unknown = set(fields) - allowed
-    if unknown:
-        raise ValueError("Unsupported job fields: " + ", ".join(sorted(unknown)))
-    if "status" in fields and fields["status"] not in {
-        "queued", "running", "cancelling", "cancelled", "completed", "partial", "failed", "interrupted"
-    }:
-        raise ValueError("Invalid training job state.")
-    for key in ("generated_count", "current_index"):
-        if key in fields and int(fields[key]) < 0:
-            raise ValueError(key + " cannot be negative.")
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(FaceDatasetJobRow, job_id)
-        if not row:
-            return None
-        for key, value in fields.items():
-            if key in {"failed_targets", "review_targets"}:
-                value = json.dumps(value if isinstance(value, list) else [], ensure_ascii=False)
-            elif key == "error":
-                value = str(value or "")[:2000] or None
-            elif key == "current_label":
-                value = str(value or "")[:80]
-            setattr(row, key, value)
-        row.updated_at = datetime.now(timezone.utc)
-        session.commit()
-        return _dataset_job_dict(row)
-
-
-def update_face_photo_validation(
-    photo_id: str, *, validation_status: str, validation_message: str = "",
-    actual_yaw: float | None = None, actual_pitch: float | None = None,
-) -> dict | None:
-    if validation_status not in {"not_checked", "passed", "needs_review", "not_applicable"}:
-        raise ValueError("Invalid photo validation status.")
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(FacePhotoRow, photo_id)
-        if not row:
-            return None
-        row.validation_status = validation_status
-        row.validation_message = (validation_message or "")[:1200] or None
-        row.actual_yaw = actual_yaw
-        row.actual_pitch = actual_pitch
-        session.commit()
-        return {
-            "id": row.id, "validation_status": row.validation_status,
-            "validation_message": row.validation_message,
-            "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch,
-        }
-
-
-def delete_face_dataset_group(group_id: str) -> dict | None:
-    """Delete a group's metadata and its grouped photo records in one transaction."""
-    ensure_schema()
-    with _session_factory()() as session:
-        group = session.get(FaceDatasetGroupRow, group_id)
-        if not group:
-            return None
-        photos = session.scalars(
-            select(FacePhotoRow).where(FacePhotoRow.group_id == group_id)
-        ).all()
-        result = _dataset_group_dict(group)
-        result["photos"] = [
-            {"id": photo.id, "profile_id": photo.profile_id, "filename": photo.filename}
-            for photo in photos
-        ]
-        for photo in photos:
-            session.delete(photo)
-        session.delete(group)
-        session.commit()
-        return result
-
-
-def list_face_photo_names(profile_id: str) -> set[str]:
-    ensure_schema()
-    with _session_factory()() as session:
-        rows = session.scalars(select(FacePhotoRow.filename).where(FacePhotoRow.profile_id == profile_id)).all()
-        return set(rows)
-
-
-def list_face_photo_records(profile_id: str, filenames: set[str] | None = None) -> list[dict]:
-    """Return stored photo names and bytes for rebuilding a profile's local training cache."""
-    ensure_schema()
-    with _session_factory()() as session:
-        query = select(FacePhotoRow).where(FacePhotoRow.profile_id == profile_id)
-        if filenames is not None:
-            if not filenames:
-                return []
-            query = query.where(FacePhotoRow.filename.in_(filenames))
-        rows = session.scalars(query.order_by(FacePhotoRow.created_at.asc())).all()
-        return [
-            {
-                "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
-                "mime_type": row.mime_type, "byte_size": row.byte_size,
-                "group_id": row.group_id, "angle_label": row.angle_label,
-                "photo_kind": row.photo_kind,
-                "validation_status": row.validation_status or "not_checked",
-                "validation_message": row.validation_message,
-                "training_caption": row.training_caption or "",
-                "target_yaw": row.target_yaw, "target_pitch": row.target_pitch,
-                "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch,
-                "image_data": bytes(row.image_data),
-            }
-            for row in rows
-        ]
-
-
-def get_face_photo_bytes(photo_id: str) -> tuple[dict, bytes] | None:
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(FacePhotoRow, photo_id)
-        if not row:
-            return None
-        return ({"id": row.id, "profile_id": row.profile_id, "filename": row.filename,
-                 "mime_type": row.mime_type, "byte_size": row.byte_size,
-                 "group_id": row.group_id, "angle_label": row.angle_label,
-                 "photo_kind": row.photo_kind,
-                 "validation_status": row.validation_status or "not_checked",
-                 "validation_message": row.validation_message,
-                 "training_caption": row.training_caption or "",
-                 "target_yaw": row.target_yaw, "target_pitch": row.target_pitch,
-                 "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch}, bytes(row.image_data))
-
-
-def update_face_photo(
-    photo_id: str, *, angle_label: str | None = None,
-    training_caption: str | None = None,
-    image_data: bytes | None = None, mime_type: str | None = None,
-) -> dict | None:
-    """Update a grouped training photo's label and/or encoded image bytes."""
-    ensure_schema()
-    if image_data is not None and (not image_data or len(image_data) > 8 * 1024 * 1024):
-        raise ValueError("Replacement photos must be non-empty and 8 MB or smaller.")
-    normalized_label = None
-    if angle_label is not None:
-        normalized_label = str(angle_label).strip()
-        if not normalized_label or len(normalized_label) > 80:
-            raise ValueError("Photo label must contain 1–80 characters.")
-    with _session_factory()() as session:
-        row = session.get(FacePhotoRow, photo_id)
-        if not row:
-            return None
-        if normalized_label is not None:
-            row.angle_label = normalized_label
-        if training_caption is not None:
-            row.training_caption = str(training_caption or "").strip()[:1200]
-        if image_data is not None:
-            row.image_data = image_data
-            row.byte_size = len(image_data)
-            row.mime_type = (mime_type or "image/jpeg")[:100]
-            row.validation_status = "needs_review"
-            row.validation_message = "The image was replaced; review its identity, pose and expression before training."
-            row.actual_yaw = None
-            row.actual_pitch = None
-        session.commit()
-        return {
-            "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
-            "group_id": row.group_id, "angle_label": row.angle_label or "Training photo",
-            "photo_kind": row.photo_kind,
-            "validation_status": row.validation_status or "not_checked",
-            "validation_message": row.validation_message,
-            "training_caption": row.training_caption or "",
-            "target_yaw": row.target_yaw, "target_pitch": row.target_pitch,
-            "actual_yaw": row.actual_yaw, "actual_pitch": row.actual_pitch,
-            "mime_type": row.mime_type, "byte_size": row.byte_size,
-        }
-
-
-def delete_face_photo(photo_id: str) -> dict | None:
-    """Delete one photo record and return local-file metadata for cleanup."""
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(FacePhotoRow, photo_id)
-        if not row:
-            return None
-        result = {
-            "id": row.id, "profile_id": row.profile_id, "filename": row.filename,
-            "group_id": row.group_id, "angle_label": row.angle_label,
-            "photo_kind": row.photo_kind,
-            "validation_status": row.validation_status or "not_checked",
-        }
-        session.delete(row)
-        session.commit()
-        return result
-
-
-def save_face_model_bundle(profile_id: str, backend: str, filename: str, bundle_data: bytes, file_count: int) -> dict:
-    if backend not in {"local", "runpod"}:
-        raise ValueError("Face model backend must be local or runpod.")
-    if not bundle_data or len(bundle_data) > 512 * 1024 * 1024:
-        raise ValueError("Face model bundle must be non-empty and no larger than 512 MB.")
-    ensure_schema()
-    with _session_factory()() as session:
-        if not session.get(FaceProfileRow, profile_id):
-            raise ValueError("Face profile is not present in the configured database.")
-        row = session.scalars(
-            select(FaceModelArtifactRow).where(
-                FaceModelArtifactRow.profile_id == profile_id,
-                FaceModelArtifactRow.backend == backend,
-            )
-        ).first()
-        if row is None:
-            row = FaceModelArtifactRow(
-                id=uuid.uuid4().hex, profile_id=profile_id, backend=backend,
-                filename=Path(filename).name, file_count=file_count,
-                bundle_size=len(bundle_data), bundle_data=bundle_data,
-            )
-            session.add(row)
-        else:
-            row.filename = Path(filename).name
-            row.file_count = file_count
-            row.bundle_size = len(bundle_data)
-            row.bundle_data = bundle_data
-            row.updated_at = datetime.now(timezone.utc)
-        session.commit()
-        return {
-            "id": row.id, "profile_id": row.profile_id, "backend": row.backend,
-            "filename": row.filename, "file_count": row.file_count, "bundle_size": row.bundle_size,
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-        }
-
-
-def get_face_model_bundle(profile_id: str, backend: str) -> dict | None:
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.scalars(
-            select(FaceModelArtifactRow).where(
-                FaceModelArtifactRow.profile_id == profile_id,
-                FaceModelArtifactRow.backend == backend,
-            )
-        ).first()
-        if not row:
-            return None
-        return {
-            "id": row.id, "profile_id": row.profile_id, "backend": row.backend,
-            "filename": row.filename, "file_count": row.file_count, "bundle_size": row.bundle_size,
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-            "bundle_data": bytes(row.bundle_data),
-        }
-
-
-def _asset_dict(row: GeneratedAssetRow, include_content: bool = False) -> dict:
-    result = {
-        "id": row.id, "asset_type": row.asset_type, "title": row.title, "filename": row.filename,
-        "mime_type": row.mime_type, "prompt": row.prompt, "negative_prompt": row.negative_prompt,
-        "profile_id": row.profile_id, "profile_name": row.profile_name, "backend": row.backend,
-        "generation_mode": row.generation_mode, "media_size": row.media_size,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    }
-    if include_content:
-        result["media_data"] = bytes(row.media_data)
+def update_face_profile_record(profile_id, fields):
+    allowed={"local_model_ready","runpod_model_ready","local_training_state","runpod_training_state","local_training_error",
+        "local_training_job_id","runpod_training_error","runpod_training_job_id","token","description"}
+    if set(fields)-allowed: raise ValueError("Unsupported profile fields: "+", ".join(sorted(set(fields)-allowed)))
+    if not fields: return get_face_profile_record(profile_id)
+    assignments=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in fields)
+    try:
+        _run(sql.SQL("UPDATE face_profiles SET {}{} WHERE id=%s").format(assignments,sql.SQL(", name_key=name_key")), tuple(fields.values())+(profile_id,))
+    except UniqueViolation as exc:
+        raise ValueError("That prompt token is already assigned to another profile.") from exc
+    result=get_face_profile_record(profile_id)
+    if result is None: raise ValueError("Face profile not found.")
     return result
 
 
-def create_asset(*, asset_type: str, title: str, filename: str, mime_type: str, media_data: bytes,
-                 prompt: str = "", negative_prompt: str = "", profile_id: str | None = None,
-                 profile_name: str | None = None, backend: str = "cpu", generation_mode: str = "") -> dict:
-    if asset_type not in {"image", "video"}:
-        raise ValueError("Asset type must be image or video.")
-    if not media_data:
-        raise ValueError("Cannot save an empty media file.")
-    if len(media_data) > 512 * 1024 * 1024:
-        raise ValueError("Media files must be 512 MB or smaller to store in the database.")
+def delete_face_profile_record(profile_id):
     ensure_schema()
-    with _session_factory()() as session:
-        row = GeneratedAssetRow(
-            id=uuid.uuid4().hex, asset_type=asset_type, title=(title or "").strip()[:160] or
-            ("Generated image" if asset_type == "image" else "Generated video"),
-            filename=Path(filename).name, mime_type=mime_type, prompt=prompt[:1200],
-            negative_prompt=negative_prompt[:600], profile_id=profile_id, profile_name=profile_name,
-            backend=backend[:32], generation_mode=generation_mode[:32], media_size=len(media_data),
-            media_data=media_data,
-        )
-        session.add(row)
-        session.commit()
-        return _asset_dict(row)
+    return _run("DELETE FROM face_profiles WHERE id=%s",(profile_id,)) > 0
 
 
-def list_asset_filenames(asset_type: str) -> set[str]:
-    if asset_type not in {"image", "video"}:
-        raise ValueError("Asset type must be image or video.")
+def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", group_id=None, angle_label=None,
+    photo_kind="manual", validation_status="not_checked", validation_message=None, training_caption="",
+    target_yaw=None,target_pitch=None,actual_yaw=None,actual_pitch=None):
+    if photo_kind not in {"source","angle","expression","body","manual"}: raise ValueError("Invalid photo kind.")
+    if validation_status not in {"not_checked","passed","needs_review","not_applicable"}: raise ValueError("Invalid photo validation status.")
     ensure_schema()
-    with _session_factory()() as session:
-        filenames = session.scalars(
-            select(GeneratedAssetRow.filename).where(GeneratedAssetRow.asset_type == asset_type)
-        ).all()
-        return {Path(name).name for name in filenames}
+    photo_id=uuid.uuid4().hex
+    _run("""INSERT INTO face_photos(id,profile_id,filename,mime_type,byte_size,image_data,group_id,angle_label,photo_kind,
+        validation_status,validation_message,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (photo_id,profile_id,Path(filename).name,mime_type,len(image_data),image_data,group_id,(angle_label or "")[:80] or None,
+         photo_kind,validation_status,(validation_message or "")[:1200] or None,(training_caption or "")[:1200],
+         target_yaw,target_pitch,actual_yaw,actual_pitch))
+    return photo_id
 
 
-def _asset_query(asset_type: str | None = None, search: str = ""):
-    query = select(GeneratedAssetRow)
-    if asset_type in {"image", "video"}:
-        query = query.where(GeneratedAssetRow.asset_type == asset_type)
-    term = (search or "").strip()[:160]
+def _group_dict(r):
+    if not r: return None
+    return {"id":r["id"],"profile_id":r["profile_id"],"title":r["title"],"dataset_type":r.get("dataset_type") or "face_angles",
+        "prompt":r.get("prompt") or "","status":r["status"],"expected_count":r["expected_count"],"generated_count":r["generated_count"],
+        "error":r.get("error"),"created_at":_iso(r.get("created_at")),"updated_at":_iso(r.get("updated_at"))}
+
+
+def create_face_dataset_group(profile_id,title,expected_count=5,dataset_type="face_angles",prompt=""):
+    title=(title or "").strip(); dataset_type=(dataset_type or "face_angles").strip().lower(); prompt=(prompt or "").strip()
+    if not title or len(title)>120: raise ValueError("Dataset group title must contain 1–120 characters.")
+    if not 1<=int(expected_count)<=30: raise ValueError("Dataset group expected count must be between 1 and 30.")
+    if dataset_type not in {"face_angles","expressions","body_type"}: raise ValueError("Invalid dataset type.")
+    if len(prompt)>1200: raise ValueError("Dataset prompt must be 1200 characters or fewer.")
+    ensure_schema(); gid=uuid.uuid4().hex
+    _run("INSERT INTO face_dataset_groups(id,profile_id,title,dataset_type,prompt,status,expected_count) VALUES(%s,%s,%s,%s,%s,'generating',%s)",
+         (gid,profile_id,title,dataset_type,prompt,int(expected_count)))
+    return get_face_dataset_group(gid)
+
+
+def get_face_dataset_group(group_id):
+    ensure_schema(); return _group_dict(_one("SELECT * FROM face_dataset_groups WHERE id=%s",(group_id,)))
+
+
+def list_face_dataset_group_photo_records(group_id):
+    ensure_schema()
+    return _all("""SELECT id,profile_id,filename,group_id,angle_label,photo_kind,validation_status,validation_message,training_caption,
+        target_yaw,target_pitch,actual_yaw,actual_pitch FROM face_photos WHERE group_id=%s ORDER BY created_at,id""",(group_id,))
+
+
+def update_face_dataset_group(group_id,*,title=None,status=None,generated_count=None,expected_count=None,error=None):
+    allowed={"generating","completed","partial","failed","cancelled"}
+    if status is not None and status not in allowed: raise ValueError("Invalid dataset group status.")
+    fields={}
+    if title is not None:
+        title=str(title).strip()
+        if not title or len(title)>120: raise ValueError("Dataset group name must contain 1–120 characters.")
+        fields["title"]=title
+    if expected_count is not None:
+        expected_count=int(expected_count)
+        if not 1<=expected_count<=30: raise ValueError("Expected photo count must be between 1 and 30.")
+        fields["expected_count"]=expected_count
+    if generated_count is not None:
+        generated_count=int(generated_count)
+        if generated_count<0: raise ValueError("Generated count cannot be negative.")
+        fields["generated_count"]=generated_count
+    if status is not None: fields["status"]=status
+    if error is not None: fields["error"]=str(error)[:1200] or None
+    fields["updated_at"]=_now()
+    if fields:
+        sets=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in fields)
+        _run(sql.SQL("UPDATE face_dataset_groups SET {} WHERE id=%s").format(sets),tuple(fields.values())+(group_id,))
+    return get_face_dataset_group(group_id)
+
+
+def list_face_dataset_groups(profile_id=None,limit=200):
+    ensure_schema()
+    if profile_id: rows=_all("SELECT g.*,p.name AS profile_name FROM face_dataset_groups g LEFT JOIN face_profiles p ON p.id=g.profile_id WHERE g.profile_id=%s ORDER BY g.created_at DESC LIMIT %s",(profile_id,max(1,min(int(limit),500))))
+    else: rows=_all("SELECT g.*,p.name AS profile_name FROM face_dataset_groups g LEFT JOIN face_profiles p ON p.id=g.profile_id ORDER BY g.created_at DESC LIMIT %s",(max(1,min(int(limit),500)),))
+    result=[]
+    for row in rows:
+        rec=_group_dict(row); rec["profile_name"]=row.get("profile_name") or "Unknown profile"
+        photos=_all("""SELECT id,filename,angle_label,photo_kind,validation_status,validation_message,target_yaw,target_pitch,
+            actual_yaw,actual_pitch,mime_type,byte_size,created_at FROM face_photos WHERE group_id=%s ORDER BY created_at,id""",(row["id"],))
+        rec["photos"]=[dict(p,angle_label=p.get("angle_label") or "Training photo",validation_status=p.get("validation_status") or "not_checked",created_at=_iso(p.get("created_at"))) for p in photos]
+        rec["photo_count"]=len(photos); result.append(rec)
+    return result
+
+
+def _job_dict(r):
+    if not r: return None
+    def parse(v):
+        try:
+            x=json.loads(v or "[]"); return x if isinstance(x,list) else []
+        except (TypeError,json.JSONDecodeError): return []
+    return {"id":r["id"],"group_id":r["group_id"],"profile_id":r["profile_id"],"dataset_type":r["dataset_type"],
+        "status":r["status"],"backend":r["backend"],"expected_count":r["expected_count"],"generated_count":r["generated_count"],
+        "current_index":r["current_index"],"current_label":r["current_label"],"current_task_id":r.get("current_task_id"),
+        "cancel_requested":bool(r["cancel_requested"]),"group_count_base":int(r.get("group_count_base") or 0),
+        "target_manifest":parse(r.get("target_manifest")),"failed_targets":parse(r.get("failed_targets")),
+        "review_targets":parse(r.get("review_targets")),"source_photo_id":r["source_photo_id"],"error":r.get("error"),
+        "created_at":_iso(r.get("created_at")),"updated_at":_iso(r.get("updated_at"))}
+
+
+def create_face_dataset_job(*,job_id,group_id,profile_id,dataset_type,backend,expected_count,source_photo_id,target_manifest=None,group_count_base=0):
+    if dataset_type not in {"face_angles","expressions"}: raise ValueError("Unsupported face dataset generation type.")
+    if backend not in {"cpu","local_gpu","runpod","cloud_gpu"}: raise ValueError("Unsupported generation backend.")
+    if not 1<=int(expected_count)<=20: raise ValueError("Expected target count must be between 1 and 20.")
+    targets=[x for x in (target_manifest or []) if isinstance(x,dict)]
+    if targets and len(targets)!=int(expected_count): raise ValueError("Target manifest count must match expected_count.")
+    if int(group_count_base)<0: raise ValueError("Base group photo count cannot be negative.")
+    if not all(isinstance(x,str) and len(x)==32 for x in (job_id,group_id,profile_id,source_photo_id)): raise ValueError("Invalid dataset generation job identifiers.")
+    group=get_face_dataset_group(group_id)
+    if not group or group["profile_id"]!=profile_id or group["dataset_type"]!=dataset_type: raise ValueError("Dataset group does not match generation job.")
+    source=_one("SELECT id FROM face_photos WHERE id=%s AND profile_id=%s AND group_id=%s",(source_photo_id,profile_id,group_id))
+    if not source: raise ValueError("Source photo does not belong to target dataset group.")
+    _run("""INSERT INTO face_dataset_jobs(id,group_id,profile_id,dataset_type,status,backend,expected_count,source_photo_id,group_count_base,target_manifest)
+        VALUES(%s,%s,%s,%s,'queued',%s,%s,%s,%s,%s)""",
+        (job_id,group_id,profile_id,dataset_type,backend,int(expected_count),source_photo_id,int(group_count_base),json.dumps(targets,ensure_ascii=False)))
+    return get_face_dataset_job(job_id)
+
+
+def get_face_dataset_job(job_id):
+    ensure_schema(); return _job_dict(_one("SELECT * FROM face_dataset_jobs WHERE id=%s",(job_id,)))
+
+
+def list_face_dataset_jobs(*,profile_id=None,group_id=None,active_only=False,limit=50):
+    ensure_schema(); clauses=[]; vals=[]
+    if profile_id: clauses.append("profile_id=%s"); vals.append(profile_id)
+    if group_id: clauses.append("group_id=%s"); vals.append(group_id)
+    if active_only: clauses.append("status IN ('queued','running','cancelling')")
+    where=(" WHERE "+" AND ".join(clauses)) if clauses else ""
+    vals.append(max(1,min(int(limit),100)))
+    return [_job_dict(r) for r in _all("SELECT * FROM face_dataset_jobs"+where+" ORDER BY created_at DESC LIMIT %s",tuple(vals))]
+
+
+def update_face_dataset_job(job_id,**fields):
+    allowed={"status","generated_count","current_index","current_label","current_task_id","cancel_requested","failed_targets","review_targets","error"}
+    if set(fields)-allowed: raise ValueError("Unsupported job fields: "+", ".join(sorted(set(fields)-allowed)))
+    if "status" in fields and fields["status"] not in {"queued","running","cancelling","cancelled","completed","partial","failed","interrupted"}: raise ValueError("Invalid training job state.")
+    for k in ("generated_count","current_index"):
+        if k in fields and int(fields[k])<0: raise ValueError(k+" cannot be negative.")
+    vals={}
+    for k,v in fields.items():
+        if k in {"failed_targets","review_targets"}: v=json.dumps(v if isinstance(v,list) else [],ensure_ascii=False)
+        elif k=="error": v=str(v or "")[:2000] or None
+        elif k=="current_label": v=str(v or "")[:80]
+        vals[k]=v
+    if vals:
+        vals["updated_at"]=_now()
+        sets=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in vals)
+        _run(sql.SQL("UPDATE face_dataset_jobs SET {} WHERE id=%s").format(sets),tuple(vals.values())+(job_id,))
+    return get_face_dataset_job(job_id)
+
+
+def update_face_photo_validation(photo_id,*,validation_status,validation_message="",actual_yaw=None,actual_pitch=None):
+    if validation_status not in {"not_checked","passed","needs_review","not_applicable"}: raise ValueError("Invalid photo validation status.")
+    _run("UPDATE face_photos SET validation_status=%s,validation_message=%s,actual_yaw=%s,actual_pitch=%s WHERE id=%s",
+         (validation_status,(validation_message or "")[:1200] or None,actual_yaw,actual_pitch,photo_id))
+    return _one("SELECT id,validation_status,validation_message,actual_yaw,actual_pitch FROM face_photos WHERE id=%s",(photo_id,))
+
+
+def delete_face_dataset_group(group_id):
+    ensure_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM face_dataset_groups WHERE id=%s",(group_id,)); group=cur.fetchone()
+        if not group: return None
+        cur.execute("SELECT id,profile_id,filename FROM face_photos WHERE group_id=%s",(group_id,)); photos=cur.fetchall()
+        cur.execute("DELETE FROM face_photos WHERE group_id=%s",(group_id,))
+        cur.execute("DELETE FROM face_dataset_groups WHERE id=%s",(group_id,))
+    result=_group_dict(group); result["photos"]=photos; return result
+
+
+def list_face_photo_names(profile_id):
+    ensure_schema(); return {r["filename"] for r in _all("SELECT filename FROM face_photos WHERE profile_id=%s",(profile_id,))}
+
+
+def _photo_dict(r,include_bytes=False):
+    if not r:return None
+    keys=("id","profile_id","filename","mime_type","byte_size","group_id","angle_label","photo_kind","validation_status",
+          "validation_message","training_caption","target_yaw","target_pitch","actual_yaw","actual_pitch")
+    d={k:r.get(k) for k in keys}
+    d["validation_status"]=d.get("validation_status") or "not_checked"; d["training_caption"]=d.get("training_caption") or ""
+    if include_bytes:d["image_data"]=bytes(r["image_data"])
+    return d
+
+
+def list_face_photo_records(profile_id,filenames=None):
+    ensure_schema()
+    if filenames is not None:
+        if not filenames:return []
+        rows=_all("SELECT * FROM face_photos WHERE profile_id=%s AND filename=ANY(%s) ORDER BY created_at",(profile_id,list(filenames)))
+    else: rows=_all("SELECT * FROM face_photos WHERE profile_id=%s ORDER BY created_at",(profile_id,))
+    return [_photo_dict(r,True) for r in rows]
+
+
+def get_face_photo_bytes(photo_id):
+    ensure_schema(); r=_one("SELECT * FROM face_photos WHERE id=%s",(photo_id,))
+    return (_photo_dict(r),bytes(r["image_data"])) if r else None
+
+
+def update_face_photo(photo_id,*,angle_label=None,training_caption=None,image_data=None,mime_type=None):
+    if image_data is not None and (not image_data or len(image_data)>8*1024*1024): raise ValueError("Replacement photos must be non-empty and 8 MB or smaller.")
+    if angle_label is not None:
+        angle_label=str(angle_label).strip()
+        if not angle_label or len(angle_label)>80: raise ValueError("Photo label must contain 1–80 characters.")
+    updates={}
+    if angle_label is not None: updates["angle_label"]=angle_label
+    if training_caption is not None: updates["training_caption"]=str(training_caption or "").strip()[:1200]
+    if image_data is not None:
+        updates.update(image_data=image_data,byte_size=len(image_data),mime_type=(mime_type or "image/jpeg")[:100],
+            validation_status="needs_review",validation_message="The image was replaced; review its identity, pose and expression before training.",
+            actual_yaw=None,actual_pitch=None)
+    if updates:
+        sets=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in updates)
+        _run(sql.SQL("UPDATE face_photos SET {} WHERE id=%s").format(sets),tuple(updates.values())+(photo_id,))
+    r=_one("SELECT * FROM face_photos WHERE id=%s",(photo_id,))
+    if not r:return None
+    d=_photo_dict(r); d["angle_label"]=d.get("angle_label") or "Training photo"; return d
+
+
+def delete_face_photo(photo_id):
+    ensure_schema(); r=_one("SELECT id,profile_id,filename,group_id,angle_label,photo_kind,validation_status FROM face_photos WHERE id=%s",(photo_id,))
+    if r:_run("DELETE FROM face_photos WHERE id=%s",(photo_id,))
+    return r
+
+
+def save_face_model_bundle(profile_id,backend,filename,bundle_data,file_count):
+    if backend not in {"local","runpod"}: raise ValueError("Face model backend must be local or runpod.")
+    if not bundle_data or len(bundle_data)>512*1024*1024: raise ValueError("Face model bundle must be non-empty and no larger than 512 MB.")
+    ensure_schema(); name=Path(filename).name
+    r=_one("""INSERT INTO face_model_artifacts(id,profile_id,backend,filename,file_count,bundle_size,bundle_data)
+        VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(profile_id,backend) DO UPDATE SET filename=EXCLUDED.filename,
+        file_count=EXCLUDED.file_count,bundle_size=EXCLUDED.bundle_size,bundle_data=EXCLUDED.bundle_data,updated_at=now()
+        RETURNING id,profile_id,backend,filename,file_count,bundle_size,updated_at""",
+        (uuid.uuid4().hex,profile_id,backend,name,int(file_count),len(bundle_data),bundle_data))
+    return dict(r,updated_at=_iso(r["updated_at"]))
+
+
+def get_face_model_bundle(profile_id,backend):
+    ensure_schema(); r=_one("SELECT * FROM face_model_artifacts WHERE profile_id=%s AND backend=%s",(profile_id,backend))
+    if not r:return None
+    r=dict(r,updated_at=_iso(r["updated_at"]),bundle_data=bytes(r["bundle_data"])); return r
+
+
+def _asset_dict(r,include_content=False):
+    if not r:return None
+    d={k:r.get(k) for k in ("id","asset_type","title","filename","mime_type","prompt","negative_prompt","profile_id","profile_name","backend","generation_mode","media_size")}
+    d.update(created_at=_iso(r.get("created_at")),updated_at=_iso(r.get("updated_at")))
+    if include_content:d["media_data"]=bytes(r["media_data"])
+    return d
+
+
+def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",negative_prompt="",profile_id=None,profile_name=None,backend="cpu",generation_mode=""):
+    if asset_type not in {"image","video"}: raise ValueError("Asset type must be image or video.")
+    if not media_data: raise ValueError("Cannot save an empty media file.")
+    if len(media_data)>512*1024*1024: raise ValueError("Media files must be 512 MB or smaller to store in the database.")
+    ensure_schema()
+    title=(title or "").strip()[:160] or ("Generated image" if asset_type=="image" else "Generated video")
+    r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,profile_id,profile_name,
+        backend,generation_mode,media_size,media_data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+        (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,prompt[:1200],negative_prompt[:600],profile_id,profile_name,
+         backend[:32],generation_mode[:32],len(media_data),media_data))
+    return _asset_dict(r)
+
+
+def list_asset_filenames(asset_type):
+    if asset_type not in {"image","video"}: raise ValueError("Asset type must be image or video.")
+    ensure_schema(); return {Path(r["filename"]).name for r in _all("SELECT filename FROM generated_assets WHERE asset_type=%s",(asset_type,))}
+
+
+def _asset_where(asset_type=None,search=""):
+    clauses=[]; vals=[]
+    if asset_type in {"image","video"}: clauses.append("asset_type=%s"); vals.append(asset_type)
+    term=(search or "").strip()[:160]
     if term:
-        pattern = f"%{term}%"
-        query = query.where(
-            GeneratedAssetRow.title.ilike(pattern)
-            | GeneratedAssetRow.prompt.ilike(pattern)
-            | GeneratedAssetRow.negative_prompt.ilike(pattern)
-            | GeneratedAssetRow.profile_name.ilike(pattern)
-        )
-    return query
+        clauses.append("(title ILIKE %s OR prompt ILIKE %s OR negative_prompt ILIKE %s OR COALESCE(profile_name,'') ILIKE %s)")
+        pattern="%"+term+"%"; vals.extend([pattern]*4)
+    return (" WHERE "+" AND ".join(clauses) if clauses else ""),tuple(vals)
 
 
-def count_assets(asset_type: str | None = None, search: str = "") -> int:
-    ensure_schema()
-    with _session_factory()() as session:
-        query = _asset_query(asset_type, search).with_only_columns(func.count(GeneratedAssetRow.id)).order_by(None)
-        return int(session.scalar(query) or 0)
+def count_assets(asset_type=None,search=""):
+    ensure_schema(); where,vals=_asset_where(asset_type,search)
+    return int(_one("SELECT count(*) AS n FROM generated_assets"+where,vals)["n"])
 
 
-def list_assets(
-    asset_type: str | None = None,
-    limit: int = 200,
-    offset: int = 0,
-    search: str = "",
-    sort: str = "newest",
-) -> list[dict]:
-    ensure_schema()
-    limit = max(1, min(int(limit), 500))
-    offset = max(0, int(offset))
-    with _session_factory()() as session:
-        query = _asset_query(asset_type, search)
-        if sort == "oldest":
-            ordering = (GeneratedAssetRow.created_at.asc(), GeneratedAssetRow.id.asc())
-        elif sort == "title":
-            ordering = (func.lower(GeneratedAssetRow.title).asc(), GeneratedAssetRow.created_at.desc())
-        else:
-            ordering = (GeneratedAssetRow.created_at.desc(), GeneratedAssetRow.id.desc())
-        rows = session.scalars(query.order_by(*ordering).offset(offset).limit(limit)).all()
-        return [_asset_dict(row) for row in rows]
+def list_assets(asset_type=None,limit=200,offset=0,search="",sort="newest"):
+    ensure_schema(); where,vals=_asset_where(asset_type,search)
+    order="created_at ASC,id ASC" if sort=="oldest" else ("lower(title) ASC,created_at DESC" if sort=="title" else "created_at DESC,id DESC")
+    rows=_all("SELECT * FROM generated_assets"+where+" ORDER BY "+order+" LIMIT %s OFFSET %s",vals+(max(1,min(int(limit),500)),max(0,int(offset))))
+    return [_asset_dict(r) for r in rows]
 
 
-def get_asset(asset_id: str, include_content: bool = False) -> dict | None:
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(GeneratedAssetRow, asset_id)
-        return _asset_dict(row, include_content=include_content) if row else None
+def get_asset(asset_id,include_content=False):
+    ensure_schema(); return _asset_dict(_one("SELECT * FROM generated_assets WHERE id=%s",(asset_id,)),include_content)
 
 
-def update_asset(asset_id: str, fields: dict) -> dict | None:
-    allowed = {"title", "prompt", "negative_prompt"}
-    if not fields or set(fields) - allowed:
-        raise ValueError("Update title, prompt, and/or negative prompt only.")
+def update_asset(asset_id,fields):
+    allowed={"title","prompt","negative_prompt"}
+    if not fields or set(fields)-allowed: raise ValueError("Update title, prompt, and/or negative prompt only.")
+    fields=dict(fields)
     if "title" in fields:
-        title = str(fields["title"] or "").strip()
-        if not title or len(title) > 160:
-            raise ValueError("Title must contain 1–160 characters.")
-        fields["title"] = title
-    if "prompt" in fields and len(str(fields["prompt"] or "")) > 1200:
-        raise ValueError("Prompt must be 1200 characters or fewer.")
-    if "negative_prompt" in fields and len(str(fields["negative_prompt"] or "")) > 600:
-        raise ValueError("Negative prompt must be 600 characters or fewer.")
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(GeneratedAssetRow, asset_id)
-        if not row:
-            return None
-        for key, value in fields.items():
-            setattr(row, key, value)
-        session.commit()
-        return _asset_dict(row)
+        fields["title"]=str(fields["title"] or "").strip()
+        if not fields["title"] or len(fields["title"])>160: raise ValueError("Title must contain 1–160 characters.")
+    if "prompt" in fields and len(str(fields["prompt"] or ""))>1200: raise ValueError("Prompt must be 1200 characters or fewer.")
+    if "negative_prompt" in fields and len(str(fields["negative_prompt"] or ""))>600: raise ValueError("Negative prompt must be 600 characters or fewer.")
+    sets=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in fields)
+    r=_one(sql.SQL("UPDATE generated_assets SET {} , updated_at=now() WHERE id=%s RETURNING *").format(sets),tuple(fields.values())+(asset_id,))
+    return _asset_dict(r)
 
 
-def delete_asset(asset_id: str) -> dict | None:
-    ensure_schema()
-    with _session_factory()() as session:
-        row = session.get(GeneratedAssetRow, asset_id)
-        if not row:
-            return None
-        result = _asset_dict(row)
-        session.delete(row)
-        session.commit()
-        return result
+def delete_asset(asset_id):
+    ensure_schema(); r=_one("SELECT * FROM generated_assets WHERE id=%s",(asset_id,))
+    if r:_run("DELETE FROM generated_assets WHERE id=%s",(asset_id,))
+    return _asset_dict(r)
