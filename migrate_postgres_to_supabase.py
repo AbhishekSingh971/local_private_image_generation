@@ -113,11 +113,24 @@ def migrate(source_uri: str, target_uri: str) -> int:
                 sql.Identifier(table), column_sql, placeholders
             )
 
+            # Legacy databases may contain NULLs for columns that newer
+            # schemas require to be non-NULL. Normalize known legacy fields
+            # while copying, without modifying the source database.
+            select_items = []
+            for name in columns:
+                if table == "face_dataset_groups" and name == "dataset_type":
+                    select_items.append(sql.SQL("COALESCE({}, 'face_angles')").format(sql.Identifier(name)))
+                elif table == "face_dataset_groups" and name == "prompt":
+                    select_items.append(sql.SQL("COALESCE({}, '')").format(sql.Identifier(name)))
+                else:
+                    select_items.append(sql.Identifier(name))
+            select_sql = sql.SQL(", ").join(select_items)
+
             with source.cursor(name=f"migration_{table}") as src_cur:
                 src_cur.itersize = 250
                 src_cur.execute(
                     sql.SQL("SELECT {} FROM {}").format(
-                        column_sql, sql.Identifier(table)
+                        select_sql, sql.Identifier(table)
                     )
                 )
                 with target.cursor() as dst_cur:
