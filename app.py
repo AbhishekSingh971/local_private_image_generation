@@ -57,6 +57,7 @@ from face_profiles import (
 from pose_validation import build_pose_control_image, estimate_head_pose, validate_pose_target
 from training_generation import targets_for_dataset_type
 from image_quality import assess_image_quality
+from safe_diagnostics import format_exception_detail
 
 from studio_db import (
     count_assets,
@@ -1059,13 +1060,25 @@ def api_start_face_dataset_job(profile_id):
             dataset_type=dataset_type, backend=backend, expected_count=len(targets),
             source_photo_id=source_record["id"], target_manifest=targets, group_count_base=0,
         )
+        # Resolve the durable response payload before starting the worker. This avoids
+        # returning a 503 after generation has already begun just because a follow-up
+        # database read failed.
+        group_payload = get_face_dataset_group(group_id)
+        if not group_payload:
+            raise RuntimeError("The dataset group was created but could not be read back.")
+        job_payload = _create_face_dataset_job_payload(job)
         cancel_event = threading.Event()
         with FACE_DATASET_JOB_LOCK:
             # Register the job before returning so polling and cancellation work immediately.
             FACE_DATASET_JOB_EVENTS[job_id] = cancel_event
-            future = FACE_DATASET_JOB_POOL.submit(_run_face_dataset_generation_job, job_id)
+            try:
+                future = FACE_DATASET_JOB_POOL.submit(_run_face_dataset_generation_job, job_id)
+            except Exception:
+                FACE_DATASET_JOB_EVENTS.pop(job_id, None)
+                FACE_DATASET_JOB_FUTURES.pop(job_id, None)
+                raise
             FACE_DATASET_JOB_FUTURES[job_id] = future
-        return jsonify(status="queued", job=_create_face_dataset_job_payload(job), group=get_face_dataset_group(group_id)), 202
+        return jsonify(status="queued", job=job_payload, group=group_payload), 202
     except ValueError as exc:
         if group_id:
             try:
@@ -1075,13 +1088,18 @@ def api_start_face_dataset_job(profile_id):
         return jsonify(error=str(exc)), 400
     except Exception as exc:
         app.logger.exception("Could not start a face dataset generation job")
-        # Show a useful diagnostic to the user while redacting connection credentials.
-        # The full traceback remains in server logs for deeper debugging.
-        detail = (type(exc).__name__ + ": " + str(exc)).strip()
-        detail = re.sub(r"(?i)(postgres(?:ql)?://)[^@\\s]+@", r"\\1[redacted]@", detail)
-        detail = re.sub(r"(?i)(password|token|secret|api[_-]?key)\\s*[:=]\\s*[^,;\\s]+", r"\\1=[redacted]", detail)
-        detail = detail[:500] or "Unknown startup error."
+        # A job row can exist before executor submission succeeds. Do not leave it
+        # permanently queued if startup fails before the worker takes ownership.
+        detail = format_exception_detail(exc, limit=500)
         failure_message = "Could not start the background generation job. " + detail
+        if job_id:
+            try:
+                update_face_dataset_job(job_id, status="failed", error=failure_message)
+            except Exception:
+                app.logger.exception("Could not mark failed face dataset job %s", job_id)
+            with FACE_DATASET_JOB_LOCK:
+                FACE_DATASET_JOB_EVENTS.pop(job_id, None)
+                FACE_DATASET_JOB_FUTURES.pop(job_id, None)
         if group_id:
             try:
                 update_face_dataset_group(group_id, status="failed", error=failure_message)
