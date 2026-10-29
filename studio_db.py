@@ -395,17 +395,52 @@ def _job_dict(r):
 
 
 def _repair_face_dataset_job_schema() -> None:
-    """Repair legacy required job columns before insert, even when schema init is cached."""
+    """Repair every defaulted NOT NULL job column on legacy PostgreSQL schemas."""
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute("UPDATE face_dataset_jobs SET generated_count = 0 WHERE generated_count IS NULL")
-        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN generated_count SET DEFAULT 0")
-        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN generated_count SET NOT NULL")
-        cur.execute("UPDATE face_dataset_jobs SET created_at = now() WHERE created_at IS NULL")
-        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN created_at SET DEFAULT now()")
-        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN created_at SET NOT NULL")
-        cur.execute("UPDATE face_dataset_jobs SET updated_at = now() WHERE updated_at IS NULL")
-        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN updated_at SET DEFAULT now()")
-        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN updated_at SET NOT NULL")
+        # CREATE TABLE IF NOT EXISTS cannot repair columns in tables created by
+        # older releases. Backfill NULLs first, then restore defaults and constraints.
+        repairs = (
+            ("generated_count", "0", "0"),
+            ("current_index", "0", "0"),
+            ("current_label", "''", "''"),
+            ("group_count_base", "0", "0"),
+            ("target_manifest", "'[]'", "'[]'"),
+            ("cancel_requested", "FALSE", "FALSE"),
+            ("failed_targets", "'[]'", "'[]'"),
+            ("review_targets", "'[]'", "'[]'"),
+        )
+        for column, fallback, default in repairs:
+            cur.execute(
+                sql.SQL("UPDATE face_dataset_jobs SET {} = {} WHERE {} IS NULL").format(
+                    sql.Identifier(column), sql.SQL(fallback), sql.Identifier(column)
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE face_dataset_jobs ALTER COLUMN {} SET DEFAULT {}").format(
+                    sql.Identifier(column), sql.SQL(default)
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE face_dataset_jobs ALTER COLUMN {} SET NOT NULL").format(
+                    sql.Identifier(column)
+                )
+            )
+        for column in ("created_at", "updated_at"):
+            cur.execute(
+                sql.SQL("UPDATE face_dataset_jobs SET {} = now() WHERE {} IS NULL").format(
+                    sql.Identifier(column), sql.Identifier(column)
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE face_dataset_jobs ALTER COLUMN {} SET DEFAULT now()").format(
+                    sql.Identifier(column)
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE face_dataset_jobs ALTER COLUMN {} SET NOT NULL").format(
+                    sql.Identifier(column)
+                )
+            )
 
 
 def create_face_dataset_job(*,job_id,group_id,profile_id,dataset_type,backend,expected_count,source_photo_id,target_manifest=None,group_count_base=0):
@@ -422,9 +457,13 @@ def create_face_dataset_job(*,job_id,group_id,profile_id,dataset_type,backend,ex
     if not group or group["profile_id"]!=profile_id or group["dataset_type"]!=dataset_type: raise ValueError("Dataset group does not match generation job.")
     source=_one("SELECT id FROM face_photos WHERE id=%s AND profile_id=%s AND group_id=%s",(source_photo_id,profile_id,group_id))
     if not source: raise ValueError("Source photo does not belong to target dataset group.")
-    _run("""INSERT INTO face_dataset_jobs(id,group_id,profile_id,dataset_type,status,backend,expected_count,generated_count,source_photo_id,group_count_base,target_manifest,created_at,updated_at)
-        VALUES(%s,%s,%s,%s,'queued',%s,%s,0,%s,%s,%s,now(),now())""",
-        (job_id,group_id,profile_id,dataset_type,backend,int(expected_count),source_photo_id,int(group_count_base),json.dumps(targets,ensure_ascii=False)))
+    _run("""INSERT INTO face_dataset_jobs(
+        id,group_id,profile_id,dataset_type,status,backend,expected_count,generated_count,
+        current_index,current_label,source_photo_id,group_count_base,target_manifest,
+        cancel_requested,failed_targets,review_targets,created_at,updated_at)
+        VALUES(%s,%s,%s,%s,'queued',%s,%s,0,0,'',%s,%s,%s,FALSE,'[]','[]',now(),now())""",
+        (job_id,group_id,profile_id,dataset_type,backend,int(expected_count),source_photo_id,
+         int(group_count_base),json.dumps(targets,ensure_ascii=False)))
     return get_face_dataset_job(job_id)
 
 
