@@ -1,12 +1,26 @@
-name: Python syntax check
+name: Python syntax and reliability checks
 
 on:
   push:
   pull_request:
 
 jobs:
-  compile:
+  compile-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: studio_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d studio_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -14,13 +28,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Compile application, profile manager, GPU worker and trainer
-        run: python -m py_compile app.py face_profiles.py studio_db.py gpu_worker.py train_face_lora.py image_generation.py training_generation.py pose_validation.py
+      - name: Compile application and generation modules
+        run: python -m py_compile app.py face_profiles.py studio_db.py gpu_worker.py train_face_lora.py image_generation.py training_generation.py pose_validation.py safe_diagnostics.py
       - name: Install lightweight test dependencies
-        run: python -m pip install Pillow pytest SQLAlchemy numpy mediapipe==0.10.35 'psycopg[binary]>=3.2,<4'
-      # test_studio_db.py still assumes SQLite, while the app intentionally requires Supabase/PostgreSQL.
-      # Keep compatible unit suites in CI; database integration tests need a PostgreSQL test service.
+        run: python -m pip install Flask requests python-dotenv Pillow pytest SQLAlchemy numpy mediapipe==0.10.35 'psycopg[binary]>=3.2,<4'
       - name: Test compute routing, face profiles, image generation and pose targets
-        run: python -m pytest -q tests/test_compute_routing.py tests/test_face_profiles.py tests/test_image_generation.py tests/test_training_generation.py tests/test_studio_js_controls.py
+        run: python -m pytest -q tests/test_compute_routing.py tests/test_face_profiles.py tests/test_image_generation.py tests/test_training_generation.py tests/test_safe_diagnostics.py tests/test_face_dataset_startup.py tests/test_studio_js_tabs.py tests/test_studio_js_controls.py
+      - name: Test PostgreSQL job and generated-image persistence
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/studio_test
+        run: python -m pytest -q tests/test_studio_db_postgres.py
       - name: Check studio JavaScript syntax
         run: node --check static/studio.js

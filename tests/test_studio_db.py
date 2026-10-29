@@ -95,11 +95,20 @@ def test_dataset_group_and_photo_crud(tmp_path, monkeypatch):
     assert studio_db.get_face_photo_bytes(angle_id) is None
     assert studio_db.list_face_dataset_groups(profile_id)[0]["photo_count"] == 1
 
+    # Deleting the last photo must not silently delete its saved dataset group.
+    deleted_source = studio_db.delete_face_photo(source_id)
+    assert deleted_source["id"] == source_id
+    empty_groups = studio_db.list_face_dataset_groups(profile_id)
+    assert len(empty_groups) == 1
+    assert empty_groups[0]["id"] == group["id"]
+    assert empty_groups[0]["photo_count"] == 0
+    assert studio_db.get_face_dataset_group(group["id"]) is not None
+
+    # The group is removed only after the user explicitly deletes the group.
     deleted_group = studio_db.delete_face_dataset_group(group["id"])
     assert deleted_group["id"] == group["id"]
-    assert [photo["id"] for photo in deleted_group["photos"]] == [source_id]
+    assert deleted_group["photos"] == []
     assert studio_db.get_face_dataset_group(group["id"]) is None
-    assert studio_db.get_face_photo_bytes(source_id) is None
     assert studio_db.list_face_dataset_groups(profile_id) == []
 
 
@@ -164,6 +173,7 @@ def test_typed_dataset_groups_persist_category_and_prompt(tmp_path, monkeypatch)
     default_group = studio_db.create_face_dataset_group(profile_id, "Angles")
     assert default_group["dataset_type"] == "face_angles"
     assert default_group["prompt"] == ""
+    assert default_group["generated_count"] == 0
 
     expression_group = studio_db.create_face_dataset_group(
         profile_id, "Expressions", dataset_type="expressions", prompt="Keep this person's identity and vary expression."

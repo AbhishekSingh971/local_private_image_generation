@@ -57,6 +57,7 @@ from face_profiles import (
 from pose_validation import build_pose_control_image, estimate_head_pose, validate_pose_target
 from training_generation import targets_for_dataset_type
 from image_quality import assess_image_quality
+from safe_diagnostics import format_exception_detail
 
 from studio_db import (
     count_assets,
@@ -1059,29 +1060,54 @@ def api_start_face_dataset_job(profile_id):
             dataset_type=dataset_type, backend=backend, expected_count=len(targets),
             source_photo_id=source_record["id"], target_manifest=targets, group_count_base=0,
         )
+        # Resolve the durable response payload before starting the worker. This avoids
+        # returning a 503 after generation has already begun just because a follow-up
+        # database read failed.
+        group_payload = get_face_dataset_group(group_id)
+        if not group_payload:
+            raise RuntimeError("The dataset group was created but could not be read back.")
+        job_payload = _create_face_dataset_job_payload(job)
         cancel_event = threading.Event()
         with FACE_DATASET_JOB_LOCK:
             # Register the job before returning so polling and cancellation work immediately.
             FACE_DATASET_JOB_EVENTS[job_id] = cancel_event
-            future = FACE_DATASET_JOB_POOL.submit(_run_face_dataset_generation_job, job_id)
+            try:
+                future = FACE_DATASET_JOB_POOL.submit(_run_face_dataset_generation_job, job_id)
+            except Exception:
+                FACE_DATASET_JOB_EVENTS.pop(job_id, None)
+                FACE_DATASET_JOB_FUTURES.pop(job_id, None)
+                raise
             FACE_DATASET_JOB_FUTURES[job_id] = future
-        return jsonify(status="queued", job=_create_face_dataset_job_payload(job), group=get_face_dataset_group(group_id)), 202
+        return jsonify(status="queued", job=job_payload, group=group_payload), 202
     except ValueError as exc:
+        if job_id:
+            try:
+                update_face_dataset_job(job_id, status="failed", error=str(exc))
+            except Exception:
+                app.logger.exception("Could not mark invalid face dataset job %s as failed", job_id)
+            with FACE_DATASET_JOB_LOCK:
+                FACE_DATASET_JOB_EVENTS.pop(job_id, None)
+                FACE_DATASET_JOB_FUTURES.pop(job_id, None)
         if group_id:
             try:
                 update_face_dataset_group(group_id, status="failed", error=str(exc))
             except Exception:
-                pass
+                app.logger.exception("Could not mark invalid face dataset group %s as failed", group_id)
         return jsonify(error=str(exc)), 400
     except Exception as exc:
         app.logger.exception("Could not start a face dataset generation job")
-        # Show a useful diagnostic to the user while redacting connection credentials.
-        # The full traceback remains in server logs for deeper debugging.
-        detail = (type(exc).__name__ + ": " + str(exc)).strip()
-        detail = re.sub(r"(?i)(postgres(?:ql)?://)[^@\\s]+@", r"\\1[redacted]@", detail)
-        detail = re.sub(r"(?i)(password|token|secret|api[_-]?key)\\s*[:=]\\s*[^,;\\s]+", r"\\1=[redacted]", detail)
-        detail = detail[:500] or "Unknown startup error."
+        # A job row can exist before executor submission succeeds. Do not leave it
+        # permanently queued if startup fails before the worker takes ownership.
+        detail = format_exception_detail(exc, limit=500)
         failure_message = "Could not start the background generation job. " + detail
+        if job_id:
+            try:
+                update_face_dataset_job(job_id, status="failed", error=failure_message)
+            except Exception:
+                app.logger.exception("Could not mark failed face dataset job %s", job_id)
+            with FACE_DATASET_JOB_LOCK:
+                FACE_DATASET_JOB_EVENTS.pop(job_id, None)
+                FACE_DATASET_JOB_FUTURES.pop(job_id, None)
         if group_id:
             try:
                 update_face_dataset_group(group_id, status="failed", error=failure_message)
@@ -1227,12 +1253,29 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
         }
         if pose_control_image is not None:
             pipeline_kwargs["control_image"] = pose_control_image
-            # Keep geometry guidance moderate so it does not overpower source identity.
+            # Stronger geometric guidance is essential for profile views. The
+            # previous default let img2img and the frontal identity reference
+            # dominate the requested 90-degree rotation.
+            default_pose_scale = 1.35 if yaw is not None and abs(yaw) >= 55 else 1.15
             pipeline_kwargs["controlnet_conditioning_scale"] = float(
-                os.environ.get("FACE_POSE_CONTROLNET_SCALE", "0.75")
+                os.environ.get("FACE_POSE_CONTROLNET_SCALE", str(default_pose_scale))
             )
             if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
                 pipeline_kwargs["ip_adapter_image"] = init_image
+                # A frontal identity adapter can pull a profile back toward the
+                # source pose. Reduce its pose influence as the requested turn
+                # increases; the source image and adapter still provide identity.
+                default_identity_scale = (
+                    0.28 if yaw is not None and abs(yaw) >= 80
+                    else 0.42 if yaw is not None and abs(yaw) >= 50
+                    else 0.58 if yaw is not None and abs(yaw) >= 25
+                    else 0.75
+                )
+                identity_scale = float(os.environ.get(
+                    "FACE_IDENTITY_IP_ADAPTER_SCALE",
+                    str(default_identity_scale),
+                ))
+                pipeline.set_ip_adapter_scale(max(0.0, min(1.0, identity_scale)))
         result = pipeline(**pipeline_kwargs).images[0].convert("RGB")
         if _face_dataset_job_cancelled(job["id"]):
             raise FaceDatasetJobCancelled("Cancellation requested.")
@@ -2400,7 +2443,7 @@ def _load_cpu_or_gpu_pipeline(
                             subfolder="models",
                             weight_name=os.environ.get("FACE_IDENTITY_IP_ADAPTER_FILE", "ip-adapter-full-face_sd15.bin").strip() or "ip-adapter-full-face_sd15.bin",
                         )
-                        adapter_scale = float(os.environ.get("FACE_IDENTITY_IP_ADAPTER_SCALE", "0.65"))
+                        adapter_scale = float(os.environ.get("FACE_IDENTITY_IP_ADAPTER_SCALE", "0.75"))
                         loaded.set_ip_adapter_scale(max(0.0, min(1.0, adapter_scale)))
                         loaded._private_face_ip_adapter_loaded = True
                     except Exception as adapter_exc:
