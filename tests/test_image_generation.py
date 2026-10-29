@@ -41,6 +41,15 @@ def test_full_body_preset_adds_framing_for_a_person_when_unspecified():
     assert "clothes, clothing, dress" not in negative
 
 
+def test_explicit_full_body_prompt_gets_anatomy_and_complete_limb_constraints():
+    prompt, negative = build_generation_prompts(
+        "photorealistic full-body photograph of an adult woman", "", "full_body_photo"
+    )
+    assert "anatomically coherent adult human body" in prompt
+    assert "missing shoulder" in negative
+    assert "cropped body" in negative
+
+
 def test_explicit_closeup_overrides_full_body_preset():
     prompt, negative = build_generation_prompts(
         "close-up portrait of a woman wearing a red dress", "", "full_body_photo"
