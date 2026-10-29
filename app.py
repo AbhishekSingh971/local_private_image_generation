@@ -1073,14 +1073,21 @@ def api_start_face_dataset_job(profile_id):
             except Exception:
                 pass
         return jsonify(error=str(exc)), 400
-    except Exception:
+    except Exception as exc:
         app.logger.exception("Could not start a face dataset generation job")
+        # Show a useful diagnostic to the user while redacting connection credentials.
+        # The full traceback remains in server logs for deeper debugging.
+        detail = (type(exc).__name__ + ": " + str(exc)).strip()
+        detail = re.sub(r"(?i)(postgres(?:ql)?://)[^@\\s]+@", r"\\1[redacted]@", detail)
+        detail = re.sub(r"(?i)(password|token|secret|api[_-]?key)\\s*[:=]\\s*[^,;\\s]+", r"\\1=[redacted]", detail)
+        detail = detail[:500] or "Unknown startup error."
+        failure_message = "Could not start the background generation job. " + detail
         if group_id:
             try:
-                update_face_dataset_group(group_id, status="failed", error="Could not start the background generation job.")
+                update_face_dataset_group(group_id, status="failed", error=failure_message)
             except Exception:
-                pass
-        return jsonify(error="Could not start the background generation job. Check database connectivity and the selected compute backend."), 503
+                app.logger.exception("Could not mark failed face dataset group %s", group_id)
+        return jsonify(error=failure_message), 503
     finally:
         with FACE_DATASET_JOB_LOCK:
             FACE_DATASET_STARTING = False
