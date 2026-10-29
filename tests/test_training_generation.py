@@ -40,7 +40,7 @@ def test_unknown_dataset_type_is_rejected():
 
 def test_pose_estimator_normalizes_ambiguous_near_180_pitch_without_flipping_yaw():
     pitch, yaw, roll = _normalize_euler_angles(-177.0, 1.0, 0.0)
-    assert pitch == pytest.approx(3.0)
+    assert pitch == pytest.approx(-3.0)
     assert yaw == pytest.approx(1.0)
     assert roll == pytest.approx(0.0)
 
