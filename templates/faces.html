@@ -65,14 +65,16 @@
         <p id="globalBodyModelStatus" class="field-help">Checking shared body model status…</p>
       </div>
       <div class="photo-source" data-source-panel="generated" hidden>
-        <p class="field-help">Search and browse your full saved image library. Selected images remain selected as you move between pages.</p>
+        <p class="field-help">Search and browse your saved image library. Select one image and use it as the source for face-angle or expression generation, or select multiple images to add them to a profile.</p>
         <div class="generated-picker-toolbar">
           <input type="search" id="generatedPhotoSearch" placeholder="Search saved images or prompts" aria-label="Search generated images">
           <div class="generated-picker-pagination"><button type="button" class="secondary-button" id="generatedPhotoPrev" disabled>←</button><span id="generatedPhotoPageLabel">Page 1</span><button type="button" class="secondary-button" id="generatedPhotoNext" disabled>→</button></div>
         </div>
         <div id="generatedPhotoPicker" class="generated-photo-picker"><div class="empty-state">Loading saved images…</div></div>
         <div id="generatedSelectionCount" class="field-help">0 images selected</div>
-        <button type="button" class="secondary-button" id="addGeneratedPhotosButton">Add selected generated images to profile</button><div id="generatedPhotosStatus" class="status" role="status" aria-live="polite"></div>
+        <div class="actions"><button type="button" class="secondary-button" id="useGeneratedAsVariationSource">Use one selected image as angle/expression source</button><button type="button" class="secondary-button" id="addGeneratedPhotosButton">Add selected generated images to profile</button></div>
+        <div id="variationSourcePreview" class="generated-source-preview" hidden><img id="variationSourcePreviewImage" alt="Selected generated source preview"><div><strong>Variation source selected</strong><p id="variationSourcePreviewText" class="field-help"></p><button type="button" class="secondary-button" id="clearVariationSource">Clear source selection</button></div></div>
+        <div id="generatedPhotosStatus" class="status" role="status" aria-live="polite"></div>
       </div>
     </section>
     <section class="panel form-panel">
