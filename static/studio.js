@@ -1199,8 +1199,8 @@
     });
     return readJson(response);
   }
-  let activeDatasetType="face_angles";
-  const datasetTypeLabels={face_angles:"Face angles",expressions:"Expressions",body_type:"Body type · global"};
+  let activeDatasetType="all";
+  const datasetTypeLabels={all:"All groups",face_angles:"Face angles",expressions:"Expressions",body_type:"Body type · global"};
   $$(".dataset-category-tab").forEach(tab=>tab.addEventListener("click",()=>{
     activeDatasetType=tab.dataset.datasetFilter||"face_angles";
     $$(".dataset-category-tab").forEach(item=>item.classList.toggle("active",item===tab));
@@ -1269,9 +1269,9 @@
     try{
       const data=await readJson(await fetch("/api/face-dataset-groups",{cache:"no-store"}));
       const allGroups=data.groups||[];
-      const groups=allGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
+      const groups=activeDatasetType==="all"?allGroups:allGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
       $$(".dataset-category-tab").forEach(tab=>{
-        const amount=allGroups.filter(group=>(group.dataset_type||"face_angles")===tab.dataset.datasetFilter).length;
+        const amount=tab.dataset.datasetFilter==="all"?allGroups.length:allGroups.filter(group=>(group.dataset_type||"face_angles")===tab.dataset.datasetFilter).length;
         tab.textContent=(datasetTypeLabels[tab.dataset.datasetFilter]||tab.dataset.datasetFilter)+" ("+amount+")";
       });
       container.replaceChildren();
@@ -1360,6 +1360,12 @@
           if(validationDetail.textContent)figure.append(validationDetail);
           figure.append(photoActions,replaceInput);photos.appendChild(figure);
         });
+        if(!(group.photos||[]).length){
+          const emptyPhotos=document.createElement("div");
+          emptyPhotos.className="empty-state dataset-group-empty";
+          emptyPhotos.textContent="This group is saved but has no training photos yet. It will remain here until you explicitly delete the group.";
+          photos.appendChild(emptyPhotos);
+        }
         card.appendChild(photos);
         if(group.error){const error=document.createElement("p");error.className="dataset-group-error";error.textContent=group.error;card.appendChild(error);}
         if(busy){const warning=document.createElement("p");warning.className="field-help";warning.textContent="Generation is still in progress. Group edits are temporarily disabled.";card.appendChild(warning);}
