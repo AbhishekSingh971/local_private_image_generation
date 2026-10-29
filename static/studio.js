@@ -1280,7 +1280,9 @@
         const empty=document.createElement("div");empty.className="empty-state panel";
         const title=document.createElement("h3");title.textContent="No "+(datasetTypeLabels[activeDatasetType]||"")+" datasets yet";
         const note=document.createElement("p");
-        note.textContent=activeDatasetType==="body_type"
+        note.textContent=activeDatasetType==="all"
+          ?"Create a face-angle, expression, or body-type group from Face models. Saved groups remain listed even when they contain no photos."
+          :activeDatasetType==="body_type"
           ?"Open Face models → Body type · global to generate prompt-based samples without uploading a reference photo."
           :activeDatasetType==="expressions"
           ?"Open Face models → Expressions to upload a source face and generate expression variations."
