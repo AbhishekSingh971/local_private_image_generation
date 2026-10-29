@@ -1003,13 +1003,32 @@ def api_start_face_dataset_job(profile_id):
             targets = all_targets
         title = _clean_prompt(request.form.get("title"), "Dataset group title", 120)
         backend = _resolve_compute_backend(request.form)
+        source_asset_id = (request.form.get("source_asset_id") or "").strip()
         uploads = request.files.getlist("source_image")
-        if not uploads or not uploads[0] or not uploads[0].filename:
-            return jsonify(error="Choose one source face photo."), 400
-        images = _parse_uploads(uploads[:1], max_files=1)
-        if not images:
-            return jsonify(error="The source photo could not be decoded."), 400
-        image = images[0]
+        if source_asset_id:
+            if not re.fullmatch(r"[a-f0-9]{32}", source_asset_id):
+                return jsonify(error="Invalid saved source image ID."), 400
+            if uploads and uploads[0] and uploads[0].filename:
+                return jsonify(error="Choose either a local photo or a saved generated image, not both."), 400
+            source_asset = get_asset(source_asset_id, include_content=True)
+            if not source_asset:
+                return jsonify(error="The selected generated image was not found in your saved library."), 404
+            if source_asset.get("asset_type") != "image":
+                return jsonify(error="Only saved images can be used as a face-angle source."), 400
+            try:
+                with Image.open(io.BytesIO(source_asset["media_data"])) as source_file:
+                    image = ImageOps.exif_transpose(source_file).convert("RGB")
+                    image.load()
+            except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+                raise ValueError("The selected saved image is not a valid image.") from exc
+            image = image.copy()
+        else:
+            if not uploads or not uploads[0] or not uploads[0].filename:
+                return jsonify(error="Choose a local source photo or select a saved generated image."), 400
+            images = _parse_uploads(uploads[:1], max_files=1)
+            if not images:
+                return jsonify(error="The source photo could not be decoded."), 400
+            image = images[0]
         if image.width < 128 or image.height < 128:
             return jsonify(error="The source image must be at least 128 × 128 pixels."), 400
         if backend == "cloud_gpu" and not cloud_worker_configured():
