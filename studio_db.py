@@ -490,8 +490,11 @@ def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",nega
     if len(media_data)>512*1024*1024: raise ValueError("Media files must be 512 MB or smaller to store in the database.")
     ensure_schema()
     title=(title or "").strip()[:160] or ("Generated image" if asset_type=="image" else "Generated video")
+    # Explicitly set timestamps instead of relying on defaults that may be
+    # absent on an existing Supabase table created by an older schema version.
     r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,profile_id,profile_name,
-        backend,generation_mode,media_size,media_data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+        backend,generation_mode,media_size,media_data,created_at,updated_at)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now()) RETURNING *""",
         (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,prompt[:1200],negative_prompt[:600],profile_id,profile_name,
          backend[:32],generation_mode[:32],len(media_data),media_data))
     return _asset_dict(r)
