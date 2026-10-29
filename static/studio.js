@@ -431,6 +431,11 @@
     face_angles:["Front view","Middle-left","Middle-right","Three-quarter left","Three-quarter right","Left profile","Right profile","Looking up","Looking down"],
     expressions:["Neutral expression","Gentle smile","Broad smile","Laughing","Sad","Angry","Surprised","Fearful","Disgusted","Confused"]
   };
+  // Keep each mode's target selection independent when switching between angles and expressions.
+  const selectedFaceTargetsByMode={
+    face_angles:new Set(faceVariationLabels.face_angles),
+    expressions:new Set(faceVariationLabels.expressions)
+  };
   const faceTargetChecklist=$("#faceTargetChecklist");
   const selectAllFaceTargets=$("#selectAllFaceTargets");
   function selectedFaceTargetLabels(){
@@ -439,13 +444,13 @@
   function renderFaceTargetChecklist(){
     if(!faceTargetChecklist)return;
     const labels=faceVariationLabels[activeVariationMode]||[];
-    const selected=new Set(selectedFaceTargetLabels());
+    const selected=selectedFaceTargetsByMode[activeVariationMode]||new Set(labels);
     faceTargetChecklist.innerHTML="";
     labels.forEach((label,index)=>{
       const item=document.createElement("label");
       item.className="face-target-option";
       const checkbox=document.createElement("input");
-      checkbox.type="checkbox";checkbox.value=label;checkbox.checked=true;
+      checkbox.type="checkbox";checkbox.value=label;checkbox.checked=selected.has(label);
       checkbox.setAttribute("aria-label","Generate "+label);
       const text=document.createElement("span");
       text.textContent=label;
@@ -460,6 +465,7 @@
     if(!faceTargetChecklist)return;
     const boxes=Array.from(faceTargetChecklist.querySelectorAll(".face-target-option input"));
     const checked=boxes.filter(box=>box.checked);
+    selectedFaceTargetsByMode[activeVariationMode]=new Set(checked.map(box=>box.value));
     if(selectAllFaceTargets){selectAllFaceTargets.checked=boxes.length>0&&checked.length===boxes.length;selectAllFaceTargets.indeterminate=checked.length>0&&checked.length<boxes.length;}
     const help=$("#targetSelectionHelp");
     if(help)help.textContent=checked.length===boxes.length
