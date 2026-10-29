@@ -84,15 +84,19 @@ def estimate_head_pose(image) -> tuple[HeadPose | None, str]:
             [(landmarks[index].x * width, landmarks[index].y * height) for index in indices],
             dtype=np.float64,
         )
-        # Generic 3-D face points paired to the six stable Face Mesh landmarks.
+        # Generic 3-D points use OpenCV's conventional head-pose coordinate
+        # system: +Y points down the face, so the chin has positive Y and the
+        # eyes sit above the nose. The previous inverted Y coordinates caused
+        # solvePnP/RQDecomp3x3 to choose an equivalent rotation near +/-180°
+        # pitch for otherwise frontal faces.
         model_points = np.array(
             [
                 (0.0, 0.0, 0.0),          # nose tip
-                (0.0, -330.0, -65.0),     # chin
-                (-225.0, 170.0, -135.0),  # left eye outer corner
-                (225.0, 170.0, -135.0),   # right eye outer corner
-                (-150.0, -150.0, -125.0), # left mouth corner
-                (150.0, -150.0, -125.0),  # right mouth corner
+                (0.0, 330.0, -65.0),      # chin
+                (-225.0, -170.0, -135.0), # left eye outer corner
+                (225.0, -170.0, -135.0),  # right eye outer corner
+                (-150.0, 150.0, -125.0),  # left mouth corner
+                (150.0, 150.0, -125.0),   # right mouth corner
             ],
             dtype=np.float64,
         )
@@ -115,6 +119,19 @@ def estimate_head_pose(image) -> tuple[HeadPose | None, str]:
         pitch, yaw, roll = (float(angles[0]), float(angles[1]), float(angles[2]))
         if not all(isfinite(value) for value in (yaw, pitch, roll)):
             return None, "Pose validation returned invalid angle estimates."
+        # Canonicalize Euler angles. RQ decomposition can encode the same
+        # orientation with pitch outside [-90, 90], which is misleading for UI
+        # pose checks (e.g. a frontal face reported as -177 degrees).
+        if pitch > 90.0:
+            pitch = 180.0 - pitch
+            yaw += 180.0
+            roll += 180.0
+        elif pitch < -90.0:
+            pitch = -180.0 - pitch
+            yaw += 180.0
+            roll += 180.0
+        yaw = ((yaw + 180.0) % 360.0) - 180.0
+        roll = ((roll + 180.0) % 360.0) - 180.0
         # The chosen 3-D template and solvePnP axes have opposite signs from the
         # UI's subject-relative yaw convention, so normalize them here.
         pose = HeadPose(yaw=-yaw, pitch=pitch, roll=roll)
