@@ -261,9 +261,11 @@ def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", gro
     # Repair this required timestamp even when ensure_schema() is cached.
     _repair_face_photo_schema()
     photo_id=uuid.uuid4().hex
+    # Supply the timestamp in the INSERT itself as well as repairing the legacy
+    # default above. This makes the write independent of the column default.
     _run("""INSERT INTO face_photos(id,profile_id,filename,mime_type,byte_size,image_data,group_id,angle_label,photo_kind,
-        validation_status,validation_message,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        validation_status,validation_message,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch,created_at)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())""",
         (photo_id,profile_id,Path(filename).name,mime_type,len(image_data),image_data,group_id,(angle_label or "")[:80] or None,
          photo_kind,validation_status,(validation_message or "")[:1200] or None,(training_caption or "")[:1200],
          target_yaw,target_pitch,actual_yaw,actual_pitch))
