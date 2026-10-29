@@ -51,11 +51,23 @@ def test_face_dataset_job_lifecycle_and_saved_asset_persistence(postgres_databas
         )
         assert {row["column_name"] for row in defaults} == {"generated_count", "created_at", "updated_at"}
         assert all(row["column_default"] is not None for row in defaults)
+        # Simulate the exact legacy-schema failure from the UI: face_photos.created_at
+        # exists and is NOT NULL, but its default is missing.
+        studio_db._run("ALTER TABLE face_photos ALTER COLUMN created_at DROP DEFAULT")
         source_id = studio_db.add_face_photo(
             profile_id, "source.jpg", b"source-image-placeholder",
             group_id=group["id"], angle_label="Original source",
             photo_kind="source", validation_status="not_applicable",
         )
+        photo_timestamp = studio_db._one(
+            "SELECT created_at FROM face_photos WHERE id=%s", (source_id,)
+        )
+        assert photo_timestamp and photo_timestamp["created_at"] is not None
+        photo_default = studio_db._one(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_name='face_photos' AND column_name='created_at'"
+        )
+        assert photo_default and photo_default["column_default"] is not None
         job_id = uuid.uuid4().hex
         queued = studio_db.create_face_dataset_job(
             job_id=job_id, group_id=group["id"], profile_id=profile_id,
