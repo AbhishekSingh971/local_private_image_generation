@@ -71,9 +71,14 @@ def test_face_dataset_job_lifecycle_and_saved_asset_persistence(postgres_databas
         job_id = uuid.uuid4().hex
         # Simulate the exact legacy failure: generated_count is NOT NULL but
         # has no default, alongside missing timestamp defaults.
-        studio_db._run("ALTER TABLE face_dataset_jobs ALTER COLUMN generated_count DROP DEFAULT")
-        studio_db._run("ALTER TABLE face_dataset_jobs ALTER COLUMN created_at DROP DEFAULT")
-        studio_db._run("ALTER TABLE face_dataset_jobs ALTER COLUMN updated_at DROP DEFAULT")
+        for column in (
+            "generated_count", "current_index", "current_label", "group_count_base",
+            "target_manifest", "cancel_requested", "failed_targets", "review_targets",
+            "created_at", "updated_at",
+        ):
+            studio_db._run(
+                f"ALTER TABLE face_dataset_jobs ALTER COLUMN {column} DROP DEFAULT"
+            )
         queued = studio_db.create_face_dataset_job(
             job_id=job_id, group_id=group["id"], profile_id=profile_id,
             dataset_type="face_angles", backend="cpu", expected_count=1,
@@ -82,13 +87,17 @@ def test_face_dataset_job_lifecycle_and_saved_asset_persistence(postgres_databas
         )
         assert queued["status"] == "queued"
         assert queued["generated_count"] == 0
+        assert queued["current_index"] == 0
+        assert queued["current_label"] == ""
         assert queued["target_manifest"][0]["label"] == "Front view"
         job_columns = studio_db._all(
             "SELECT column_name, column_default FROM information_schema.columns "
-            "WHERE table_name='face_dataset_jobs' "
-            "AND column_name IN ('generated_count', 'created_at', 'updated_at')"
+            "WHERE table_name='face_dataset_jobs' AND column_name IN "
+            "('generated_count', 'current_index', 'current_label', 'group_count_base', "
+            "'target_manifest', 'cancel_requested', 'failed_targets', 'review_targets', "
+            "'created_at', 'updated_at')"
         )
-        assert {row["column_name"] for row in job_columns} == {"generated_count", "created_at", "updated_at"}
+        assert len(job_columns) == 10
         assert all(row["column_default"] is not None for row in job_columns)
 
         running = studio_db.update_face_dataset_job(
