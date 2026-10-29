@@ -44,6 +44,15 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo Verifying the legacy MediaPipe Face Mesh API required for pose-conditioned face angles...
+"%PYTHON%" -c "import mediapipe as mp; from mediapipe.python.solutions import face_mesh; assert hasattr(face_mesh, 'FaceMesh'); print('MediaPipe:', mp.__version__, '- Face Mesh API OK')"
+if errorlevel 1 (
+  echo MediaPipe Face Mesh API verification failed.
+  echo Ensure requirements.txt pins mediapipe==0.10.21 and reinstall requirements in this .venv.
+  pause
+  exit /b 1
+)
+
 echo Removing legacy SQLAlchemy package if it exists...
 "%PYTHON%" -m pip uninstall -y SQLAlchemy >nul 2>nul
 
