@@ -365,6 +365,35 @@
       const empty=document.createElement("div");empty.className="empty-state";empty.textContent="Could not load images: "+error.message;picker.appendChild(empty);
     }
   }
+  let selectedVariationSourceAssetId="";
+  $("#useGeneratedAsVariationSource")?.addEventListener("click",()=>{
+    const selected=[...selectedGeneratedAssetIds];
+    const status=$("#generatedPhotosStatus");
+    if(selected.length!==1){if(status)status.textContent="Select exactly one generated image to use as the variation source.";return;}
+    const asset=generatedPhotoAssetCache.get(selected[0]);
+    if(!asset){if(status)status.textContent="That image is not loaded yet. Refresh the gallery and select it again.";return;}
+    selectedVariationSourceAssetId=asset.id;
+    const preview=$("#variationSourcePreview");
+    const previewImage=$("#variationSourcePreviewImage");
+    const previewText=$("#variationSourcePreviewText");
+    if(previewImage)previewImage.src="/assets/"+asset.id+"/content";
+    if(previewText)previewText.textContent="Using saved image: "+asset.title;
+    if(preview)preview.hidden=false;
+    const localSource=$("#angleSourceImage");if(localSource)localSource.value="";
+    const anglesTab=$('.source-tab[data-source-tab="'+(activeVariationMode==="expressions"?"expressions":"angles")+'"]');
+    if(anglesTab)activateTrainingSourceTab(anglesTab);
+    if(status)status.textContent="Saved image selected as the source for the next angle/expression batch.";
+  });
+  $("#clearVariationSource")?.addEventListener("click",()=>{
+    selectedVariationSourceAssetId="";
+    const preview=$("#variationSourcePreview");if(preview)preview.hidden=true;
+  });
+  $("#angleSourceImage")?.addEventListener("change",()=>{
+    if($("#angleSourceImage")?.files?.length){
+      selectedVariationSourceAssetId="";
+      const preview=$("#variationSourcePreview");if(preview)preview.hidden=true;
+    }
+  });
   $("#generatedPhotoSearch")?.addEventListener("input",()=>{generatedPhotoOffset=0;loadGeneratedPhotoPicker();});
   $("#generatedPhotoPrev")?.addEventListener("click",()=>{generatedPhotoOffset=Math.max(0,generatedPhotoOffset-generatedPhotoLimit);loadGeneratedPhotoPicker();});
   $("#generatedPhotoNext")?.addEventListener("click",()=>{if(generatedPhotoOffset+generatedPhotoLimit<generatedPhotoTotal){generatedPhotoOffset+=generatedPhotoLimit;loadGeneratedPhotoPicker();}});
@@ -474,10 +503,10 @@
     renderFaceTargetChecklist();
   }
   // Guard this optional page section so a missing/null selector result cannot abort all studio initialization.
+  // $() returns only the first matching element; use $() for all source tabs.
+  // The previous selector silently skipped all click handlers, leaving tabs inert.
   const sourceTabs = $(".source-tab");
-  if (Array.isArray(sourceTabs)) {
-    sourceTabs.forEach(tab => tab.addEventListener("click", () => activateTrainingSourceTab(tab)));
-  }
+  sourceTabs.forEach(tab => tab.addEventListener("click", () => activateTrainingSourceTab(tab)));
   const initialTrainingTab=$('.source-tab[data-source-tab="angles"]');
   if(initialTrainingTab)activateTrainingSourceTab(initialTrainingTab);
 
@@ -631,13 +660,14 @@
     const profileId=$("#addPhotosProfile")?.value;
     const source=$("#angleSourceImage")?.files?.[0];
     const titleInput=$("#angleGroupTitle");
+    const variationSourceAssetId=selectedVariationSourceAssetId;
     const title=(titleInput?.value||"").trim()||((activeVariationMode==="expressions"?"Face expressions · ":"Face angles · ")+new Date().toLocaleString());
     const status=$("#faceAnglesStatus");
     if(!profileId){if(status)status.textContent="Select the face profile that should receive these training photos.";return;}
-    if(!source){if(status)status.textContent="Choose one source face photo from your computer.";return;}
+    if(!source&&!variationSourceAssetId){if(status)status.textContent="Choose a local source photo, or select a saved image in From generated images and use it as the source.";return;}
     const selectedTargets=selectedFaceTargetLabels();
     if(!selectedTargets.length){if(status)status.textContent="Select at least one angle or expression to generate.";return;}
-    if(source.size>8*1024*1024){if(status)status.textContent="The source image must be 8 MB or smaller.";return;}
+    if(source&&source.size>8*1024*1024){if(status)status.textContent="The source image must be 8 MB or smaller.";return;}
     if(activeFaceDatasetJobs.some(job=>["queued","running","cancelling"].includes(job.status))){if(status)status.textContent="A batch is already running. Cancel it or wait for it to finish.";return;}
     startingFaceDatasetJob=true;syncFaceDatasetStartButton();
     const localProgress=$("#faceAnglesProgress");
@@ -648,15 +678,16 @@
     if(localProgress)localProgress.hidden=false;
     if(localProgressBar)localProgressBar.value=0;
     if(localProgressPercent)localProgressPercent.textContent="0%";
-    if(localProgressStage)localProgressStage.textContent="Uploading source photo";
+    if(localProgressStage)localProgressStage.textContent=source?"Uploading source photo":"Loading saved source image";
     if(localProgressDetail)localProgressDetail.textContent="Saving the source photo and registering a server-managed job. Image generation has not been confirmed yet.";
-    if(status)status.textContent="Uploading the source photo and creating the background job…";
+    if(status)status.textContent="Preparing source photo and creating the background job…";
     try{
       const formData=new FormData();
       formData.set("title",title);
       formData.set("dataset_type",activeVariationMode);
       formData.set("selected_targets",JSON.stringify(selectedTargets));
-      formData.append("source_image",source,source.name);
+      if(source)formData.append("source_image",source,source.name);
+      else formData.set("source_asset_id",variationSourceAssetId);
       addComputeData(formData);
       const response=await fetch("/api/face-profiles/"+encodeURIComponent(profileId)+"/dataset-jobs",{method:"POST",body:formData});
       const created=await readJson(response);
