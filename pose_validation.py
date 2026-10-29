@@ -243,14 +243,19 @@ def build_pose_control_image(
     yr = y * cp - zr * sp
     depth = y * sp + zr * cp
 
-    # Normalize the projected mesh into a consistent square canvas without
-    # changing the x/y ratio. Far-side landmarks are attenuated rather than
-    # deleted so the conditioning image stays connected at profile angles.
-    projected_x = xr
-    projected_y = yr
+    # Perspective-project the rotated mesh instead of treating it as a flat
+    # orthographic drawing. MediaPipe z is negative for points nearer the camera;
+    # perspective makes the near-side features larger and the far side recede.
+    # This still estimates hidden anatomy from the visible mesh; it is not a
+    # substitute for a fitted 3D morphable head model.
+    camera_distance = face_scale * 2.5
+    safe_depth = np.maximum(camera_distance + depth, face_scale * 0.35)
+    focal_length = float(max(width, height)) * 1.15
+    projected_x = xr * focal_length / safe_depth
+    projected_y = yr * focal_length / safe_depth
     span_x = max(float(np.ptp(projected_x)), 1.0)
     span_y = max(float(np.ptp(projected_y)), 1.0)
-    scale = min((width * 0.72) / span_x, (height * 0.72) / span_y)
+    scale = min((width * 0.72) / span_x, (height * 0.78) / span_y)
     center_x, center_y = width / 2.0, height / 2.0
     px = center_x + projected_x * scale
     py = center_y + projected_y * scale
@@ -267,9 +272,11 @@ def build_pose_control_image(
     for first, second in tessellation:
         if first >= len(px) or second >= len(px):
             continue
-        # Suppress connections that project outside the image; retain a sparse
-        # near-side mesh in strong profile views to avoid a solid scribble.
-        if depth[first] < -face_scale * 0.12 and depth[second] < -face_scale * 0.12:
+        # In MediaPipe's convention negative z is nearer to the camera.
+        # For profile views suppress edges on the far side, not the near side;
+        # the previous sign check removed the near-side mesh and harmed profile
+        # conditioning.
+        if depth[first] > face_scale * 0.12 and depth[second] > face_scale * 0.12:
             continue
         x1, y1, x2, y2 = float(px[first]), float(py[first]), float(px[second]), float(py[second])
         if not all(isfinite(v) for v in (x1, y1, x2, y2)):
