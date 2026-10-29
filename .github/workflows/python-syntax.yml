@@ -21,6 +21,6 @@ jobs:
       # test_studio_db.py still assumes SQLite, while the app intentionally requires Supabase/PostgreSQL.
       # Keep compatible unit suites in CI; database integration tests need a PostgreSQL test service.
       - name: Test compute routing, face profiles, image generation and pose targets
-        run: python -m pytest -q tests/test_compute_routing.py tests/test_face_profiles.py tests/test_image_generation.py tests/test_training_generation.py
+        run: python -m pytest -q tests/test_compute_routing.py tests/test_face_profiles.py tests/test_image_generation.py tests/test_training_generation.py tests/test_studio_js_controls.py
       - name: Check studio JavaScript syntax
         run: node --check static/studio.js
