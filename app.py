@@ -1285,11 +1285,25 @@ def _run_face_dataset_generation_job(job_id: str) -> None:
                 current_label=target["label"], current_task_id=current_task_id,
                 error="",
             )
+            if job["backend"] == "cpu":
+                startup_message = (
+                    "CPU mode selected. Loading the diffusion/pose pipeline can take several minutes and each target may be slow; "
+                    "the job continues in the background. Progress updates resume during denoising, then the image is pose-checked and saved."
+                )
+            elif job["backend"] == "local_gpu":
+                startup_message = (
+                    "System CUDA GPU selected. Loading the diffusion/pose pipeline; the first target may take several minutes. "
+                    "Denoising progress will update step by step, then the image is pose-checked and saved."
+                )
+            else:
+                startup_message = (
+                    "Cloud GPU selected. Connecting to the configured worker and preparing the pipeline; progress will update while "
+                    "the image is generated, transferred back, pose-checked, and saved."
+                )
             _set_generation_progress(
                 current_task_id, asset_type="image", backend=job["backend"], status="running",
                 progress=1, total_steps=22, stage="model_loading",
-                message=("Preparing the image model and starting " + target["label"] + " (" + str(index + 1) + "/" + str(len(targets)) + "). "
-                         "The first target may take several minutes while model weights and the image pipeline load; then the image is generated, pose-checked, and saved to the dataset."),
+                message=("Preparing " + target["label"] + " (" + str(index + 1) + "/" + str(len(targets)) + "). " + startup_message),
             )
             try:
                 result, backend, prompt, negative_prompt, target_yaw, target_pitch = _render_face_dataset_target(
