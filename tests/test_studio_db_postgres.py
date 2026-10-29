@@ -69,6 +69,9 @@ def test_face_dataset_job_lifecycle_and_saved_asset_persistence(postgres_databas
         )
         assert photo_default and photo_default["column_default"] is not None
         job_id = uuid.uuid4().hex
+        # Existing installations can also lack timestamp defaults on the jobs table.
+        studio_db._run("ALTER TABLE face_dataset_jobs ALTER COLUMN created_at DROP DEFAULT")
+        studio_db._run("ALTER TABLE face_dataset_jobs ALTER COLUMN updated_at DROP DEFAULT")
         queued = studio_db.create_face_dataset_job(
             job_id=job_id, group_id=group["id"], profile_id=profile_id,
             dataset_type="face_angles", backend="cpu", expected_count=1,
@@ -77,6 +80,12 @@ def test_face_dataset_job_lifecycle_and_saved_asset_persistence(postgres_databas
         )
         assert queued["status"] == "queued"
         assert queued["target_manifest"][0]["label"] == "Front view"
+        job_timestamps = studio_db._all(
+            "SELECT column_name, column_default FROM information_schema.columns "
+            "WHERE table_name='face_dataset_jobs' AND column_name IN ('created_at', 'updated_at')"
+        )
+        assert {row["column_name"] for row in job_timestamps} == {"created_at", "updated_at"}
+        assert all(row["column_default"] is not None for row in job_timestamps)
 
         running = studio_db.update_face_dataset_job(
             job_id, status="running", current_index=0, current_label="Front view",
