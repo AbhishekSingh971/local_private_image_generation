@@ -164,6 +164,7 @@ def test_typed_dataset_groups_persist_category_and_prompt(tmp_path, monkeypatch)
     default_group = studio_db.create_face_dataset_group(profile_id, "Angles")
     assert default_group["dataset_type"] == "face_angles"
     assert default_group["prompt"] == ""
+    assert default_group["generated_count"] == 0
 
     expression_group = studio_db.create_face_dataset_group(
         profile_id, "Expressions", dataset_type="expressions", prompt="Keep this person's identity and vary expression."
