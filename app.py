@@ -1080,11 +1080,19 @@ def api_start_face_dataset_job(profile_id):
             FACE_DATASET_JOB_FUTURES[job_id] = future
         return jsonify(status="queued", job=job_payload, group=group_payload), 202
     except ValueError as exc:
+        if job_id:
+            try:
+                update_face_dataset_job(job_id, status="failed", error=str(exc))
+            except Exception:
+                app.logger.exception("Could not mark invalid face dataset job %s as failed", job_id)
+            with FACE_DATASET_JOB_LOCK:
+                FACE_DATASET_JOB_EVENTS.pop(job_id, None)
+                FACE_DATASET_JOB_FUTURES.pop(job_id, None)
         if group_id:
             try:
                 update_face_dataset_group(group_id, status="failed", error=str(exc))
             except Exception:
-                pass
+                app.logger.exception("Could not mark invalid face dataset group %s as failed", group_id)
         return jsonify(error=str(exc)), 400
     except Exception as exc:
         app.logger.exception("Could not start a face dataset generation job")
