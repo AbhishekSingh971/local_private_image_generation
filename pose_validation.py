@@ -48,6 +48,25 @@ class HeadPose:
     roll: float = 0.0
 
 
+def _normalize_euler_angles(pitch: float, yaw: float, roll: float) -> tuple[float, float, float]:
+    """Keep head-pose estimates in the UI's expected near-facing Euler range.
+
+    Pose validation targets only modest pitch changes. Avoid allowing an Euler
+    representation near +/-180 degrees to turn a frontal estimate into a false
+    opposite-facing yaw after coordinate-convention ambiguity.
+    """
+    pitch = float(pitch)
+    yaw = float(yaw)
+    roll = float(roll)
+    if pitch > 90.0:
+        pitch = 180.0 - pitch
+    elif pitch < -90.0:
+        pitch = -180.0 - pitch
+    yaw = ((yaw + 180.0) % 360.0) - 180.0
+    roll = ((roll + 180.0) % 360.0) - 180.0
+    return pitch, yaw, roll
+
+
 def estimate_head_pose(image) -> tuple[HeadPose | None, str]:
     """Estimate yaw/pitch from MediaPipe Face Mesh plus OpenCV solvePnP.
 
@@ -119,19 +138,9 @@ def estimate_head_pose(image) -> tuple[HeadPose | None, str]:
         pitch, yaw, roll = (float(angles[0]), float(angles[1]), float(angles[2]))
         if not all(isfinite(value) for value in (yaw, pitch, roll)):
             return None, "Pose validation returned invalid angle estimates."
-        # Canonicalize Euler angles. RQ decomposition can encode the same
-        # orientation with pitch outside [-90, 90], which is misleading for UI
-        # pose checks (e.g. a frontal face reported as -177 degrees).
-        if pitch > 90.0:
-            pitch = 180.0 - pitch
-            yaw += 180.0
-            roll += 180.0
-        elif pitch < -90.0:
-            pitch = -180.0 - pitch
-            yaw += 180.0
-            roll += 180.0
-        yaw = ((yaw + 180.0) % 360.0) - 180.0
-        roll = ((roll + 180.0) % 360.0) - 180.0
+        # RQ decomposition can return an equivalent pitch near +/-180 degrees
+        # for a frontal image. Normalize it before comparing with modest UI targets.
+        pitch, yaw, roll = _normalize_euler_angles(pitch, yaw, roll)
         # The chosen 3-D template and solvePnP axes have opposite signs from the
         # UI's subject-relative yaw convention, so normalize them here.
         pose = HeadPose(yaw=-yaw, pitch=pitch, roll=roll)
