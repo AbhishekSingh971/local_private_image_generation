@@ -123,7 +123,7 @@ def build_generation_prompts(
         and not _EXPLICIT_FRAMING.search(clean_prompt)
     )
     explicit_full_body = bool(re.search(
-        r"\\b(?:full[ -]?body|head[ -]?to[ -]?toe|entire body|full length)\\b",
+        r"\b(?:full[ -]?body|head[ -]?to[ -]?toe|entire body|full length)\b",
         clean_prompt, re.IGNORECASE,
     ))
     use_full_body_constraints = (
