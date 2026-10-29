@@ -35,7 +35,7 @@
         <div class="compute-copy">
           <div class="eyebrow">Compute preference</div>
           <label class="switchline" for="useGpuAcceleration"><input id="useGpuAcceleration" type="checkbox" checked> Enable GPU acceleration</label>
-          <p class="tiny">Off uses local CPU. On checks usable System GPU and the configured cloud GPU before offering choices. If no GPU is reachable, generation will stop with an error instead of silently switching to CPU.</p>
+          <p class="tiny">Off always uses the local CPU (slower; progress is shown). On uses the selected backend: Auto prefers System GPU, then Cloud GPU, then CPU if no GPU is available. Explicit GPU selections require that GPU to be reachable.</p>
         </div>
         <div class="compute-controls">
           <div class="pill" id="gpuModePill">LOCAL · CPU</div>
