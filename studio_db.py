@@ -265,13 +265,34 @@ def _group_dict(r):
         "error":r.get("error"),"created_at":_iso(r.get("created_at")),"updated_at":_iso(r.get("updated_at"))}
 
 
+def _repair_face_dataset_group_schema() -> None:
+    """Repair this legacy column on every dataset-group creation, even if schema init was cached.
+
+    Existing PostgreSQL tables are not changed by CREATE TABLE IF NOT EXISTS. A
+    previous app version may have left generated_count without a default. Repair
+    the live table immediately before creating a group, then explicitly insert 0.
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE face_dataset_groups SET generated_count = 0 WHERE generated_count IS NULL"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN generated_count SET DEFAULT 0"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN generated_count SET NOT NULL"
+        )
+
+
 def create_face_dataset_group(profile_id,title,expected_count=5,dataset_type="face_angles",prompt=""):
     title=(title or "").strip(); dataset_type=(dataset_type or "face_angles").strip().lower(); prompt=(prompt or "").strip()
     if not title or len(title)>120: raise ValueError("Dataset group title must contain 1–120 characters.")
     if not 1<=int(expected_count)<=30: raise ValueError("Dataset group expected count must be between 1 and 30.")
     if dataset_type not in {"face_angles","expressions","body_type"}: raise ValueError("Invalid dataset type.")
     if len(prompt)>1200: raise ValueError("Dataset prompt must be 1200 characters or fewer.")
-    ensure_schema(); gid=uuid.uuid4().hex
+    ensure_schema()
+    _repair_face_dataset_group_schema()
+    gid=uuid.uuid4().hex
     _run("INSERT INTO face_dataset_groups(id,profile_id,title,dataset_type,prompt,status,expected_count,generated_count) VALUES(%s,%s,%s,%s,%s,'generating',%s,0)",
          (gid,profile_id,title,dataset_type,prompt,int(expected_count)))
     return get_face_dataset_group(gid)
