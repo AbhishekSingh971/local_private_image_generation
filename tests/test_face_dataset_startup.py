@@ -26,6 +26,7 @@ def test_executor_start_failure_marks_job_and_group_failed(monkeypatch):
     persisted_jobs = []
     persisted_groups = []
 
+    monkeypatch.setattr(studio_app.uuid, "uuid4", lambda: SimpleNamespace(hex=job_id))
     monkeypatch.setattr(studio_app, "validate_profile_id", lambda value: value)
     monkeypatch.setattr(studio_app, "get_profile", lambda value: {"id": profile_id, "name": "Test profile"})
     monkeypatch.setattr(studio_app, "targets_for_dataset_type", lambda value: [
