@@ -16,42 +16,42 @@ FACE_ANGLE_TARGETS = [
     {
         "label": "Middle-left",
         "prompt": "head turned toward the subject's own left by 30 degrees, yaw -30 degrees, pitch 0 degrees, clear three-quarter asymmetry between the two sides of the face",
-        "yaw": -30.0, "pitch": 0.0, "strength": 0.38,
+        "yaw": -30.0, "pitch": 0.0, "strength": 0.48,
     },
     {
         "label": "Middle-right",
         "prompt": "head turned toward the subject's own right by 30 degrees, yaw +30 degrees, pitch 0 degrees, clear three-quarter asymmetry between the two sides of the face",
-        "yaw": 30.0, "pitch": 0.0, "strength": 0.38,
+        "yaw": 30.0, "pitch": 0.0, "strength": 0.48,
     },
     {
         "label": "Three-quarter left",
         "prompt": "head turned toward the subject's own left by 55 degrees, yaw -55 degrees, pitch 0 degrees, near three-quarter view with the far eye less visible",
-        "yaw": -55.0, "pitch": 0.0, "strength": 0.46,
+        "yaw": -55.0, "pitch": 0.0, "strength": 0.60,
     },
     {
         "label": "Three-quarter right",
         "prompt": "head turned toward the subject's own right by 55 degrees, yaw +55 degrees, pitch 0 degrees, near three-quarter view with the far eye less visible",
-        "yaw": 55.0, "pitch": 0.0, "strength": 0.46,
+        "yaw": 55.0, "pitch": 0.0, "strength": 0.60,
     },
     {
         "label": "Left profile",
         "prompt": "strict left-facing side profile of the subject, yaw -90 degrees, only the near eye visible, nose silhouette points to the subject's own left, not a frontal portrait",
-        "yaw": -90.0, "pitch": 0.0, "strength": 0.52,
+        "yaw": -90.0, "pitch": 0.0, "strength": 0.68,
     },
     {
         "label": "Right profile",
         "prompt": "strict right-facing side profile of the subject, yaw +90 degrees, only the near eye visible, nose silhouette points to the subject's own right, not a frontal portrait",
-        "yaw": 90.0, "pitch": 0.0, "strength": 0.52,
+        "yaw": 90.0, "pitch": 0.0, "strength": 0.68,
     },
     {
         "label": "Looking up",
         "prompt": "head tilted upward, chin raised, face angled upward by about 18 degrees, pitch -18 degrees, keep the neck natural",
-        "yaw": 0.0, "pitch": -18.0, "strength": 0.38,
+        "yaw": 0.0, "pitch": -18.0, "strength": 0.45,
     },
     {
         "label": "Looking down",
         "prompt": "head tilted downward, chin lowered, face angled downward by about 18 degrees, pitch +18 degrees, keep the neck natural",
-        "yaw": 0.0, "pitch": 18.0, "strength": 0.38,
+        "yaw": 0.0, "pitch": 18.0, "strength": 0.45,
     },
 ]
 
