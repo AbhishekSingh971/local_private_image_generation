@@ -266,11 +266,11 @@ def _group_dict(r):
 
 
 def _repair_face_dataset_group_schema() -> None:
-    """Repair this legacy column on every dataset-group creation, even if schema init was cached.
+    """Repair legacy required columns before creating a group, even if schema init was cached.
 
-    Existing PostgreSQL tables are not changed by CREATE TABLE IF NOT EXISTS. A
-    previous app version may have left generated_count without a default. Repair
-    the live table immediately before creating a group, then explicitly insert 0.
+    CREATE TABLE IF NOT EXISTS does not repair an existing PostgreSQL table. Older
+    installations may have these required columns without defaults, causing a
+    dataset-job request to fail before the background worker can start.
     """
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -281,6 +281,24 @@ def _repair_face_dataset_group_schema() -> None:
         )
         cur.execute(
             "ALTER TABLE face_dataset_groups ALTER COLUMN generated_count SET NOT NULL"
+        )
+        cur.execute(
+            "UPDATE face_dataset_groups SET created_at = now() WHERE created_at IS NULL"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN created_at SET DEFAULT now()"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN created_at SET NOT NULL"
+        )
+        cur.execute(
+            "UPDATE face_dataset_groups SET updated_at = now() WHERE updated_at IS NULL"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN updated_at SET DEFAULT now()"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN updated_at SET NOT NULL"
         )
 
 
