@@ -34,10 +34,19 @@ def test_face_dataset_job_lifecycle_and_saved_asset_persistence(postgres_databas
         })
         assert profile and profile["id"] == profile_id
 
+        # Simulate an older deployed schema whose NOT NULL column has no default.
+        studio_db._run("ALTER TABLE face_dataset_groups ALTER COLUMN generated_count DROP DEFAULT")
         group = studio_db.create_face_dataset_group(
             profile_id, "One-target integration batch", expected_count=1,
             dataset_type="face_angles", prompt="integration test",
         )
+        assert group["generated_count"] == 0
+        # The creation path should restore the missing default for older installs.
+        defaults = studio_db._one(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_name='face_dataset_groups' AND column_name='generated_count'"
+        )
+        assert defaults and defaults["column_default"] is not None
         source_id = studio_db.add_face_photo(
             profile_id, "source.jpg", b"source-image-placeholder",
             group_id=group["id"], angle_label="Original source",
