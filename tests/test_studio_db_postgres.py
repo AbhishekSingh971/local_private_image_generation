@@ -34,19 +34,23 @@ def test_face_dataset_job_lifecycle_and_saved_asset_persistence(postgres_databas
         })
         assert profile and profile["id"] == profile_id
 
-        # Simulate an older deployed schema whose NOT NULL column has no default.
+        # Simulate an older deployed schema whose required columns have no defaults.
         studio_db._run("ALTER TABLE face_dataset_groups ALTER COLUMN generated_count DROP DEFAULT")
+        studio_db._run("ALTER TABLE face_dataset_groups ALTER COLUMN created_at DROP DEFAULT")
+        studio_db._run("ALTER TABLE face_dataset_groups ALTER COLUMN updated_at DROP DEFAULT")
         group = studio_db.create_face_dataset_group(
             profile_id, "One-target integration batch", expected_count=1,
             dataset_type="face_angles", prompt="integration test",
         )
         assert group["generated_count"] == 0
         # The creation path should restore the missing default for older installs.
-        defaults = studio_db._one(
-            "SELECT column_default FROM information_schema.columns "
-            "WHERE table_name='face_dataset_groups' AND column_name='generated_count'"
+        defaults = studio_db._all(
+            "SELECT column_name, column_default FROM information_schema.columns "
+            "WHERE table_name='face_dataset_groups' "
+            "AND column_name IN ('generated_count', 'created_at', 'updated_at')"
         )
-        assert defaults and defaults["column_default"] is not None
+        assert {row["column_name"] for row in defaults} == {"generated_count", "created_at", "updated_at"}
+        assert all(row["column_default"] is not None for row in defaults)
         source_id = studio_db.add_face_photo(
             profile_id, "source.jpg", b"source-image-placeholder",
             group_id=group["id"], angle_label="Original source",
