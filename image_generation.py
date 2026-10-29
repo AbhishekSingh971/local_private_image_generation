@@ -61,11 +61,19 @@ _FULL_BODY_PREFIX = (
     "camera pulled back, natural anatomy and realistic textures, "
 )
 _PHOTO_NEGATIVE = (
-    "blurry, low detail, distorted features, deformed anatomy, malformed hands, "
-    "extra fingers, extra limbs, duplicate body parts"
+    "blurry, low detail, distorted face, asymmetrical eyes, deformed anatomy, "
+    "missing limbs, missing arms, missing shoulders, extra limbs, duplicate body parts, "
+    "malformed hands, fused fingers, extra fingers, missing fingers, twisted joints, "
+    "disconnected limbs, unnatural torso, distorted hips, unnatural body proportions"
 )
 _FULL_BODY_NEGATIVE = (
-    "cropped body, cut off feet, cut off head, out of frame"
+    "cropped body, cut off feet, cut off head, out of frame, incomplete body, "
+    "missing arm, missing leg, missing shoulder, extra arm, extra leg"
+)
+_ANATOMY_DETAIL = (
+    "anatomically coherent adult human body, complete shoulders and limbs, "
+    "natural joint placement, balanced shoulders and hips, coherent torso and pelvis, "
+    "realistic facial structure, symmetrical eyes, natural skin texture, "
 )
 
 
@@ -107,15 +115,27 @@ def build_generation_prompts(
     if _NON_PHOTO_STYLE.search(clean_prompt):
         return clean_prompt, clean_negative
 
+    is_human = bool(_HUMAN_SUBJECT.search(clean_prompt))
     use_full_body_framing = (
         key == "full_body_photo"
         and not has_reference_image
-        and bool(_HUMAN_SUBJECT.search(clean_prompt))
+        and is_human
         and not _EXPLICIT_FRAMING.search(clean_prompt)
     )
+    explicit_full_body = bool(re.search(
+        r"\\b(?:full[ -]?body|head[ -]?to[ -]?toe|entire body|full length)\\b",
+        clean_prompt, re.IGNORECASE,
+    ))
+    use_full_body_constraints = (
+        key == "full_body_photo" and not has_reference_image and is_human
+        and (use_full_body_framing or explicit_full_body)
+    )
+
     prefix = _FULL_BODY_PREFIX if use_full_body_framing else _PHOTO_PREFIX
+    if key in {"photorealistic", "full_body_photo"} and is_human:
+        prefix += _ANATOMY_DETAIL
     negative_prefix = _PHOTO_NEGATIVE
-    if use_full_body_framing:
+    if use_full_body_constraints:
         negative_prefix = _FULL_BODY_NEGATIVE + ", " + negative_prefix
 
     enhanced_prompt = clean_prompt if clean_prompt.lower().startswith(prefix.rstrip(", ").lower()) else prefix + clean_prompt
