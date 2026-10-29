@@ -150,6 +150,7 @@ def ensure_schema() -> None:
                 ("target_yaw", "DOUBLE PRECISION"), ("target_pitch", "DOUBLE PRECISION"),
                 ("actual_yaw", "DOUBLE PRECISION"), ("actual_pitch", "DOUBLE PRECISION")):
                 _ensure_column(conn, "face_photos", name, definition)
+            _ensure_column(conn, "face_photos", "created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()")
             with conn.cursor() as cur:
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_groups_profile_id ON face_dataset_groups(profile_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_photos_profile_id ON face_photos(profile_id)")
@@ -242,12 +243,23 @@ def delete_face_profile_record(profile_id):
     return _run("DELETE FROM face_profiles WHERE id=%s",(profile_id,)) > 0
 
 
+def _repair_face_photo_schema() -> None:
+    """Repair created_at on legacy face_photos tables before inserting a photo."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE face_photos SET created_at = now() WHERE created_at IS NULL")
+        cur.execute("ALTER TABLE face_photos ALTER COLUMN created_at SET DEFAULT now()")
+        cur.execute("ALTER TABLE face_photos ALTER COLUMN created_at SET NOT NULL")
+
+
 def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", group_id=None, angle_label=None,
     photo_kind="manual", validation_status="not_checked", validation_message=None, training_caption="",
     target_yaw=None,target_pitch=None,actual_yaw=None,actual_pitch=None):
     if photo_kind not in {"source","angle","expression","body","manual"}: raise ValueError("Invalid photo kind.")
     if validation_status not in {"not_checked","passed","needs_review","not_applicable"}: raise ValueError("Invalid photo validation status.")
     ensure_schema()
+    # CREATE TABLE IF NOT EXISTS does not restore defaults on an existing table.
+    # Repair this required timestamp even when ensure_schema() is cached.
+    _repair_face_photo_schema()
     photo_id=uuid.uuid4().hex
     _run("""INSERT INTO face_photos(id,profile_id,filename,mime_type,byte_size,image_data,group_id,angle_label,photo_kind,
         validation_status,validation_message,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch)
