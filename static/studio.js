@@ -505,6 +505,8 @@
   // Guard this optional page section so a missing/null selector result cannot abort all studio initialization.
   // $() returns only the first matching element; use $() for all source tabs.
   // The previous selector silently skipped all click handlers, leaving tabs inert.
+  // Use the all-matches helper: $() is querySelector and returns one Element.
+  // Calling forEach on the single Element aborts studio initialization and breaks every tab.
   const sourceTabs = $(".source-tab");
   sourceTabs.forEach(tab => tab.addEventListener("click", () => activateTrainingSourceTab(tab)));
   const initialTrainingTab=$('.source-tab[data-source-tab="angles"]');
