@@ -392,6 +392,17 @@ def _job_dict(r):
         "created_at":_iso(r.get("created_at")),"updated_at":_iso(r.get("updated_at"))}
 
 
+def _repair_face_dataset_job_schema() -> None:
+    """Repair legacy required timestamps before inserting a durable dataset job."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE face_dataset_jobs SET created_at = now() WHERE created_at IS NULL")
+        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN created_at SET DEFAULT now()")
+        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN created_at SET NOT NULL")
+        cur.execute("UPDATE face_dataset_jobs SET updated_at = now() WHERE updated_at IS NULL")
+        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN updated_at SET DEFAULT now()")
+        cur.execute("ALTER TABLE face_dataset_jobs ALTER COLUMN updated_at SET NOT NULL")
+
+
 def create_face_dataset_job(*,job_id,group_id,profile_id,dataset_type,backend,expected_count,source_photo_id,target_manifest=None,group_count_base=0):
     if dataset_type not in {"face_angles","expressions"}: raise ValueError("Unsupported face dataset generation type.")
     if backend not in {"cpu","local_gpu","runpod","cloud_gpu"}: raise ValueError("Unsupported generation backend.")
@@ -400,6 +411,8 @@ def create_face_dataset_job(*,job_id,group_id,profile_id,dataset_type,backend,ex
     if targets and len(targets)!=int(expected_count): raise ValueError("Target manifest count must match expected_count.")
     if int(group_count_base)<0: raise ValueError("Base group photo count cannot be negative.")
     if not all(isinstance(x,str) and len(x)==32 for x in (job_id,group_id,profile_id,source_photo_id)): raise ValueError("Invalid dataset generation job identifiers.")
+    ensure_schema()
+    _repair_face_dataset_job_schema()
     group=get_face_dataset_group(group_id)
     if not group or group["profile_id"]!=profile_id or group["dataset_type"]!=dataset_type: raise ValueError("Dataset group does not match generation job.")
     source=_one("SELECT id FROM face_photos WHERE id=%s AND profile_id=%s AND group_id=%s",(source_photo_id,profile_id,group_id))
