@@ -132,8 +132,14 @@ def ensure_schema() -> None:
                 for statement in statements:
                     cur.execute(statement)
             _ensure_column(conn, "face_profiles", "description", "TEXT NOT NULL DEFAULT ''")
-            for name, definition in (("dataset_type", "VARCHAR(24) NOT NULL DEFAULT 'face_angles'"), ("prompt", "TEXT NOT NULL DEFAULT ''")):
+            for name, definition in (("dataset_type", "VARCHAR(24) NOT NULL DEFAULT 'face_angles'"), ("prompt", "TEXT NOT NULL DEFAULT ''"), ("generated_count", "INTEGER NOT NULL DEFAULT 0")):
                 _ensure_column(conn, "face_dataset_groups", name, definition)
+            # Older installations may already have generated_count but no database
+            # default. Background dataset jobs insert groups before any images exist,
+            # so repair that schema in place and backfill any legacy NULLs if present.
+            with conn.cursor() as cur:
+                cur.execute("UPDATE face_dataset_groups SET generated_count = 0 WHERE generated_count IS NULL")
+                cur.execute("ALTER TABLE face_dataset_groups ALTER COLUMN generated_count SET DEFAULT 0")
             for name, definition in (("group_count_base", "INTEGER NOT NULL DEFAULT 0"), ("target_manifest", "TEXT NOT NULL DEFAULT '[]'")):
                 _ensure_column(conn, "face_dataset_jobs", name, definition)
             for name, definition in (
@@ -266,7 +272,7 @@ def create_face_dataset_group(profile_id,title,expected_count=5,dataset_type="fa
     if dataset_type not in {"face_angles","expressions","body_type"}: raise ValueError("Invalid dataset type.")
     if len(prompt)>1200: raise ValueError("Dataset prompt must be 1200 characters or fewer.")
     ensure_schema(); gid=uuid.uuid4().hex
-    _run("INSERT INTO face_dataset_groups(id,profile_id,title,dataset_type,prompt,status,expected_count) VALUES(%s,%s,%s,%s,%s,'generating',%s)",
+    _run("INSERT INTO face_dataset_groups(id,profile_id,title,dataset_type,prompt,status,expected_count,generated_count) VALUES(%s,%s,%s,%s,%s,'generating',%s,0)",
          (gid,profile_id,title,dataset_type,prompt,int(expected_count)))
     return get_face_dataset_group(gid)
 
