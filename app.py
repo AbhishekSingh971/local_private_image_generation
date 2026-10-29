@@ -27,7 +27,7 @@ APP_DIR = Path(__file__).resolve().parent
 load_dotenv(APP_DIR / ".env")
 
 import requests
-import torch
+import importlib
 from flask import Flask, request, send_from_directory, send_file, jsonify, render_template, redirect, url_for
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -97,6 +97,21 @@ MODEL_DIR = APP_DIR / "models" / "stable-diffusion-v1-5"
 MOTION_DIR = APP_DIR / "models" / "animatediff-motion-adapter-v1-5-2"
 for folder in (INPUT_DIR, OUTPUT_DIR, VIDEO_OUTPUT_DIR, MODEL_DIR, LORA_DIR):
     folder.mkdir(parents=True, exist_ok=True)
+
+class _LazyTorch:
+    """Load PyTorch only when an inference/training endpoint actually needs it.
+
+    Lightweight web hosting (for example Render's small instances) can serve the
+    dashboard and database-backed library without importing the large ML runtime
+    during Gunicorn worker startup.
+    """
+    def __getattr__(self, name):
+        module = importlib.import_module("torch")
+        globals()["torch"] = module
+        return getattr(module, name)
+
+
+torch = _LazyTorch()
 
 Image.MAX_IMAGE_PIXELS = 40_000_000
 app = Flask(__name__)
@@ -268,8 +283,16 @@ runpod_request = cloud_worker_request
 
 
 def _local_gpu_details() -> dict:
-    """Report GPUs actually usable by this PyTorch installation (CUDA)."""
+    """Report GPUs actually usable by this PyTorch installation (CUDA).
+
+    Render web services do not expose a local CUDA GPU. Avoid loading PyTorch
+    just to answer a GPU-status request there; the configured cloud worker is
+    checked independently.
+    """
     details = {"available": False, "name": None, "vram_gb": None}
+    if os.environ.get("RENDER") and not _truthy(os.environ.get("ALLOW_LOCAL_TORCH_ON_RENDER")):
+        details["message"] = "Local CUDA probing is disabled on Render; use the configured cloud GPU worker."
+        return details
     try:
         if torch.cuda.is_available():
             props = torch.cuda.get_device_properties(0)
@@ -1952,7 +1975,9 @@ def health():
         video_model_loaded=video_pipe is not None,
         video_adapter_ready=(MOTION_DIR / "config.json").is_file(),
         gpu_worker_configured=cloud_worker_configured(),
-        local_gpu=_local_gpu_details(),
+        # Keep the health endpoint lightweight on small hosted instances.
+        # The detailed probe remains available through /api/gpu-status.
+        local_gpu={"available": False, "name": None, "vram_gb": None, "probe": "deferred"},
         note="GPU toggle off means local CPU. When on, available GPU backends can be selected.",
     )
 
