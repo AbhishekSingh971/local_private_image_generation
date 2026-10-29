@@ -502,10 +502,10 @@
     if(retryFaceAngleButton)retryFaceAngleButton.hidden=true;
     renderFaceTargetChecklist();
   }
-  // Guard this optional page section so a missing/null selector result cannot abort all studio initialization.
-  // $() returns only the first matching element; use $() for all source tabs.
-  // The previous selector silently skipped all click handlers, leaving tabs inert.
-  const sourceTabs = $(".source-tab");
+  // This page has multiple source tabs. Use $$ (querySelectorAll), not $ (querySelector):
+  // $ returns one element, so calling forEach on it throws and prevents every handler below
+  // from registering, including Generate photo and strength-slider synchronization.
+  const sourceTabs = $$(".source-tab");
   sourceTabs.forEach(tab => tab.addEventListener("click", () => activateTrainingSourceTab(tab)));
   const initialTrainingTab=$('.source-tab[data-source-tab="angles"]');
   if(initialTrainingTab)activateTrainingSourceTab(initialTrainingTab);
