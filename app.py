@@ -1253,12 +1253,29 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
         }
         if pose_control_image is not None:
             pipeline_kwargs["control_image"] = pose_control_image
-            # Keep geometry guidance moderate so it does not overpower source identity.
+            # Stronger geometric guidance is essential for profile views. The
+            # previous default let img2img and the frontal identity reference
+            # dominate the requested 90-degree rotation.
+            default_pose_scale = 1.35 if yaw is not None and abs(yaw) >= 55 else 1.15
             pipeline_kwargs["controlnet_conditioning_scale"] = float(
-                os.environ.get("FACE_POSE_CONTROLNET_SCALE", "1.0")
+                os.environ.get("FACE_POSE_CONTROLNET_SCALE", str(default_pose_scale))
             )
             if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
                 pipeline_kwargs["ip_adapter_image"] = init_image
+                # A frontal identity adapter can pull a profile back toward the
+                # source pose. Reduce its pose influence as the requested turn
+                # increases; the source image and adapter still provide identity.
+                default_identity_scale = (
+                    0.28 if yaw is not None and abs(yaw) >= 80
+                    else 0.42 if yaw is not None and abs(yaw) >= 50
+                    else 0.58 if yaw is not None and abs(yaw) >= 25
+                    else 0.75
+                )
+                identity_scale = float(os.environ.get(
+                    "FACE_IDENTITY_IP_ADAPTER_SCALE",
+                    str(default_identity_scale),
+                ))
+                pipeline.set_ip_adapter_scale(max(0.0, min(1.0, identity_scale)))
         result = pipeline(**pipeline_kwargs).images[0].convert("RGB")
         if _face_dataset_job_cancelled(job["id"]):
             raise FaceDatasetJobCancelled("Cancellation requested.")
