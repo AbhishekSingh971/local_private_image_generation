@@ -132,8 +132,14 @@ def ensure_schema() -> None:
                 for statement in statements:
                     cur.execute(statement)
             _ensure_column(conn, "face_profiles", "description", "TEXT NOT NULL DEFAULT ''")
-            for name, definition in (("dataset_type", "VARCHAR(24) NOT NULL DEFAULT 'face_angles'"), ("prompt", "TEXT NOT NULL DEFAULT ''")):
+            for name, definition in (("dataset_type", "VARCHAR(24) NOT NULL DEFAULT 'face_angles'"), ("prompt", "TEXT NOT NULL DEFAULT ''"), ("generated_count", "INTEGER NOT NULL DEFAULT 0")):
                 _ensure_column(conn, "face_dataset_groups", name, definition)
+            # Older installations may already have generated_count but no database
+            # default. Background dataset jobs insert groups before any images exist,
+            # so repair that schema in place and backfill any legacy NULLs if present.
+            with conn.cursor() as cur:
+                cur.execute("UPDATE face_dataset_groups SET generated_count = 0 WHERE generated_count IS NULL")
+                cur.execute("ALTER TABLE face_dataset_groups ALTER COLUMN generated_count SET DEFAULT 0")
             for name, definition in (("group_count_base", "INTEGER NOT NULL DEFAULT 0"), ("target_manifest", "TEXT NOT NULL DEFAULT '[]'")):
                 _ensure_column(conn, "face_dataset_jobs", name, definition)
             for name, definition in (
@@ -144,6 +150,7 @@ def ensure_schema() -> None:
                 ("target_yaw", "DOUBLE PRECISION"), ("target_pitch", "DOUBLE PRECISION"),
                 ("actual_yaw", "DOUBLE PRECISION"), ("actual_pitch", "DOUBLE PRECISION")):
                 _ensure_column(conn, "face_photos", name, definition)
+            _ensure_column(conn, "face_photos", "created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()")
             with conn.cursor() as cur:
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_groups_profile_id ON face_dataset_groups(profile_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_photos_profile_id ON face_photos(profile_id)")
@@ -236,16 +243,29 @@ def delete_face_profile_record(profile_id):
     return _run("DELETE FROM face_profiles WHERE id=%s",(profile_id,)) > 0
 
 
+def _repair_face_photo_schema() -> None:
+    """Repair created_at on legacy face_photos tables before inserting a photo."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE face_photos SET created_at = now() WHERE created_at IS NULL")
+        cur.execute("ALTER TABLE face_photos ALTER COLUMN created_at SET DEFAULT now()")
+        cur.execute("ALTER TABLE face_photos ALTER COLUMN created_at SET NOT NULL")
+
+
 def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", group_id=None, angle_label=None,
     photo_kind="manual", validation_status="not_checked", validation_message=None, training_caption="",
     target_yaw=None,target_pitch=None,actual_yaw=None,actual_pitch=None):
     if photo_kind not in {"source","angle","expression","body","manual"}: raise ValueError("Invalid photo kind.")
     if validation_status not in {"not_checked","passed","needs_review","not_applicable"}: raise ValueError("Invalid photo validation status.")
     ensure_schema()
+    # CREATE TABLE IF NOT EXISTS does not restore defaults on an existing table.
+    # Repair this required timestamp even when ensure_schema() is cached.
+    _repair_face_photo_schema()
     photo_id=uuid.uuid4().hex
+    # Supply the timestamp in the INSERT itself as well as repairing the legacy
+    # default above. This makes the write independent of the column default.
     _run("""INSERT INTO face_photos(id,profile_id,filename,mime_type,byte_size,image_data,group_id,angle_label,photo_kind,
-        validation_status,validation_message,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        validation_status,validation_message,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch,created_at)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())""",
         (photo_id,profile_id,Path(filename).name,mime_type,len(image_data),image_data,group_id,(angle_label or "")[:80] or None,
          photo_kind,validation_status,(validation_message or "")[:1200] or None,(training_caption or "")[:1200],
          target_yaw,target_pitch,actual_yaw,actual_pitch))
@@ -259,14 +279,53 @@ def _group_dict(r):
         "error":r.get("error"),"created_at":_iso(r.get("created_at")),"updated_at":_iso(r.get("updated_at"))}
 
 
+def _repair_face_dataset_group_schema() -> None:
+    """Repair legacy required columns before creating a group, even if schema init was cached.
+
+    CREATE TABLE IF NOT EXISTS does not repair an existing PostgreSQL table. Older
+    installations may have these required columns without defaults, causing a
+    dataset-job request to fail before the background worker can start.
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE face_dataset_groups SET generated_count = 0 WHERE generated_count IS NULL"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN generated_count SET DEFAULT 0"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN generated_count SET NOT NULL"
+        )
+        cur.execute(
+            "UPDATE face_dataset_groups SET created_at = now() WHERE created_at IS NULL"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN created_at SET DEFAULT now()"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN created_at SET NOT NULL"
+        )
+        cur.execute(
+            "UPDATE face_dataset_groups SET updated_at = now() WHERE updated_at IS NULL"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN updated_at SET DEFAULT now()"
+        )
+        cur.execute(
+            "ALTER TABLE face_dataset_groups ALTER COLUMN updated_at SET NOT NULL"
+        )
+
+
 def create_face_dataset_group(profile_id,title,expected_count=5,dataset_type="face_angles",prompt=""):
     title=(title or "").strip(); dataset_type=(dataset_type or "face_angles").strip().lower(); prompt=(prompt or "").strip()
     if not title or len(title)>120: raise ValueError("Dataset group title must contain 1–120 characters.")
     if not 1<=int(expected_count)<=30: raise ValueError("Dataset group expected count must be between 1 and 30.")
     if dataset_type not in {"face_angles","expressions","body_type"}: raise ValueError("Invalid dataset type.")
     if len(prompt)>1200: raise ValueError("Dataset prompt must be 1200 characters or fewer.")
-    ensure_schema(); gid=uuid.uuid4().hex
-    _run("INSERT INTO face_dataset_groups(id,profile_id,title,dataset_type,prompt,status,expected_count) VALUES(%s,%s,%s,%s,%s,'generating',%s)",
+    ensure_schema()
+    _repair_face_dataset_group_schema()
+    gid=uuid.uuid4().hex
+    _run("INSERT INTO face_dataset_groups(id,profile_id,title,dataset_type,prompt,status,expected_count,generated_count) VALUES(%s,%s,%s,%s,%s,'generating',%s,0)",
          (gid,profile_id,title,dataset_type,prompt,int(expected_count)))
     return get_face_dataset_group(gid)
 
@@ -335,6 +394,55 @@ def _job_dict(r):
         "created_at":_iso(r.get("created_at")),"updated_at":_iso(r.get("updated_at"))}
 
 
+def _repair_face_dataset_job_schema() -> None:
+    """Repair every defaulted NOT NULL job column on legacy PostgreSQL schemas."""
+    with _connect() as conn, conn.cursor() as cur:
+        # CREATE TABLE IF NOT EXISTS cannot repair columns in tables created by
+        # older releases. Backfill NULLs first, then restore defaults and constraints.
+        repairs = (
+            ("generated_count", "0", "0"),
+            ("current_index", "0", "0"),
+            ("current_label", "''", "''"),
+            ("group_count_base", "0", "0"),
+            ("target_manifest", "'[]'", "'[]'"),
+            ("cancel_requested", "FALSE", "FALSE"),
+            ("failed_targets", "'[]'", "'[]'"),
+            ("review_targets", "'[]'", "'[]'"),
+        )
+        for column, fallback, default in repairs:
+            cur.execute(
+                sql.SQL("UPDATE face_dataset_jobs SET {} = {} WHERE {} IS NULL").format(
+                    sql.Identifier(column), sql.SQL(fallback), sql.Identifier(column)
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE face_dataset_jobs ALTER COLUMN {} SET DEFAULT {}").format(
+                    sql.Identifier(column), sql.SQL(default)
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE face_dataset_jobs ALTER COLUMN {} SET NOT NULL").format(
+                    sql.Identifier(column)
+                )
+            )
+        for column in ("created_at", "updated_at"):
+            cur.execute(
+                sql.SQL("UPDATE face_dataset_jobs SET {} = now() WHERE {} IS NULL").format(
+                    sql.Identifier(column), sql.Identifier(column)
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE face_dataset_jobs ALTER COLUMN {} SET DEFAULT now()").format(
+                    sql.Identifier(column)
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE face_dataset_jobs ALTER COLUMN {} SET NOT NULL").format(
+                    sql.Identifier(column)
+                )
+            )
+
+
 def create_face_dataset_job(*,job_id,group_id,profile_id,dataset_type,backend,expected_count,source_photo_id,target_manifest=None,group_count_base=0):
     if dataset_type not in {"face_angles","expressions"}: raise ValueError("Unsupported face dataset generation type.")
     if backend not in {"cpu","local_gpu","runpod","cloud_gpu"}: raise ValueError("Unsupported generation backend.")
@@ -343,13 +451,19 @@ def create_face_dataset_job(*,job_id,group_id,profile_id,dataset_type,backend,ex
     if targets and len(targets)!=int(expected_count): raise ValueError("Target manifest count must match expected_count.")
     if int(group_count_base)<0: raise ValueError("Base group photo count cannot be negative.")
     if not all(isinstance(x,str) and len(x)==32 for x in (job_id,group_id,profile_id,source_photo_id)): raise ValueError("Invalid dataset generation job identifiers.")
+    ensure_schema()
+    _repair_face_dataset_job_schema()
     group=get_face_dataset_group(group_id)
     if not group or group["profile_id"]!=profile_id or group["dataset_type"]!=dataset_type: raise ValueError("Dataset group does not match generation job.")
     source=_one("SELECT id FROM face_photos WHERE id=%s AND profile_id=%s AND group_id=%s",(source_photo_id,profile_id,group_id))
     if not source: raise ValueError("Source photo does not belong to target dataset group.")
-    _run("""INSERT INTO face_dataset_jobs(id,group_id,profile_id,dataset_type,status,backend,expected_count,source_photo_id,group_count_base,target_manifest)
-        VALUES(%s,%s,%s,%s,'queued',%s,%s,%s,%s,%s)""",
-        (job_id,group_id,profile_id,dataset_type,backend,int(expected_count),source_photo_id,int(group_count_base),json.dumps(targets,ensure_ascii=False)))
+    _run("""INSERT INTO face_dataset_jobs(
+        id,group_id,profile_id,dataset_type,status,backend,expected_count,generated_count,
+        current_index,current_label,source_photo_id,group_count_base,target_manifest,
+        cancel_requested,failed_targets,review_targets,created_at,updated_at)
+        VALUES(%s,%s,%s,%s,'queued',%s,%s,0,0,'',%s,%s,%s,FALSE,'[]','[]',now(),now())""",
+        (job_id,group_id,profile_id,dataset_type,backend,int(expected_count),source_photo_id,
+         int(group_count_base),json.dumps(targets,ensure_ascii=False)))
     return get_face_dataset_job(job_id)
 
 

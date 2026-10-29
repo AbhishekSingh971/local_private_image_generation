@@ -431,6 +431,11 @@
     face_angles:["Front view","Middle-left","Middle-right","Three-quarter left","Three-quarter right","Left profile","Right profile","Looking up","Looking down"],
     expressions:["Neutral expression","Gentle smile","Broad smile","Laughing","Sad","Angry","Surprised","Fearful","Disgusted","Confused"]
   };
+  // Keep each mode's target selection independent when switching between angles and expressions.
+  const selectedFaceTargetsByMode={
+    face_angles:new Set(faceVariationLabels.face_angles),
+    expressions:new Set(faceVariationLabels.expressions)
+  };
   const faceTargetChecklist=$("#faceTargetChecklist");
   const selectAllFaceTargets=$("#selectAllFaceTargets");
   function selectedFaceTargetLabels(){
@@ -439,13 +444,13 @@
   function renderFaceTargetChecklist(){
     if(!faceTargetChecklist)return;
     const labels=faceVariationLabels[activeVariationMode]||[];
-    const selected=new Set(selectedFaceTargetLabels());
+    const selected=selectedFaceTargetsByMode[activeVariationMode]||new Set(labels);
     faceTargetChecklist.innerHTML="";
     labels.forEach((label,index)=>{
       const item=document.createElement("label");
       item.className="face-target-option";
       const checkbox=document.createElement("input");
-      checkbox.type="checkbox";checkbox.value=label;checkbox.checked=true;
+      checkbox.type="checkbox";checkbox.value=label;checkbox.checked=selected.has(label);
       checkbox.setAttribute("aria-label","Generate "+label);
       const text=document.createElement("span");
       text.textContent=label;
@@ -460,6 +465,7 @@
     if(!faceTargetChecklist)return;
     const boxes=Array.from(faceTargetChecklist.querySelectorAll(".face-target-option input"));
     const checked=boxes.filter(box=>box.checked);
+    selectedFaceTargetsByMode[activeVariationMode]=new Set(checked.map(box=>box.value));
     if(selectAllFaceTargets){selectAllFaceTargets.checked=boxes.length>0&&checked.length===boxes.length;selectAllFaceTargets.indeterminate=checked.length>0&&checked.length<boxes.length;}
     const help=$("#targetSelectionHelp");
     if(help)help.textContent=checked.length===boxes.length
@@ -502,6 +508,8 @@
     if(retryFaceAngleButton)retryFaceAngleButton.hidden=true;
     renderFaceTargetChecklist();
   }
+  // Guard this optional page section so a missing/null selector result cannot abort all studio initialization.
+  // $() returns only the first matching element; use $() for all source tabs.
   // This page has multiple source tabs. Use $$ (querySelectorAll), not $ (querySelector):
   // $ returns one element, so calling forEach on it throws and prevents every handler below
   // from registering, including Generate photo and strength-slider synchronization.
@@ -1191,8 +1199,8 @@
     });
     return readJson(response);
   }
-  let activeDatasetType="face_angles";
-  const datasetTypeLabels={face_angles:"Face angles",expressions:"Expressions",body_type:"Body type · global"};
+  let activeDatasetType="all";
+  const datasetTypeLabels={all:"All groups",face_angles:"Face angles",expressions:"Expressions",body_type:"Body type · global"};
   $$(".dataset-category-tab").forEach(tab=>tab.addEventListener("click",()=>{
     activeDatasetType=tab.dataset.datasetFilter||"face_angles";
     $$(".dataset-category-tab").forEach(item=>item.classList.toggle("active",item===tab));
@@ -1261,9 +1269,9 @@
     try{
       const data=await readJson(await fetch("/api/face-dataset-groups",{cache:"no-store"}));
       const allGroups=data.groups||[];
-      const groups=allGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
+      const groups=activeDatasetType==="all"?allGroups:allGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
       $$(".dataset-category-tab").forEach(tab=>{
-        const amount=allGroups.filter(group=>(group.dataset_type||"face_angles")===tab.dataset.datasetFilter).length;
+        const amount=tab.dataset.datasetFilter==="all"?allGroups.length:allGroups.filter(group=>(group.dataset_type||"face_angles")===tab.dataset.datasetFilter).length;
         tab.textContent=(datasetTypeLabels[tab.dataset.datasetFilter]||tab.dataset.datasetFilter)+" ("+amount+")";
       });
       container.replaceChildren();
@@ -1272,7 +1280,9 @@
         const empty=document.createElement("div");empty.className="empty-state panel";
         const title=document.createElement("h3");title.textContent="No "+(datasetTypeLabels[activeDatasetType]||"")+" datasets yet";
         const note=document.createElement("p");
-        note.textContent=activeDatasetType==="body_type"
+        note.textContent=activeDatasetType==="all"
+          ?"Create a face-angle, expression, or body-type group from Face models. Saved groups remain listed even when they contain no photos."
+          :activeDatasetType==="body_type"
           ?"Open Face models → Body type · global to generate prompt-based samples without uploading a reference photo."
           :activeDatasetType==="expressions"
           ?"Open Face models → Expressions to upload a source face and generate expression variations."
@@ -1352,6 +1362,12 @@
           if(validationDetail.textContent)figure.append(validationDetail);
           figure.append(photoActions,replaceInput);photos.appendChild(figure);
         });
+        if(!(group.photos||[]).length){
+          const emptyPhotos=document.createElement("div");
+          emptyPhotos.className="empty-state dataset-group-empty";
+          emptyPhotos.textContent="This group is saved but has no training photos yet. It will remain here until you explicitly delete the group.";
+          photos.appendChild(emptyPhotos);
+        }
         card.appendChild(photos);
         if(group.error){const error=document.createElement("p");error.className="dataset-group-error";error.textContent=group.error;card.appendChild(error);}
         if(busy){const warning=document.createElement("p");warning.className="field-help";warning.textContent="Generation is still in progress. Group edits are temporarily disabled.";card.appendChild(warning);}

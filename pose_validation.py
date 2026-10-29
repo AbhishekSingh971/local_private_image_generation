@@ -48,6 +48,25 @@ class HeadPose:
     roll: float = 0.0
 
 
+def _normalize_euler_angles(pitch: float, yaw: float, roll: float) -> tuple[float, float, float]:
+    """Keep head-pose estimates in the UI's expected near-facing Euler range.
+
+    Pose validation targets only modest pitch changes. Avoid allowing an Euler
+    representation near +/-180 degrees to turn a frontal estimate into a false
+    opposite-facing yaw after coordinate-convention ambiguity.
+    """
+    pitch = float(pitch)
+    yaw = float(yaw)
+    roll = float(roll)
+    if pitch > 90.0:
+        pitch = 180.0 - pitch
+    elif pitch < -90.0:
+        pitch = -180.0 - pitch
+    yaw = ((yaw + 180.0) % 360.0) - 180.0
+    roll = ((roll + 180.0) % 360.0) - 180.0
+    return pitch, yaw, roll
+
+
 def estimate_head_pose(image) -> tuple[HeadPose | None, str]:
     """Estimate yaw/pitch from MediaPipe Face Mesh plus OpenCV solvePnP.
 
@@ -84,15 +103,19 @@ def estimate_head_pose(image) -> tuple[HeadPose | None, str]:
             [(landmarks[index].x * width, landmarks[index].y * height) for index in indices],
             dtype=np.float64,
         )
-        # Generic 3-D face points paired to the six stable Face Mesh landmarks.
+        # Generic 3-D points use OpenCV's conventional head-pose coordinate
+        # system: +Y points down the face, so the chin has positive Y and the
+        # eyes sit above the nose. The previous inverted Y coordinates caused
+        # solvePnP/RQDecomp3x3 to choose an equivalent rotation near +/-180°
+        # pitch for otherwise frontal faces.
         model_points = np.array(
             [
                 (0.0, 0.0, 0.0),          # nose tip
-                (0.0, -330.0, -65.0),     # chin
-                (-225.0, 170.0, -135.0),  # left eye outer corner
-                (225.0, 170.0, -135.0),   # right eye outer corner
-                (-150.0, -150.0, -125.0), # left mouth corner
-                (150.0, -150.0, -125.0),  # right mouth corner
+                (0.0, 330.0, -65.0),      # chin
+                (-225.0, -170.0, -135.0), # left eye outer corner
+                (225.0, -170.0, -135.0),  # right eye outer corner
+                (-150.0, 150.0, -125.0),  # left mouth corner
+                (150.0, 150.0, -125.0),   # right mouth corner
             ],
             dtype=np.float64,
         )
@@ -115,6 +138,9 @@ def estimate_head_pose(image) -> tuple[HeadPose | None, str]:
         pitch, yaw, roll = (float(angles[0]), float(angles[1]), float(angles[2]))
         if not all(isfinite(value) for value in (yaw, pitch, roll)):
             return None, "Pose validation returned invalid angle estimates."
+        # RQ decomposition can return an equivalent pitch near +/-180 degrees
+        # for a frontal image. Normalize it before comparing with modest UI targets.
+        pitch, yaw, roll = _normalize_euler_angles(pitch, yaw, roll)
         # The chosen 3-D template and solvePnP axes have opposite signs from the
         # UI's subject-relative yaw convention, so normalize them here.
         pose = HeadPose(yaw=-yaw, pitch=pitch, roll=roll)
@@ -217,14 +243,19 @@ def build_pose_control_image(
     yr = y * cp - zr * sp
     depth = y * sp + zr * cp
 
-    # Normalize the projected mesh into a consistent square canvas without
-    # changing the x/y ratio. Far-side landmarks are attenuated rather than
-    # deleted so the conditioning image stays connected at profile angles.
-    projected_x = xr
-    projected_y = yr
+    # Perspective-project the rotated mesh instead of treating it as a flat
+    # orthographic drawing. MediaPipe z is negative for points nearer the camera;
+    # perspective makes the near-side features larger and the far side recede.
+    # This still estimates hidden anatomy from the visible mesh; it is not a
+    # substitute for a fitted 3D morphable head model.
+    camera_distance = face_scale * 2.5
+    safe_depth = np.maximum(camera_distance + depth, face_scale * 0.35)
+    focal_length = float(max(width, height)) * 1.15
+    projected_x = xr * focal_length / safe_depth
+    projected_y = yr * focal_length / safe_depth
     span_x = max(float(np.ptp(projected_x)), 1.0)
     span_y = max(float(np.ptp(projected_y)), 1.0)
-    scale = min((width * 0.72) / span_x, (height * 0.72) / span_y)
+    scale = min((width * 0.72) / span_x, (height * 0.78) / span_y)
     center_x, center_y = width / 2.0, height / 2.0
     px = center_x + projected_x * scale
     py = center_y + projected_y * scale
@@ -241,9 +272,11 @@ def build_pose_control_image(
     for first, second in tessellation:
         if first >= len(px) or second >= len(px):
             continue
-        # Suppress connections that project outside the image; retain a sparse
-        # near-side mesh in strong profile views to avoid a solid scribble.
-        if depth[first] < -face_scale * 0.12 and depth[second] < -face_scale * 0.12:
+        # In MediaPipe's convention negative z is nearer to the camera.
+        # For profile views suppress edges on the far side, not the near side;
+        # the previous sign check removed the near-side mesh and harmed profile
+        # conditioning.
+        if depth[first] > face_scale * 0.12 and depth[second] > face_scale * 0.12:
             continue
         x1, y1, x2, y2 = float(px[first]), float(py[first]), float(px[second]), float(py[second])
         if not all(isfinite(v) for v in (x1, y1, x2, y2)):

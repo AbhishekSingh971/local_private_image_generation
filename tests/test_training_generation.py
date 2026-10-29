@@ -1,7 +1,7 @@
 import pytest
 from PIL import ImageChops
 
-from pose_validation import HeadPose, build_pose_control_image, validate_pose_target
+from pose_validation import HeadPose, _normalize_euler_angles, build_pose_control_image, validate_pose_target
 from training_generation import FACE_ANGLE_TARGETS, FACE_EXPRESSION_TARGETS, targets_for_dataset_type
 
 
@@ -36,6 +36,13 @@ def test_face_expressions_are_ten_independent_targets():
 def test_unknown_dataset_type_is_rejected():
     with pytest.raises(ValueError, match="Dataset type must be"):
         targets_for_dataset_type("body_type")
+
+
+def test_pose_estimator_normalizes_ambiguous_near_180_pitch_without_flipping_yaw():
+    pitch, yaw, roll = _normalize_euler_angles(-177.0, 1.0, 0.0)
+    assert pitch == pytest.approx(-3.0)
+    assert yaw == pytest.approx(1.0)
+    assert roll == pytest.approx(0.0)
 
 
 def test_pose_validation_marks_matching_target_passed():
