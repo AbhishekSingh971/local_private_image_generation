@@ -1,8 +1,7 @@
-"""Authenticated GPU worker for a user-managed GHive rented GPU instance.
+"""Authenticated GPU worker for a user-managed Colab or cloud GPU runtime.
 
-Set REMOTE_API_TOKEN to a strong random secret. On GHive, expose this worker only through
-an HTTPS tunnel; GHive does not provide public instance endpoints. This worker does not
-provision, purchase, or keep a rented GPU instance alive.
+Set REMOTE_API_TOKEN to a strong random secret and expose port 8000 only through
+an HTTPS tunnel/proxy. This worker does not provision, purchase, or keep a runtime alive.
 """
 import hmac
 import io
@@ -37,7 +36,7 @@ from face_profiles import (
     validate_profile_id,
 )
 
-worker = Flask("ghive_gpu_worker")
+worker = Flask("runpod_gpu_worker")
 worker.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 TOKEN = os.environ.get("REMOTE_API_TOKEN", "").strip()
 TASKS = {}
@@ -74,7 +73,7 @@ def _set_generation_progress(task_id, *, asset_type, status, progress, current_s
                 oldest = next(key for key in GENERATION_PROGRESS if key != task_id)
             GENERATION_PROGRESS.pop(oldest, None)
 
-TRAIN_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ghive-face-train")
+TRAIN_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="runpod-face-train")
 VIDEO_PIPE = None
 VIDEO_ACTIVE_LORA = None
 VIDEO_LOCK = threading.Lock()
@@ -100,7 +99,7 @@ def remote_generation_progress(task_id):
         if progress:
             return jsonify(dict(progress))
     return jsonify(
-        task_id=task_id, asset_type="unknown", backend="cloud_gpu", status="starting",
+        task_id=task_id, asset_type="unknown", backend="runpod", status="starting",
         progress=0, current_step=0, total_steps=0, stage="starting",
         message="Waiting for the GPU worker…",
     )
@@ -517,7 +516,7 @@ if __name__ == "__main__":
     if not os.environ.get("REMOTE_API_TOKEN", "").strip():
         raise SystemExit("Set REMOTE_API_TOKEN to a strong secret before starting the GPU worker.")
     if not torch.cuda.is_available():
-        raise SystemExit("CUDA is not available. Start a CUDA-enabled GHive GPU instance and verify PyTorch sees the GPU.")
+        raise SystemExit("CUDA is not available. Start a CUDA-enabled cloud GPU Pod and verify PyTorch sees the GPU.")
     print(f"cloud GPU worker starting on port {int(os.environ.get('GPU_WORKER_PORT', '8000'))}")
     worker.run(
         host="0.0.0.0",

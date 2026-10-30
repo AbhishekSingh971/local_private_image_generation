@@ -42,7 +42,7 @@
     }
     if (key === "cloud_gpu" || key === "runpod") {
       const gpu = options.cloud_gpu || {};
-      return "GHive GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
+      return "Cloud GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
     }
     return "Local CPU (fallback)";
   }
@@ -60,13 +60,13 @@
     if (selected === "local_gpu") {
       gpuStatus.textContent = "GPU acceleration is ON. Image generation will run on the detected System GPU: " + (computeAvailability?.local_gpu?.name || "CUDA GPU") + ".";
     } else if (selected === "cloud_gpu" || selected === "runpod") {
-      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected cloud GPU: " + (computeAvailability?.cloud_gpu?.name || "GHive GPU") + ". Requests are sent securely from the app to your configured worker.";
+      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected cloud GPU: " + (computeAvailability?.cloud_gpu?.name || "Cloud GPU") + ". Requests are sent securely from the app to your configured worker.";
     } else if (requested === "auto") {
       gpuStatus.textContent = "GPU acceleration is ON, but no usable GPU is available. Auto mode is falling back to local CPU; image generation may be very slow. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
     } else {
       gpuStatus.textContent = "CPU fallback selected explicitly. Generation will run on the local CPU, not a GPU.";
     }
-    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " GHive GPU unavailable: " + computeAvailability.cloud_error;
+    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " Cloud GPU unavailable: " + computeAvailability.cloud_error;
   }
   function renderComputeOptions(options) {
     computeAvailability = options;
@@ -96,7 +96,7 @@
       return;
     }
     if (gpuModePill) gpuModePill.textContent = "CHECKING GPUS…";
-    if (gpuStatus) gpuStatus.textContent = "Checking local CUDA support and testing the configured GHive GPU worker…";
+    if (gpuStatus) gpuStatus.textContent = "Checking local CUDA support and testing the configured cloud GPU worker…";
     if (computeBackend) computeBackend.disabled = true;
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 25000);
@@ -1415,7 +1415,7 @@
     try{
       const data=await readJson(await fetch("/health"));
       const gpu=data.local_gpu||{};
-      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"Cloud GPU worker is configured; enable GPU acceleration to check availability.":"GHive GPU worker is not configured; local CPU remains available.");
+      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"Cloud GPU worker is configured; enable GPU acceleration to check availability.":"Cloud GPU worker is not configured; local CPU remains available.");
     }catch(error){if(gpuStatus)gpuStatus.textContent=error.message;}
   }
   loadStatus();
