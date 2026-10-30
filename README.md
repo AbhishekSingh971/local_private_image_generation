@@ -122,7 +122,7 @@ The script checks CUDA, installs project requirements, downloads the SD 1.5 base
 2. Set `GPU_WORKER_URL` to the exact HTTPS tunnel base URL (without `/api/remote/health`).
 3. Set `REMOTE_API_TOKEN` to the exact same secret generated in the GHive terminal.
 4. Restart `run_local.bat`.
-5. Enable **GPU acceleration** and choose **Cloud GPU** (or Auto). The app authenticates to the worker and checks CUDA, GPU name and VRAM.
+5. Enable **GPU acceleration** and choose **GHive GPU** (or Auto). The app authenticates to the worker and checks CUDA, GPU name and VRAM.
 6. Test a small image generation first, then test LoRA training and video generation.
 
 Example local `.env` entries:
