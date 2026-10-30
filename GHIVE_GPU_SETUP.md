@@ -12,6 +12,7 @@
 
    ```bash
    export REMOTE_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+   printf 'Copy this token into your local .env (keep it private): %s\\n' "$REMOTE_API_TOKEN"
    export GPU_WORKER_PORT=8000
    bash run_ghive_worker.sh
    ```
