@@ -22,7 +22,7 @@
         <a class="nav-link {{ 'active' if active_page == 'videos' else '' }}" href="{{ url_for('library_videos_page') }}"><span>▣</span> Generated videos</a>
       </nav>
       <div class="sidebar-foot">
-        <span class="online-dot"></span><div><strong>Private workspace</strong><small>Only run locally unless cloud GPU is selected.</small></div>
+        <span class="online-dot"></span><div><strong>Private workspace</strong><small>Only run locally unless GHive GPU is selected.</small></div>
       </div>
     </aside>
     <main class="main-area">
@@ -35,7 +35,7 @@
         <div class="compute-copy">
           <div class="eyebrow">Compute preference</div>
           <label class="switchline" for="useGpuAcceleration"><input id="useGpuAcceleration" type="checkbox" checked> Enable GPU acceleration</label>
-          <p class="tiny">Off always uses the local CPU (slower; progress is shown). On uses the selected backend: Auto prefers System GPU, then Cloud GPU, then CPU if no GPU is available. Explicit GPU selections require that GPU to be reachable.</p>
+          <p class="tiny">Off always uses the local CPU (slower; progress is shown). On uses the selected backend: Auto prefers System GPU, then GHive GPU, then CPU if no GPU is available. Explicit GPU selections require that GPU to be reachable.</p>
         </div>
         <div class="compute-controls">
           <div class="pill" id="gpuModePill">LOCAL · CPU</div>
