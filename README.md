@@ -1,6 +1,6 @@
 # Private Face Studio
 
-A local-first Windows/Flask application for generating photos, training separate face-identity LoRAs, managing a persistent face library, and optionally using a remote CUDA GPU through the authenticated cloud worker API. RunPod remains supported; Google Colab can also host the temporary GPU worker.
+A local-first Windows/Flask application for generating photos, training separate face-identity LoRAs, managing a persistent face library, and optionally using a remote CUDA GPU through the authenticated cloud worker API. Google Colab remains supported, and GHive can host the same authenticated remote CUDA worker.
 
 ## Features
 
@@ -18,7 +18,7 @@ A local-first Windows/Flask application for generating photos, training separate
 - Reusable LoRA adapters stored under `models/face_loras/<profile-id>/`.
 - Face selector for photo and video generation.
 - A GPU acceleration toggle that is OFF by default: OFF forces local CPU; ON checks actual local CUDA and connected cloud GPU availability.
-- A backend selector that appears when acceleration is on: supported local System GPU, connected cloud GPU (Colab or RunPod), and CPU fallback. Auto mode prefers a usable local CUDA GPU first, then the configured cloud GPU, then CPU if neither GPU is available.
+- A backend selector that appears when acceleration is on: supported local System GPU, connected remote GPU (Google Colab or GHive), and CPU fallback. Auto mode prefers a usable local CUDA GPU first, then the configured remote GPU, then CPU if neither GPU is available.
 - Authenticated provider-neutral cloud worker endpoints for face training, photo generation, video generation and status polling.
 - Local output copies saved under `data/outputs/` and `data/videos/`.
 
@@ -91,6 +91,44 @@ Local LoRA training requires a CUDA-enabled NVIDIA GPU. Your local Windows venv 
 ### Existing ungrouped dataset note
 
 Older versions stored all uploaded photos in `data/face_dataset/`. New named profiles use `data/face_profiles/<profile-id>/dataset/`. Review and manually copy any old images into the correct new profile through the UI; the app deliberately will not guess which person those old images belong to.
+
+## GHive GPU mode (optional; preserves Google Colab)
+
+GHive runs the same repository worker used by the existing Colab integration. The Flask application can remain on your Windows laptop or on Render; both connect to the worker using the same HTTPS base URL and bearer token. GHive is a compute host, not a second copy of the web application.
+
+1. Rent an NVIDIA GPU using GHive's **PyTorch + Jupyter** workload. Prefer 24 GB VRAM for AnimateDiff and face-LoRA training.
+2. In JupyterLab, open a terminal and clone this branch (or the merged branch once reviewed):
+   ```bash
+   git clone --branch feature/ghive-runtime-integration https://github.com/AbhishekSingh971/local_private_image_generation.git
+   cd local_private_image_generation
+   ```
+3. Create a strong shared secret and start the worker/tunnel:
+   ```bash
+   export REMOTE_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+   printf 'Copy this token to the app .env securely: %s\\n' "$REMOTE_API_TOKEN"
+   export GPU_WORKER_PORT=8000
+   bash run_ghive_worker.sh
+   ```
+4. Wait for the script to report CUDA, GPU name and VRAM. Copy the generated HTTPS `trycloudflare.com` address. Keep the terminal and rental running.
+5. In the local app's private `.env`, set:
+   ```dotenv
+   GPU_WORKER_URL=https://YOUR-ASSIGNED.trycloudflare.com
+   REMOTE_API_TOKEN=THE_EXACT_SAME_SECRET
+   ```
+   For Render, add the same two values as environment variables in the Render service dashboard. Do not commit either secret.
+6. Restart the local app / redeploy or restart the Render service. Enable GPU acceleration and choose **GHive / Colab GPU** (or Auto). The app's authenticated `/api/gpu-status?probe=1` check reports the worker's actual CUDA device and VRAM.
+7. Test a small image first, then video generation, face-angle/expression generation, and face-LoRA training.
+
+### Networking, persistence and production notes
+
+- GHive does not provide a public endpoint for arbitrary rented-instance ports. The launcher uses an outbound Cloudflare Quick Tunnel as a best-effort bridge. The generated tunnel URL changes when the tunnel restarts; update both local and Render environment settings when it changes.
+- A Quick Tunnel is suitable for development/testing, not a guaranteed production endpoint. For reliable production use, use a stable authenticated tunnel/domain or a GPU provider with a supported persistent endpoint. Long synchronous video/inference requests may also encounter proxy or hosting request timeouts; the current worker API should be load-tested before relying on long jobs from Render.
+- GHive rental storage is ephemeral. Supabase/PostgreSQL retains supported application media and completed LoRA ZIP backups, but model weights and worker files may need to be downloaded again after a rental ends. Back up anything not persisted before stopping the rental.
+- The worker handles image generation, AnimateDiff video generation, LoRA training, and remote face-angle/expression generation through the existing authenticated `/api/remote/*` API. The application and database remain on your local machine or Render.
+- GHive rental costs continue until the rental is stopped in GHive's dashboard. Closing the browser or local Flask app does not stop the rental.
+- Face photos and prompts sent to the worker are processed on a third-party host. Use only images you have permission to process and consider GHive host trust/privacy options.
+
+Detailed setup: [GHIVE_GPU_SETUP.md](GHIVE_GPU_SETUP.md). Existing Colab setup remains available in [COLAB_GPU_SETUP.md](COLAB_GPU_SETUP.md).
 
 ## Google Colab GPU mode (free runtime, optional)
 
