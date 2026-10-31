@@ -42,7 +42,7 @@
     }
     if (key === "cloud_gpu" || key === "runpod") {
       const gpu = options.cloud_gpu || {};
-      return "Cloud GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
+      return "GHive / Colab GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
     }
     return "Local CPU (fallback)";
   }
@@ -55,18 +55,18 @@
       return;
     }
     const selected = requested === "auto" ? (computeAvailability?.auto_backend || "auto") : requested;
-    const labels = {cpu:"CPU FALLBACK", local_gpu:"SYSTEM GPU", cloud_gpu:"CLOUD GPU", runpod:"CLOUD GPU", auto:"GPU UNAVAILABLE"};
+    const labels = {cpu:"CPU FALLBACK", local_gpu:"SYSTEM GPU", cloud_gpu:"REMOTE GPU", runpod:"REMOTE GPU", auto:"GPU UNAVAILABLE"};
     gpuModePill.textContent = requested === "auto" ? "AUTO · " + (labels[selected] || "CHECKING GPU") : (labels[selected] || "GPU ENABLED");
     if (selected === "local_gpu") {
       gpuStatus.textContent = "GPU acceleration is ON. Image generation will run on the detected System GPU: " + (computeAvailability?.local_gpu?.name || "CUDA GPU") + ".";
     } else if (selected === "cloud_gpu" || selected === "runpod") {
-      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected cloud GPU: " + (computeAvailability?.cloud_gpu?.name || "Cloud GPU") + ". Requests are sent securely from the app to your configured worker.";
+      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected remote GPU: " + (computeAvailability?.cloud_gpu?.name || "GHive / Colab GPU") + ". Requests are sent securely from the app to your configured worker.";
     } else if (requested === "auto") {
       gpuStatus.textContent = "GPU acceleration is ON, but no usable GPU is available. Auto mode is falling back to local CPU; image generation may be very slow. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
     } else {
       gpuStatus.textContent = "CPU fallback selected explicitly. Generation will run on the local CPU, not a GPU.";
     }
-    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " Cloud GPU unavailable: " + computeAvailability.cloud_error;
+    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " GHive / Colab GPU unavailable: " + computeAvailability.cloud_error;
   }
   function renderComputeOptions(options) {
     computeAvailability = options;
@@ -96,7 +96,7 @@
       return;
     }
     if (gpuModePill) gpuModePill.textContent = "CHECKING GPUS…";
-    if (gpuStatus) gpuStatus.textContent = "Checking local CUDA support and testing the configured cloud GPU worker…";
+    if (gpuStatus) gpuStatus.textContent = "Checking local CUDA support and testing the configured remote GPU worker…";
     if (computeBackend) computeBackend.disabled = true;
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 25000);
@@ -774,8 +774,8 @@
     try {
       globalBodyStatusCache=await readJson(await fetch("/api/global-body/status",{cache:"no-store"}));
       const info=globalBodyStatusCache;
-      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · Cloud GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
-      if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", cloud GPU: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
+      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · GHive / Colab GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
+      if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", remote GPU: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
       const requestedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
       const selectedBackend=requestedBackend==="auto"?(computeAvailability?.auto_backend||"auto"):requestedBackend;
       const backendReady=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?info.runpod_model_ready:(selectedBackend==="auto"?false:info.local_model_ready);
@@ -976,7 +976,7 @@
     if(step){
       step.textContent=Number(data.total_steps)>0
         ? "Denoising step "+Number(data.current_step||0)+" of "+Number(data.total_steps)
-        : (data.backend==="cloud_gpu"||data.backend==="runpod"?"Cloud GPU":"Local compute");
+        : (data.backend==="cloud_gpu"||data.backend==="runpod"?"GHive / Colab GPU":"Local compute");
       if(data.status==="completed")step.textContent="All steps finished · Saved to your library";
       if(data.status==="failed")step.textContent="The task ended before completion.";
     }
@@ -1415,7 +1415,7 @@
     try{
       const data=await readJson(await fetch("/health"));
       const gpu=data.local_gpu||{};
-      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"Cloud GPU worker is configured; enable GPU acceleration to check availability.":"Cloud GPU worker is not configured; local CPU remains available.");
+      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"GHive / Colab GPU worker is configured; enable GPU acceleration to check availability.":"GHive / Colab GPU worker is not configured; local CPU remains available.");
     }catch(error){if(gpuStatus)gpuStatus.textContent=error.message;}
   }
   loadStatus();
