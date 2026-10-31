@@ -1,7 +1,7 @@
 # GHive GPU worker setup
 
 1. Rent an NVIDIA GPU using GHive's **PyTorch + Jupyter** workload. Prefer 24 GB VRAM for face-LoRA training and video generation.
-2. Open a JupyterLab terminal and clone the main branch:
+2. Open a JupyterLab terminal and clone the GHive integration branch:
 
    ```bash
    git clone --branch feature/ghive-runtime-integration https://github.com/AbhishekSingh971/local_private_image_generation.git
