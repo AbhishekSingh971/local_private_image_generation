@@ -276,6 +276,43 @@ def cloud_worker_request(method: str, path: str, *, data=None, files=None, timeo
         raise RuntimeError(f"Cloud GPU worker returned HTTP {response.status_code}: {detail[:1200]}")
     return response
 
+def cloud_worker_generate_image_async(*, data, files, task_id, cancelled=None):
+    """Submit image work without holding a Cloudflare request open during GPU inference."""
+    response = cloud_worker_request(
+        "POST", "/api/remote/generate-async", data=data, files=files, timeout=(20, 45)
+    )
+    payload = response.json()
+    remote_job_id = payload.get("job_id")
+    if not remote_job_id:
+        raise RuntimeError("Cloud GPU worker did not return an asynchronous generation job ID.")
+    deadline = time.monotonic() + max(300, int(os.environ.get("CLOUD_GPU_JOB_TIMEOUT_SECONDS", "2400")))
+    while time.monotonic() < deadline:
+        if cancelled and cancelled():
+            try:
+                cloud_worker_request(
+                    "POST", f"/api/remote/generation-cancel/{task_id}", timeout=(5, 10)
+                )
+            finally:
+                raise RuntimeError("Face dataset generation was cancelled.")
+        status_response = cloud_worker_request(
+            "GET", f"/api/remote/generation-jobs/{remote_job_id}", timeout=(5, 12)
+        )
+        status_payload = status_response.json()
+        state = status_payload.get("status", "queued")
+        if state == "failed":
+            raise RuntimeError(status_payload.get("error") or "Remote GPU image generation failed.")
+        if state == "cancelled":
+            raise RuntimeError("Remote GPU image generation was cancelled.")
+        if state == "completed":
+            return cloud_worker_request(
+                "GET", f"/api/remote/generation-jobs/{remote_job_id}/result", timeout=(20, 90)
+            )
+        time.sleep(1.5)
+    raise RuntimeError(
+        "Cloud GPU generation exceeded the configured job wait limit. The remote job may still be running; "
+        "check its worker status before retrying to avoid duplicate GPU work."
+    )
+
 
 # Compatibility aliases keep older routes and integrations working.
 runpod_configured = cloud_worker_configured
@@ -1192,9 +1229,9 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
                 pose_control_image.save(pose_buffer, format="PNG")
                 pose_buffer.seek(0)
                 remote_files["pose_control_image"] = ("target-face-pose.png", pose_buffer, "image/png")
-            response = cloud_worker_request(
-                "POST", "/api/remote/generate", data=data,
-                files=remote_files, timeout=(20, 600),
+            response = cloud_worker_generate_image_async(
+                data=data, files=remote_files, task_id=task_id,
+                cancelled=lambda: _face_dataset_job_cancelled(job["id"]),
             )
             if _face_dataset_job_cancelled(job["id"]):
                 raise FaceDatasetJobCancelled("Cancellation requested.")
@@ -2233,7 +2270,7 @@ def api_train_face_profile(profile_id):
         if not cloud_worker_configured():
             return jsonify(error=(
                 "Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN in .env, "
-                "start the Colab/remote worker, then restart the local app."
+                "start the configured GHive or Colab worker and its HTTPS tunnel, then restart the app."
             )), 400
         opened_files = []
         try:

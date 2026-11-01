@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 import zipfile
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -45,6 +46,9 @@ GENERATION_PROGRESS = {}
 GENERATION_PROGRESS_LOCK = threading.RLock()
 GENERATION_CANCEL_REQUESTS = set()
 GENERATION_CANCEL_LOCK = threading.RLock()
+REMOTE_GENERATION_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="remote-image-generation")
+REMOTE_GENERATION_JOBS = {}
+REMOTE_GENERATION_JOBS_LOCK = threading.RLock()
 
 
 class RemoteGenerationCancelled(RuntimeError):
@@ -299,6 +303,133 @@ def remote_generation_cancel(task_id):
 def _remote_generation_cancelled(task_id):
     with GENERATION_CANCEL_LOCK:
         return task_id in GENERATION_CANCEL_REQUESTS
+
+
+def _run_async_remote_generation(job_id, form_data, file_data):
+    """Run the existing synchronous image route in a worker thread and retain its result."""
+    with REMOTE_GENERATION_JOBS_LOCK:
+        job = REMOTE_GENERATION_JOBS.get(job_id)
+        if not job:
+            return
+        job["status"] = "queued"
+    try:
+        # Serialize queued image jobs with video and legacy synchronous image requests.
+        while local_engine.generation_lock.locked():
+            if _remote_generation_cancelled(job_id):
+                with REMOTE_GENERATION_JOBS_LOCK:
+                    job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                    job.update(status="cancelled", error="Generation cancelled before it started.")
+                return
+            time.sleep(0.5)
+        # Rebuild upload streams for every attempt: a busy-GPU 429 consumes the
+        # request body, so retrying with the same BytesIO objects would send empty files.
+        # Reuse the established validation, pipeline and progress logic without
+        # keeping the original Cloudflare HTTP request open during inference.
+        while True:
+            if _remote_generation_cancelled(job_id):
+                with REMOTE_GENERATION_JOBS_LOCK:
+                    job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                    job.update(status="cancelled", error="Generation cancelled before it started.")
+                return
+            payload = dict(form_data)
+            for field, (filename, content, content_type) in file_data.items():
+                payload[field] = (io.BytesIO(content), filename, content_type)
+            with worker.test_request_context(
+                "/api/remote/generate", method="POST", data=payload
+            ):
+                response = worker.make_response(remote_generate())
+                response.direct_passthrough = False
+                status_code = response.status_code
+                body = response.get_data()
+                content_type = response.mimetype
+            if status_code == 429:
+                # Another worker workload acquired the shared GPU lock first.
+                # Keep this task queued instead of failing the face-angle batch.
+                time.sleep(1.0)
+                continue
+            if status_code < 200 or status_code >= 300:
+                try:
+                    error_payload = json.loads(body.decode("utf-8", errors="replace"))
+                    error = error_payload.get("error") or error_payload.get("message") or body[:2000].decode("utf-8", errors="replace")
+                except (ValueError, AttributeError):
+                    error = body[:2000].decode("utf-8", errors="replace")
+                with REMOTE_GENERATION_JOBS_LOCK:
+                    job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                    job.update(status="failed", error=str(error)[:2500])
+                return
+            with REMOTE_GENERATION_JOBS_LOCK:
+                job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                job.update(status="completed", result=body, content_type=content_type, finished_at=time.time())
+            return
+    except Exception as exc:
+        with REMOTE_GENERATION_JOBS_LOCK:
+            job = REMOTE_GENERATION_JOBS.get(job_id, {})
+            job.update(status="failed", error=str(exc)[:2500], finished_at=time.time())
+
+
+@worker.post("/api/remote/generate-async")
+def remote_generate_async():
+    if not torch.cuda.is_available():
+        return jsonify(error="This cloud GPU worker has no CUDA GPU attached."), 503
+    task_id = (request.form.get("task_id") or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+        return jsonify(error="Invalid generation task ID."), 400
+    with REMOTE_GENERATION_JOBS_LOCK:
+        existing = REMOTE_GENERATION_JOBS.get(task_id)
+        if existing:
+            return jsonify(job_id=task_id, status=existing.get("status", "queued")), 202
+        if len(REMOTE_GENERATION_JOBS) >= 40:
+            completed = [
+                key for key, value in REMOTE_GENERATION_JOBS.items()
+                if value.get("status") in {"completed", "failed", "cancelled"}
+            ]
+            for key in completed[:20]:
+                REMOTE_GENERATION_JOBS.pop(key, None)
+        form_data = request.form.to_dict(flat=True)
+        file_data = {}
+        for field, uploaded in request.files.items():
+            file_data[field] = (
+                Path(uploaded.filename or "upload.bin").name,
+                uploaded.stream.read(),
+                uploaded.mimetype or "application/octet-stream",
+            )
+        REMOTE_GENERATION_JOBS[task_id] = {
+            "job_id": task_id, "task_id": task_id, "status": "queued",
+            "created_at": time.time(), "error": None,
+        }
+    REMOTE_GENERATION_POOL.submit(_run_async_remote_generation, task_id, form_data, file_data)
+    return jsonify(job_id=task_id, status="queued"), 202
+
+
+@worker.get("/api/remote/generation-jobs/<job_id>")
+def remote_generation_job_status(job_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id or ""):
+        return jsonify(error="Invalid generation job ID."), 400
+    with REMOTE_GENERATION_JOBS_LOCK:
+        job = REMOTE_GENERATION_JOBS.get(job_id)
+        if not job:
+            return jsonify(error="Generation job not found; the worker may have restarted."), 404
+        payload = {key: value for key, value in job.items() if key != "result"}
+    with GENERATION_PROGRESS_LOCK:
+        progress = GENERATION_PROGRESS.get(job_id)
+        if progress:
+            payload["progress"] = dict(progress)
+    return jsonify(payload)
+
+
+@worker.get("/api/remote/generation-jobs/<job_id>/result")
+def remote_generation_job_result(job_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id or ""):
+        return jsonify(error="Invalid generation job ID."), 400
+    with REMOTE_GENERATION_JOBS_LOCK:
+        job = REMOTE_GENERATION_JOBS.get(job_id)
+        if not job:
+            return jsonify(error="Generation job not found; the worker may have restarted."), 404
+        if job.get("status") != "completed" or not job.get("result"):
+            return jsonify(error="Generation result is not ready."), 409
+        result = job["result"]
+        content_type = job.get("content_type") or "image/png"
+    return send_file(io.BytesIO(result), mimetype=content_type, download_name="generated.png")
 
 
 @worker.post("/api/remote/generate")
