@@ -321,9 +321,8 @@ def _run_async_remote_generation(job_id, form_data, file_data):
                     job.update(status="cancelled", error="Generation cancelled before it started.")
                 return
             time.sleep(0.5)
-        payload = dict(form_data)
-        for field, (filename, content, content_type) in file_data.items():
-            payload[field] = (io.BytesIO(content), filename, content_type)
+        # Rebuild upload streams for every attempt: a busy-GPU 429 consumes the
+        # request body, so retrying with the same BytesIO objects would send empty files.
         # Reuse the established validation, pipeline and progress logic without
         # keeping the original Cloudflare HTTP request open during inference.
         while True:
@@ -332,6 +331,9 @@ def _run_async_remote_generation(job_id, form_data, file_data):
                     job = REMOTE_GENERATION_JOBS.get(job_id, {})
                     job.update(status="cancelled", error="Generation cancelled before it started.")
                 return
+            payload = dict(form_data)
+            for field, (filename, content, content_type) in file_data.items():
+                payload[field] = (io.BytesIO(content), filename, content_type)
             with worker.test_request_context(
                 "/api/remote/generate", method="POST", data=payload
             ):
