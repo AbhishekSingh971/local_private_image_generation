@@ -1200,6 +1200,7 @@
     return readJson(response);
   }
   let activeDatasetType="all";
+  let activeDatasetProfileId="";
   const datasetTypeLabels={all:"All groups",face_angles:"Face angles",expressions:"Expressions",body_type:"Body type · global"};
   $$(".dataset-category-tab").forEach(tab=>tab.addEventListener("click",()=>{
     activeDatasetType=tab.dataset.datasetFilter||"face_angles";
@@ -1260,6 +1261,49 @@
     finally{button.disabled=false;}
   });
 
+  function renderTrainingProfileCards(profiles, groups) {
+    const container=$("#trainingDatasetProfiles");
+    if(!container)return;
+    container.replaceChildren();
+    const allButton=document.createElement("button");
+    allButton.type="button";
+    allButton.className="secondary-button"+(!activeDatasetProfileId?" active":"");
+    allButton.textContent="All profiles ("+profiles.length+")";
+    allButton.addEventListener("click",()=>{activeDatasetProfileId="";loadDatasetGroups();});
+    container.appendChild(allButton);
+    profiles.forEach(profile=>{
+      const profileGroups=groups.filter(group=>group.profile_id===profile.id);
+      const card=document.createElement("article");
+      card.className="panel training-profile-card";
+      const heading=document.createElement("div");
+      heading.className="training-profile-heading";
+      const name=document.createElement("h3");
+      name.textContent=profile.name||"Unnamed face profile";
+      const count=document.createElement("span");
+      count.className="dataset-group-status";
+      count.textContent=Number(profile.image_count||0)+" photo(s)";
+      heading.append(name,count);
+      const token=document.createElement("p");
+      token.className="field-help";
+      token.textContent="Trigger token: "+(profile.token||"Not set")+" · "+profileGroups.length+" dataset group(s)";
+      const training=document.createElement("p");
+      training.className="field-help";
+      training.textContent="Local: "+(profile.local_model_ready?"trained":(profile.local_training_state||"not trained"))+" · Cloud: "+(profile.runpod_model_ready?"trained":(profile.runpod_training_state||"not trained"));
+      const empty=document.createElement("p");
+      empty.className="field-help";
+      empty.textContent=Number(profile.image_count||0)===0?"No training photos yet. This profile is saved and will remain visible until you delete it.":(profileGroups.length===0?"No dataset groups yet. Its profile photos are still available for training.":"");
+      const select=document.createElement("button");
+      select.type="button";
+      select.className="secondary-button";
+      select.textContent=activeDatasetProfileId===profile.id?"Showing this profile":"Show this profile's datasets";
+      select.addEventListener("click",()=>{activeDatasetProfileId=profile.id;loadDatasetGroups();});
+      card.append(heading,token,training);
+      if(empty.textContent)card.appendChild(empty);
+      card.appendChild(select);
+      container.appendChild(card);
+    });
+  }
+
   async function loadDatasetGroups() {
     const container=$("#datasetGroups");
     if(!container)return;
@@ -1267,9 +1311,15 @@
     const status=$("#datasetStatus");
     if(countLabel)countLabel.textContent="Loading training datasets…";
     try{
-      const data=await readJson(await fetch("/api/face-dataset-groups",{cache:"no-store"}));
+      const [data,profileData]=await Promise.all([
+        readJson(await fetch("/api/face-dataset-groups",{cache:"no-store"})),
+        readJson(await fetch("/api/face-profiles",{cache:"no-store",headers:{"Accept":"application/json"}}))
+      ]);
       const allGroups=data.groups||[];
-      const groups=activeDatasetType==="all"?allGroups:allGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
+      const profiles=profileData.profiles||[];
+      const profileGroups=activeDatasetProfileId?allGroups.filter(group=>group.profile_id===activeDatasetProfileId):allGroups;
+      const groups=activeDatasetType==="all"?profileGroups:profileGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
+      renderTrainingProfileCards(profiles,allGroups);
       $$(".dataset-category-tab").forEach(tab=>{
         const amount=tab.dataset.datasetFilter==="all"?allGroups.length:allGroups.filter(group=>(group.dataset_type||"face_angles")===tab.dataset.datasetFilter).length;
         tab.textContent=(datasetTypeLabels[tab.dataset.datasetFilter]||tab.dataset.datasetFilter)+" ("+amount+")";
