@@ -680,17 +680,17 @@ def dashboard():
 
 @app.get("/generate/image")
 def generate_image_page():
-    return render_template("generate_image.html", page_key="image", active_page="image")
+    return render_template("generate_image.html", page_key="image", active_page="image", profiles=list_profiles())
 
 
 @app.get("/generate/video")
 def generate_video_page():
-    return render_template("generate_video.html", page_key="video", active_page="video")
+    return render_template("generate_video.html", page_key="video", active_page="video", profiles=list_profiles())
 
 
 @app.get("/faces")
 def faces_page():
-    return render_template("faces.html", page_key="faces", active_page="faces")
+    return render_template("faces.html", page_key="faces", active_page="faces", profiles=list_profiles())
 
 
 @app.get("/library/images")
