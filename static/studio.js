@@ -1159,6 +1159,44 @@
       const meta=document.createElement("div");meta.className="asset-meta";
       [asset.backend||"unknown backend",asset.profile_name||"Base model",asset.created_at?new Date(asset.created_at).toLocaleString(): "Saved",formatBytes(asset.media_size||0)].forEach(text=>{const tag=document.createElement("span");tag.textContent=text;meta.appendChild(tag);});
       card.appendChild(meta);
+      const feedbackPanel=document.createElement("section");feedbackPanel.className="asset-feedback";
+      const feedbackHeading=document.createElement("strong");feedbackHeading.textContent="Rate this result";feedbackPanel.appendChild(feedbackHeading);
+      const feedbackFields=document.createElement("div");feedbackFields.className="feedback-fields";
+      const feedbackDimensions=[
+        ["identity","Face identity"],["angle","Face angle"],["expression","Expression"],
+        ["body_proportions","Body proportions"],["image_quality","Image quality"],["prompt_adherence","Prompt adherence"]
+      ];
+      feedbackDimensions.forEach(([key,label])=>{
+        const wrap=document.createElement("label");wrap.className="feedback-field";
+        const caption=document.createElement("span");caption.textContent=label;
+        const select=document.createElement("select");select.name=key;select.setAttribute("aria-label",label+" rating");
+        const empty=document.createElement("option");empty.value="";empty.textContent="Not rated";select.appendChild(empty);
+        ["1 · Poor","2 · Below average","3 · Acceptable","4 · Good","5 · Excellent"].forEach((text,index)=>{
+          const option=document.createElement("option");option.value=String(index+1);option.textContent=text;select.appendChild(option);
+        });
+        wrap.append(caption,select);feedbackFields.appendChild(wrap);
+      });
+      feedbackPanel.appendChild(feedbackFields);
+      const feedbackActions=document.createElement("div");feedbackActions.className="asset-feedback-actions";
+      const submitFeedback=document.createElement("button");submitFeedback.type="button";submitFeedback.className="secondary-button";submitFeedback.textContent="Submit feedback";
+      const feedbackStatus=document.createElement("span");feedbackStatus.className="asset-feedback-status";feedbackStatus.setAttribute("aria-live","polite");
+      submitFeedback.addEventListener("click",async()=>{
+        const scores={};
+        feedbackFields.querySelectorAll("select").forEach(select=>{if(select.value)scores[select.name]=Number(select.value);});
+        if(!Object.keys(scores).length){feedbackStatus.textContent="Rate at least one dimension.";return;}
+        submitFeedback.disabled=true;feedbackStatus.textContent="Saving feedback…";
+        try{
+          const response=await fetch("/api/assets/"+asset.id+"/feedback",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({scores})
+          });
+          const data=await readJson(response);
+          feedbackStatus.textContent="Feedback saved · reward "+Number(data.result.evaluation.reward).toFixed(2);
+        }catch(error){feedbackStatus.textContent="Could not save: "+error.message;}
+        finally{submitFeedback.disabled=false;}
+      });
+      feedbackActions.append(submitFeedback,feedbackStatus);feedbackPanel.appendChild(feedbackActions);
+      card.appendChild(feedbackPanel);
       const actions=document.createElement("div");actions.className="asset-actions";
       const download=document.createElement("a");download.className="button-link";download.textContent="Download ↓";download.href="/assets/"+asset.id+"/content?download=1";
       const edit=document.createElement("button");edit.type="button";edit.className="secondary-button";edit.textContent="Edit details";edit.addEventListener("click",()=>openEditAsset(asset));
