@@ -761,6 +761,12 @@ def api_asset_feedback(asset_id):
         for key, value in scores.items():
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 1 <= value <= 5:
                 return jsonify(error=f"{key} rating must be from 1 to 5."), 400
+        quality_report = None
+        if asset.get("asset_type") == "image":
+            image_asset = get_asset(asset_id, include_content=True)
+            if image_asset and image_asset.get("media_data"):
+                with Image.open(io.BytesIO(image_asset["media_data"])) as sample_image:
+                    quality_report = assess_image_quality(sample_image).to_dict()
         backend = (asset.get("backend") or "unknown").lower()
         backend_class = "cloud" if backend in {"cloud_gpu", "runpod"} else ("local_gpu" if backend == "local_gpu" else backend)
         mode = (asset.get("generation_mode") or "default")[:40]
@@ -774,6 +780,7 @@ def api_asset_feedback(asset_id):
             context={"task": task, "model_family": "animatediff_sd15" if task == "video" else "sd15",
                      "backend_class": backend_class, "control_mode": mode},
             human_scores=scores,
+            technical_quality=quality_report,
             requested_dimensions=list(scores),
         )
         return jsonify(status="recorded", result=result), 201
@@ -808,6 +815,8 @@ def api_face_photo_feedback(photo_id):
         kind = (photo.get("photo_kind") or "manual").lower()
         target = (photo.get("angle_label") or kind)[:60]
         pose_status = photo.get("validation_status") if kind == "angle" else None
+        with Image.open(io.BytesIO(_image_bytes)) as sample_image:
+            quality_report = assess_image_quality(sample_image).to_dict()
         result = record_generation_feedback(
             asset_id=None, profile_id=photo.get("profile_id"), source_id=photo_id,
             source_type="face_photo", task="face_training",
@@ -815,6 +824,7 @@ def api_face_photo_feedback(photo_id):
             context={"task": "face_training", "model_family": "sd15",
                      "backend_class": "dataset", "control_mode": kind},
             human_scores=scores, pose_status=pose_status,
+            technical_quality=quality_report,
             requested_dimensions=list(scores),
         )
         return jsonify(status="recorded", result=result), 201
