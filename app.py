@@ -2823,7 +2823,7 @@ def generate():
         strength = 0.0
     elif generation_profile == "preserve_reference":
         strength = 0.28
-    elif re.search(r"\\b(reframe|change the pose|different pose|turn(?: the)? (?:head|body)|full[- ]body|head[- ]to[- ]toe|transform|replace the background|change the background)\\b", prompt, re.I):
+    elif re.search(r"\b(reframe|change the pose|different pose|turn(?: the)? (?:head|body)|full[- ]body|head[- ]to[- ]toe|transform|replace the background|change the background)\b", prompt, re.I):
         strength = 0.62 if not profile_id else 0.48
     else:
         strength = 0.38 if profile_id else 0.46
@@ -2889,7 +2889,7 @@ def generate():
                 return jsonify(error=f"Could not resize image to the selected output resolution: {exc}"), 500
             try:
                 asset = _persist_generated_asset(
-                    "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
+                    "image", filename, title=title, prompt=prompt, negative_prompt=effective_negative,
                     profile=profile, backend="cloud_gpu", generation_mode="img2img" if init_image is not None else "txt2img",
                 )
             except RuntimeError as exc:
@@ -2974,7 +2974,7 @@ def generate():
         )
         try:
             asset = _persist_generated_asset(
-                "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
+                "image", filename, title=title, prompt=prompt, negative_prompt=effective_negative,
                 profile=profile, backend=backend, generation_mode="img2img" if init_image is not None else "txt2img",
             )
         except RuntimeError as exc:
