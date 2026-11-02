@@ -1441,7 +1441,37 @@
           const validationDetail=document.createElement("span");validationDetail.className="photo-validation-details";
           if(photo.validation_message)validationDetail.textContent=photo.validation_message;
           else if(Number.isFinite(Number(photo.actual_yaw)))validationDetail.textContent="Estimated yaw "+Number(photo.actual_yaw).toFixed(0)+"°, pitch "+Number(photo.actual_pitch||0).toFixed(0)+"°.";
+          const feedbackDetails=document.createElement("details");feedbackDetails.className="dataset-feedback";
+          const feedbackSummary=document.createElement("summary");feedbackSummary.textContent="Rate this training sample";feedbackDetails.appendChild(feedbackSummary);
+          const feedbackFields=document.createElement("div");feedbackFields.className="feedback-fields dataset-feedback-fields";
+          const feedbackDimensions=[["identity","Identity"],["angle","Angle"],["expression","Expression"],["body_proportions","Body proportions"],["image_quality","Image quality"],["prompt_adherence","Prompt adherence"]];
+          feedbackDimensions.forEach(([key,labelText])=>{
+            const wrap=document.createElement("label");wrap.className="feedback-field";
+            const caption=document.createElement("span");caption.textContent=labelText;
+            const select=document.createElement("select");select.name=key;select.setAttribute("aria-label",labelText+" rating");
+            const empty=document.createElement("option");empty.value="";empty.textContent="Not rated";select.appendChild(empty);
+            ["1 · Poor","2 · Below average","3 · Acceptable","4 · Good","5 · Excellent"].forEach((text,index)=>{
+              const option=document.createElement("option");option.value=String(index+1);option.textContent=text;select.appendChild(option);
+            });
+            wrap.append(caption,select);feedbackFields.appendChild(wrap);
+          });
+          feedbackDetails.appendChild(feedbackFields);
+          const submitSampleFeedback=document.createElement("button");submitSampleFeedback.type="button";submitSampleFeedback.className="secondary-button";submitSampleFeedback.textContent="Save sample feedback";submitSampleFeedback.disabled=busy;
+          const sampleFeedbackStatus=document.createElement("span");sampleFeedbackStatus.className="asset-feedback-status";sampleFeedbackStatus.setAttribute("aria-live","polite");
+          submitSampleFeedback.addEventListener("click",async()=>{
+            const scores={};feedbackFields.querySelectorAll("select").forEach(select=>{if(select.value)scores[select.name]=Number(select.value);});
+            if(!Object.keys(scores).length){sampleFeedbackStatus.textContent="Rate at least one dimension.";return;}
+            submitSampleFeedback.disabled=true;sampleFeedbackStatus.textContent="Saving…";
+            try{
+              const response=await fetch("/api/face-photos/"+encodeURIComponent(photo.id)+"/feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scores})});
+              const result=await readJson(response);
+              sampleFeedbackStatus.textContent="Saved · reward "+Number(result.result.evaluation.reward).toFixed(2);
+            }catch(error){sampleFeedbackStatus.textContent="Could not save: "+error.message;}
+            finally{submitSampleFeedback.disabled=false;}
+          });
+          feedbackDetails.append(submitSampleFeedback,sampleFeedbackStatus);
           const photoActions=document.createElement("div");photoActions.className="dataset-photo-actions";
+
           const renamePhoto=document.createElement("button");renamePhoto.type="button";renamePhoto.className="secondary-button";renamePhoto.textContent="Edit label";renamePhoto.disabled=busy;
           renamePhoto.addEventListener("click",async()=>{
             const next=window.prompt("Photo label",photo.angle_label||"Training photo");
