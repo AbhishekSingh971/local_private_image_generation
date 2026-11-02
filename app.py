@@ -2820,7 +2820,9 @@ def generate():
     # Reference strength is deliberately internal: preserve identity/composition by
     # default and increase change only when the user's request clearly asks for it.
     if init_image is None:
-        strength = 0.0
+        # The worker validates the shared request schema even for text-to-image.
+        # This value is ignored by the pipeline when no reference image is supplied.
+        strength = 0.45
     elif generation_profile == "preserve_reference":
         strength = 0.28
     elif re.search(r"\b(reframe|change the pose|different pose|turn(?: the)? (?:head|body)|full[- ]body|head[- ]to[- ]toe|transform|replace the background|change the background)\b", prompt, re.I):
