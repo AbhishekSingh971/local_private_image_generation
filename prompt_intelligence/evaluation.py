@@ -63,6 +63,6 @@ def evaluate_generation(*, human_scores: Mapping[str, Any] | None = None,
         if dimension in DIMENSIONS and dimension not in scores:
             review.append(dimension)
     selected_weights = {key: float((weights or DEFAULT_WEIGHTS).get(key, 0.0)) for key in scores}
-    reward = PreferenceBandit.combine_feedback(scores, selected_weights)
+    reward = PreferenceBandit.combine_feedback(scores, selected_weights) if scores else 0.0
     return EvaluationReport(round(reward, 5), scores, selected_weights, sources,
                             tuple(dict.fromkeys(penalties)), tuple(dict.fromkeys(review)))
