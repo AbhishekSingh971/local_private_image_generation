@@ -2455,6 +2455,71 @@ def api_train_face_profile(profile_id):
     return jsonify(status="running", backend="local", training_method=training_method, job_id=job_id, message="Local face training has started."), 202
 
 
+@app.post("/api/face-profiles/<profile_id>/sync-cloud-lora")
+def api_sync_cloud_face_lora(profile_id):
+    """Copy an already-trained local LoRA to GHive without retraining it."""
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile not found."), 404
+    if not cloud_worker_configured():
+        return jsonify(error="Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN."), 400
+
+    folder = model_path(profile_id)
+    weight_path = folder / "pytorch_lora_weights.safetensors"
+    if not weight_path.is_file():
+        return jsonify(error="This profile has no local safetensors LoRA. Train it locally first; unsafe .bin uploads are not accepted."), 409
+    if weight_path.stat().st_size <= 0 or weight_path.stat().st_size > 60 * 1024 * 1024:
+        return jsonify(error="LoRA file must be non-empty and no larger than 60 MB."), 413
+
+    # Validate the safetensors container before sending any bytes to the remote worker.
+    try:
+        from safetensors import safe_open
+        with safe_open(str(weight_path), framework="pt", device="cpu") as model_file:
+            if not model_file.keys():
+                raise ValueError("LoRA safetensors file contains no tensors.")
+    except Exception as exc:
+        app.logger.warning("Rejected invalid local LoRA for profile %s: %s", profile_id, type(exc).__name__)
+        return jsonify(error="The local LoRA file is not a valid safetensors model."), 400
+
+    opened = []
+    try:
+        weight_handle = weight_path.open("rb")
+        opened.append(weight_handle)
+        files = {"lora": (weight_path.name, weight_handle, "application/octet-stream")}
+        config_path = folder / "adapter_config.json"
+        if config_path.is_file():
+            if config_path.stat().st_size > 256 * 1024:
+                return jsonify(error="LoRA adapter_config.json is unexpectedly large."), 400
+            config_handle = config_path.open("rb")
+            opened.append(config_handle)
+            files["adapter_config"] = (config_path.name, config_handle, "application/json")
+        response = cloud_worker_request(
+            "POST", f"/api/remote/profiles/{profile_id}/lora",
+            data={"name": profile.get("name", ""), "token": profile.get("token", ""),
+                  "description": profile.get("description", "")},
+            files=files, timeout=(20, 180),
+        )
+        payload = response.json()
+        if payload.get("profile_id") != profile_id or payload.get("ready") is not True:
+            raise RuntimeError("Cloud worker did not confirm the expected profile and LoRA readiness.")
+        updated = update_profile(
+            profile_id, runpod_model_ready=True, runpod_training_state="completed",
+            runpod_training_error=None,
+        )
+        return jsonify(status="synced", backend="cloud_gpu", profile_id=profile_id,
+                       bytes=payload.get("bytes"), profile=updated,
+                       message="Existing local LoRA was uploaded to GHive; no retraining was performed.")
+    except (RuntimeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 502
+    finally:
+        for handle in opened:
+            handle.close()
+
+
 @app.get("/api/face-profiles/<profile_id>/train-status")
 def api_face_train_status(profile_id):
     try:
