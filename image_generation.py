@@ -1,8 +1,8 @@
 """Prompt enhancement and size presets for Stable Diffusion 1.5.
 
-The user's prompt is authoritative: presets may add realism and framing hints, but
-must not silently change the requested visual style or override a supplied reference
-photo's composition.
+The user's prompt is authoritative. Explicit full-body framing requests must remain
+active for reference-image generation; img2img strength still controls how strongly
+the source composition is preserved.
 """
 from __future__ import annotations
 
@@ -99,12 +99,13 @@ def build_generation_prompts(
     preset: str = "full_body_photo",
     has_reference_image: bool = False,
 ) -> tuple[str, str]:
-    """Enhance realism without overriding explicit prompt intent or reference framing.
+    """Enhance realism while honoring explicit composition requests.
 
-    The full-body preset adds head-to-toe framing only when the prompt describes a
-    person, specifies no other composition, and no reference photo is supplied.
-    Explicit art styles are left as requested. Nudity wording is never added
-    automatically; the user's prompt and negative prompt remain authoritative.
+    A supplied reference normally keeps its original framing. However, an explicit
+    full-body request is a deliberate request to reframe and must receive full-body
+    framing and anti-cropping constraints even in img2img mode. The caller's
+    denoising strength determines how much the source composition can change.
+    Explicit art styles and user prompt/negative prompt wording remain authoritative.
     """
     key = validate_image_preset(preset)
     clean_prompt = (prompt or "").strip()
@@ -116,20 +117,21 @@ def build_generation_prompts(
         return clean_prompt, clean_negative
 
     is_human = bool(_HUMAN_SUBJECT.search(clean_prompt))
-    use_full_body_framing = (
-        key == "full_body_photo"
-        and not has_reference_image
-        and is_human
-        and not _EXPLICIT_FRAMING.search(clean_prompt)
-    )
     explicit_full_body = bool(re.search(
         r"\b(?:full[ -]?body|head[ -]?to[ -]?toe|entire body|full length)\b",
         clean_prompt, re.IGNORECASE,
     ))
-    use_full_body_constraints = (
-        key == "full_body_photo" and not has_reference_image and is_human
-        and (use_full_body_framing or explicit_full_body)
+    # An explicit full-body instruction takes precedence over the source photo's
+    # original crop. Without an explicit instruction, keep reference framing intact.
+    use_full_body_framing = (
+        key == "full_body_photo"
+        and is_human
+        and (
+            explicit_full_body
+            or (not has_reference_image and not _EXPLICIT_FRAMING.search(clean_prompt))
+        )
     )
+    use_full_body_constraints = use_full_body_framing
 
     prefix = _FULL_BODY_PREFIX if use_full_body_framing else _PHOTO_PREFIX
     if key in {"photorealistic", "full_body_photo"} and is_human:
