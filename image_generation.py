@@ -141,8 +141,8 @@ def build_generation_prompts(
     # in natural language, so make the spatial arrangement and framing explicit.
     beach_group_scene = (
         bool(re.search(r"\bbeach\b|\bseaside\b|\bshoreline\b", clean_prompt, re.IGNORECASE))
-        and bool(re.search(r"\bwoman\b|\bwomen\b", clean_prompt, re.IGNORECASE))
-        and bool(re.search(r"\b(?:two|2)\s+(?:adult\s+)?men\b", clean_prompt, re.IGNORECASE))
+        and bool(re.search(r"\bwoman\b|\bwomen\b|\bfemale\b", clean_prompt, re.IGNORECASE))
+        and bool(re.search(r"\b(?:two|2)\s+(?:(?:adult|naked|shirtless)\s+)*(?:men|males)\b", clean_prompt, re.IGNORECASE))
     )
     if beach_group_scene:
         prefix = (
