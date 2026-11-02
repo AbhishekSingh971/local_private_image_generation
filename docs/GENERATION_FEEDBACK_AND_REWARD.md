@@ -46,6 +46,15 @@ face-training photos. The media library and face-dataset photo cards expose
 asset/profile/task/configuration context and updates the matching contextual
 bandit state.
 
+Feedback is attached to the exact generated asset or face-training photo, so
+the history can be queried per output. The photo feedback route also reuses
+existing pose-validation status for angle penalties and the technical quality
+checker for blur/exposure/resolution penalties.
+
+Important: feedback is currently recorded and learned as preference statistics.
+It does not yet filter/reweight individual samples in the LoRA training loss,
+change model weights, or automatically retry a rejected generation.
+
 The current saved asset schema does not preserve every numeric sampler setting
 (CFG, steps, scheduler, seed, ControlNet/IP-Adapter scales). Therefore the
 bandit currently learns from a coarse configuration label (generation mode +
