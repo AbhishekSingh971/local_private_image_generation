@@ -17,7 +17,7 @@
     </section>
     <section class="panel form-panel">
       <div class="section-heading inline-heading"><div><div class="eyebrow">STEP 2</div><h2>Add training photos</h2></div></div>
-      <label for="addPhotosProfile">Face profile</label><select id="addPhotosProfile"><option value="">Select a face profile</option></select>
+      <label for="addPhotosProfile">Face profile</label><select id="addPhotosProfile"><option value="">Select a face profile</option>{% for profile in profiles %}<option value="{{ profile.id }}">{{ profile.name }} · {{ profile.image_count }} photo(s){% if profile.local_model_ready %} · local trained{% endif %}{% if profile.runpod_model_ready %} · Cloud trained{% endif %}</option>{% endfor %}</select>
       <div class="source-tabs">
         <button type="button" class="source-tab" data-source-tab="local">From computer</button>
         <button type="button" class="source-tab" data-source-tab="generated">From generated images</button>
