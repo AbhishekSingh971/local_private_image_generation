@@ -2523,6 +2523,23 @@ def _load_cpu_or_gpu_pipeline(
         return pipe
 
 
+@app.post("/api/generation-prompt-preview")
+def api_generation_prompt_preview():
+    """Return the exact image prompt pair that generation will submit."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        prompt = _clean_prompt(payload.get("prompt"), "Prompt", 1200)
+        negative_prompt = _clean_prompt(payload.get("negative_prompt"), "Negative prompt", 600)
+        preset = validate_image_preset(payload.get("image_preset") or "standard")
+        has_reference = bool(payload.get("has_reference_image"))
+        final_prompt, final_negative = build_generation_prompts(
+            prompt, negative_prompt, preset, has_reference_image=has_reference
+        )
+        return jsonify(prompt=final_prompt, negative_prompt=final_negative)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+
 @app.post("/generate")
 def generate():
     try:
@@ -2633,6 +2650,7 @@ def generate():
                 "steps": str(steps), "strength": str(strength), "seed": str(seed),
                 "use_global_body_model": "true" if use_global_body_model else "false",
                 "task_id": task_id, "aspect_ratio": aspect_ratio, "image_preset": image_preset,
+                "prompt_is_final": "true",
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
@@ -2713,9 +2731,12 @@ def generate():
                     message=f"Generating image · step {current} of {scheduler_steps}",
                 )
                 return callback_kwargs
-            effective_prompt, effective_negative_prompt = build_generation_prompts(
-                prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
-            )
+            if _truthy(request.form.get("prompt_is_final")):
+                effective_prompt, effective_negative_prompt = prompt, negative_prompt
+            else:
+                effective_prompt, effective_negative_prompt = build_generation_prompts(
+                    prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
+                )
             kwargs = {
                 "prompt": effective_prompt,
                 "negative_prompt": effective_negative_prompt or None,
