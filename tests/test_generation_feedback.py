@@ -41,3 +41,14 @@ def test_contextual_bandit_round_trips_and_separates_tasks():
 
 def test_reward_range_is_enforced():
     with pytest.raises(ValueError): PreferenceBandit().record("cfg", 1.1, {"task":"image"})
+
+def test_human_rating_takes_precedence_over_pose_heuristic():
+    report = evaluate_generation(
+        human_scores={"angle": 5, "image_quality": 5},
+        pose_status="needs_review",
+        technical_quality={"status": "needs_review", "reasons": ["Blur"]},
+    )
+    assert report.scores["angle"] == 1.0
+    assert report.scores["image_quality"] == 1.0
+    assert report.sources["angle"] == "human"
+    assert report.sources["image_quality"] == "human"
