@@ -762,7 +762,7 @@
     }
   }
   $("#trainingPhotoUseBodyModel")?.addEventListener("change",event=>{event.target.dataset.userTouched="1";});
-  useGpuAcceleration?.addEventListener("change",()=>loadGlobalBodyStatus(false));
+  computeBackend?.addEventListener("change",()=>loadGlobalBodyStatus(false));
   
 
   const generateBodyDatasetButton=$("#generateBodyDatasetButton");
