@@ -38,10 +38,19 @@ record_generation_feedback(...) stores a report and updates its contextual
 bandit state. Call it after an asset has been saved, using its saved asset ID
 and the exact generation configuration ID used for that output.
 
-## Remaining application-shell wiring
+## Application integration status
 
-The Flask application and browser UI are not yet wired to call these services.
-An authenticated/CSRF-protected feedback route, UI controls on generated assets,
-and generation-configuration metadata capture are required before live feedback
-can influence future image or face-dataset generation. Do not infer a
-configuration ID from the prompt or silently select unvalidated settings.
+The Flask app now exposes POST feedback routes for saved generated assets and
+face-training photos. The media library and face-dataset photo cards expose
+1–5 rating controls for the six dimensions above. Feedback is persisted with
+asset/profile/task/configuration context and updates the matching contextual
+bandit state.
+
+The current saved asset schema does not preserve every numeric sampler setting
+(CFG, steps, scheduler, seed, ControlNet/IP-Adapter scales). Therefore the
+bandit currently learns from a coarse configuration label (generation mode +
+backend class), not a complete parameter vector. It does not yet change sampler
+settings automatically. Before enabling automatic parameter tuning, persist
+the exact generation configuration and register a bounded set of validated
+candidate configurations. The service intentionally does not guess those
+settings or silently alter generation behavior.
