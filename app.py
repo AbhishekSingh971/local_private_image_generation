@@ -91,6 +91,8 @@ from studio_db import (
     get_asset,
     list_assets,
     update_asset,
+    get_app_settings,
+    update_app_settings,
 )
 
 INPUT_DIR = DATA_DIR / "inputs"
@@ -390,17 +392,14 @@ def _compute_options(probe_cloud: bool = False) -> dict:
     }
 
 
-def _resolve_compute_backend(form) -> str:
-    """OFF => CPU. ON => selected GPU; auto prefers local CUDA, then a healthy cloud worker."""
-    gpu_enabled = _truthy(form.get("use_gpu", form.get("use_runpod")))
-    if not gpu_enabled:
+def _resolve_compute_backend(form=None) -> str:
+    """Resolve compute exclusively from the persisted global application setting."""
+    requested = get_app_settings().get("compute_backend", "auto")
+    if requested == "cpu":
         return "cpu"
-    requested = (form.get("compute_backend") or "auto").strip().lower()
     local_available = bool(torch.cuda.is_available())
-    probe_cloud = requested in {"runpod", "cloud_gpu"} or (requested == "auto" and not local_available)
+    probe_cloud = requested == "cloud_gpu" or (requested == "auto" and not local_available)
     options = _compute_options(probe_cloud=probe_cloud)
-    # Auto mode remains usable when no GPU/worker is configured: route to CPU.
-    # Explicit local_gpu/cloud_gpu choices still fail clearly when unavailable.
     selected = select_compute_backend(
         True, requested,
         local_gpu_available=options["local_gpu"]["available"],
@@ -2198,6 +2197,27 @@ def health():
     )
 
 
+@app.get("/api/settings")
+def api_get_settings():
+    try:
+        return jsonify(settings=get_app_settings())
+    except Exception:
+        app.logger.exception("Could not load global application settings")
+        return jsonify(error="Could not load global settings. Check the database connection."), 503
+
+
+@app.put("/api/settings")
+def api_update_settings():
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(status="saved", settings=update_app_settings(payload))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not save global application settings")
+        return jsonify(error="Could not save global settings. Check the database connection."), 503
+
+
 @app.get("/api/gpu-status")
 def gpu_status():
     probe_cloud = _truthy(request.args.get("probe"))
@@ -2352,6 +2372,14 @@ def api_train_face_profile(profile_id):
     if not 100 <= steps <= 3000 or resolution not in (384, 512):
         return jsonify(error="Training steps must be 100–3000 and resolution must be 384 or 512."), 400
 
+    training_method = get_app_settings().get("training_method", "lora")
+    if training_method == "full_finetune":
+        return jsonify(error=(
+            "Full fine-tuning is selected in Global settings, but this branch does not yet contain "
+            "a validated full fine-tuning trainer. No LoRA job was started. Select LoRA in Global "
+            "settings or add and validate the dedicated full fine-tuning trainer first."
+        ), training_method=training_method), 409
+
     try:
         backend = _resolve_compute_backend(request.form)
     except ValueError as exc:
@@ -2391,6 +2419,7 @@ def api_train_face_profile(profile_id):
                     "description": profile.get("description", ""),
                     "steps": str(steps),
                     "resolution": str(resolution),
+                    "training_method": training_method,
                 },
                 files=files, timeout=(15, 90),
             )
@@ -2407,7 +2436,7 @@ def api_train_face_profile(profile_id):
             profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
             runpod_training_error=None, runpod_model_ready=False,
         )
-        return jsonify(status="running", backend="runpod", job_id=job_id, message="Cloud GPU face training has started."), 202
+        return jsonify(status="running", backend="runpod", training_method=training_method, job_id=job_id, message="Cloud GPU face training has started."), 202
 
     if not torch.cuda.is_available():
         return jsonify(error=(
@@ -2423,7 +2452,7 @@ def api_train_face_profile(profile_id):
     with LOCAL_TRAIN_JOBS_LOCK:
         LOCAL_TRAIN_JOBS[job_id] = {"status": "running", "profile_id": profile_id}
     TRAINING_POOL.submit(_run_local_training, profile_id, steps, resolution, job_id)
-    return jsonify(status="running", backend="local", job_id=job_id, message="Local face training has started."), 202
+    return jsonify(status="running", backend="local", training_method=training_method, job_id=job_id, message="Local face training has started."), 202
 
 
 @app.get("/api/face-profiles/<profile_id>/train-status")

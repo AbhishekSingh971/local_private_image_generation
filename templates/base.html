@@ -33,15 +33,27 @@
 
       <section class="compute-panel panel">
         <div class="compute-copy">
-          <div class="eyebrow">Compute preference</div>
-          <label class="switchline" for="useGpuAcceleration"><input id="useGpuAcceleration" type="checkbox" checked> Enable GPU acceleration</label>
-          <p class="tiny">Off always uses the local CPU (slower; progress is shown). On uses the selected backend: Auto prefers System GPU, then GHive/Colab GPU, then CPU if no GPU is available. Explicit GPU selections require that GPU to be reachable.</p>
+          <div class="eyebrow">Global application settings</div>
+          <strong>Training method</strong>
+          <label for="trainingMethod">Face-model training method</label>
+          <select id="trainingMethod">
+            <option value="lora">LoRA · train lightweight identity adapters</option>
+            <option value="full_finetune">Full fine-tuning · update base-model weights</option>
+          </select>
+          <p class="tiny">Applies to face and shared-body training across all pages. Full fine-tuning is guarded until its dedicated trainer is implemented; it will never silently run LoRA instead.</p>
         </div>
         <div class="compute-controls">
-          <div class="pill" id="gpuModePill">LOCAL · CPU</div>
-          <div id="computeBackendWrap" hidden><label for="computeBackend">Choose available device</label><select id="computeBackend"><option value="cpu">Local CPU (fallback)</option></select></div>
+          <label for="computeBackend">Global compute device</label>
+          <select id="computeBackend">
+            <option value="cpu">Local CPU</option>
+            <option value="local_gpu">System GPU (CUDA)</option>
+            <option value="cloud_gpu">GHive remote GPU</option>
+            <option value="auto">Auto · System GPU, then GHive, then CPU</option>
+          </select>
+          <div class="pill" id="gpuModePill">CHECKING DEVICE…</div>
         </div>
-        <div id="gpuStatus" class="status" role="status" aria-live="polite">GPU acceleration is enabled. Checking available GPUs…</div>
+        <div id="globalSettingsStatus" class="status" role="status" aria-live="polite">Loading saved global settings…</div>
+        <div id="gpuStatus" class="status" role="status" aria-live="polite">Checking available compute devices…</div>
       </section>
       {% if storage_status.connected and not storage_status.configured_postgresql %}
         <div class="note">DATABASE_URL is not set, so the app is using its local SQLite development database. Add DATABASE_URL to your private .env to make PostgreSQL the source of truth.</div>

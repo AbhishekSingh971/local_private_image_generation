@@ -119,6 +119,7 @@ def ensure_schema() -> None:
                 backend VARCHAR(16) NOT NULL, filename VARCHAR(255) NOT NULL, file_count INTEGER NOT NULL,
                 bundle_size INTEGER NOT NULL, bundle_data BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 CONSTRAINT uq_face_model_profile_backend UNIQUE(profile_id, backend))""",
+            """CREATE TABLE IF NOT EXISTS app_settings (setting_key VARCHAR(80) PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
             """CREATE TABLE IF NOT EXISTS generated_assets (
                 id VARCHAR(32) PRIMARY KEY, asset_type VARCHAR(12) NOT NULL, title VARCHAR(160) NOT NULL,
                 filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL, prompt TEXT NOT NULL DEFAULT '',
@@ -663,3 +664,44 @@ def delete_asset(asset_id):
     ensure_schema(); r=_one("SELECT * FROM generated_assets WHERE id=%s",(asset_id,))
     if r:_run("DELETE FROM generated_assets WHERE id=%s",(asset_id,))
     return _asset_dict(r)
+
+APP_SETTINGS_DEFAULTS = {"training_method": "lora", "compute_backend": "auto"}
+APP_SETTINGS_ALLOWED = {
+    "training_method": {"lora", "full_finetune"},
+    "compute_backend": {"cpu", "local_gpu", "cloud_gpu", "auto"},
+}
+
+
+def get_app_settings() -> dict:
+    ensure_schema()
+    settings = dict(APP_SETTINGS_DEFAULTS)
+    for row in _all("SELECT setting_key, setting_value FROM app_settings"):
+        key, value = row["setting_key"], row["setting_value"]
+        if key in APP_SETTINGS_ALLOWED and value in APP_SETTINGS_ALLOWED[key]:
+            settings[key] = value
+    return settings
+
+
+def update_app_settings(fields: dict) -> dict:
+    if not isinstance(fields, dict) or not fields:
+        raise ValueError("Provide at least one application setting to update.")
+    unknown = set(fields) - set(APP_SETTINGS_ALLOWED)
+    if unknown:
+        raise ValueError("Unsupported application setting(s): " + ", ".join(sorted(unknown)))
+    normalized = {}
+    for key, value in fields.items():
+        value = str(value or "").strip().lower()
+        if value not in APP_SETTINGS_ALLOWED[key]:
+            raise ValueError("Invalid value for " + key + ".")
+        normalized[key] = value
+    ensure_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        for key, value in normalized.items():
+            cur.execute(
+                """INSERT INTO app_settings(setting_key, setting_value, updated_at)
+                   VALUES(%s, %s, now())
+                   ON CONFLICT(setting_key) DO UPDATE
+                   SET setting_value=EXCLUDED.setting_value, updated_at=now()""",
+                (key, value),
+            )
+    return get_app_settings()
