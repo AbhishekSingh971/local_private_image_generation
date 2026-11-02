@@ -191,6 +191,27 @@
           } catch (error) { alert(error.message); }
           finally { deleteButton.disabled = false; }
         });
+        if (profile.local_model_ready) {
+          const syncButton = document.createElement("button");
+          syncButton.type = "button";
+          syncButton.className = "secondary-button";
+          syncButton.textContent = profile.runpod_model_ready ? "Resync LoRA to GHive" : "Sync LoRA to GHive";
+          syncButton.addEventListener("click", async () => {
+            syncButton.disabled = true;
+            const previousLabel = syncButton.textContent;
+            syncButton.textContent = "Uploading LoRA…";
+            try {
+              const result = await readJson(await fetch("/api/face-profiles/" + encodeURIComponent(profile.id) + "/sync-cloud-lora", {method:"POST", headers:{"Accept":"application/json","X-Requested-With":"XMLHttpRequest"}}));
+              alert(result.message || "LoRA synchronized to GHive.");
+              await refreshProfiles();
+            } catch (error) {
+              alert("GHive LoRA sync failed: " + error.message);
+              syncButton.disabled = false;
+              syncButton.textContent = previousLabel;
+            }
+          });
+          actions.appendChild(syncButton);
+        }
         actions.append(useButton, deleteButton);
         card.append(top, badges, actions); profileList.appendChild(card);
       });
