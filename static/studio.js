@@ -50,7 +50,20 @@
     computeAvailability = options;
     if (computeBackend) {
       const available = new Set(options.available_backends || ["cpu"]);
-      [...computeBackend.options].forEach(option => { option.disabled = !["auto","cpu"].includes(option.value) && !available.has(option.value); });
+      const localName = options.local_gpu?.name || "System CUDA GPU";
+      const cloudName = options.cloud_gpu?.name || "GHive CUDA GPU";
+      [...computeBackend.options].forEach(option => {
+        option.disabled = !["auto","cpu"].includes(option.value) && !available.has(option.value);
+        if (option.value === "local_gpu") {
+          option.textContent = available.has("local_gpu") ? localName + " · System GPU" : "System GPU · unavailable";
+        } else if (option.value === "cloud_gpu" || option.value === "runpod") {
+          option.textContent = available.has("cloud_gpu") ? cloudName + " · GHive" : "GHive GPU · unavailable";
+        } else if (option.value === "cpu") {
+          option.textContent = "Local CPU";
+        } else if (option.value === "auto") {
+          option.textContent = "Auto · best available device";
+        }
+      });
     }
     applyComputeStatus();
   }
