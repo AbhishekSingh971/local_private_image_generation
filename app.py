@@ -3005,7 +3005,11 @@ def generate():
 @app.post("/generate-video")
 def generate_video():
     prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1000)
-    negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
+    # Internal video safeguards; the user supplies only one natural-language prompt.
+    negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600) or (
+        "flicker, temporal jitter, unstable identity, face distortion, warped motion, "
+        "duplicate limbs, inconsistent background, blurry frames, compression artifacts, watermark"
+    )
     try:
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         steps = int(request.form.get("steps", "12"))
