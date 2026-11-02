@@ -899,23 +899,6 @@
     if(!file){preview.hidden=true;preview.removeAttribute("src");placeholder.hidden=false;return;}
     preview.src=URL.createObjectURL(file);preview.hidden=false;placeholder.hidden=true;
   });
-  const strengthSlider = $("#strength");
-  const strengthNumber = $("#strengthNumber");
-  function syncStrength(source, target) {
-    if (!source || !target) return;
-    const parsed = Number(source.value);
-    if (!Number.isFinite(parsed)) return;
-    const value = Math.min(0.95, Math.max(0.20, Math.round(parsed * 100) / 100));
-    target.value = value.toFixed(2);
-    if (source !== strengthSlider && strengthSlider) strengthSlider.value = String(value);
-    if (source !== strengthNumber && strengthNumber) strengthNumber.value = value.toFixed(2);
-  }
-  strengthSlider?.addEventListener("input", () => syncStrength(strengthSlider, strengthNumber));
-  strengthNumber?.addEventListener("input", () => {
-    if (strengthNumber.value !== "") syncStrength(strengthNumber, strengthSlider);
-  });
-  strengthNumber?.addEventListener("change", () => syncStrength(strengthNumber, strengthSlider));
-
   function newGenerationTaskId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return window.crypto.randomUUID().replace(/-/g, "").toLowerCase();
@@ -977,54 +960,17 @@
   }
 
   const generationProfile = $("#generationProfile");
-  const strengthControl = $("#strength");
   const stepsControl = $("#steps");
   generationProfile?.addEventListener("change", () => {
     if (generationProfile.value === "preserve_reference") {
-      if (strengthControl) strengthControl.value = "0.30";
-      if (strengthNumber) strengthNumber.value = "0.30";
       if (stepsControl) stepsControl.value = "25";
     } else if (generationProfile.value === "photorealistic") {
-      if (strengthControl) strengthControl.value = "0.45";
-      if (strengthNumber) strengthNumber.value = "0.45";
       if (stepsControl) stepsControl.value = "25";
       const preset = $("#imagePreset");
       if (preset) preset.value = "photorealistic";
     }
   });
   const generationForm = $("#generationForm");
-  const finalPromptInput = $("#finalPrompt");
-  let promptPreviewRequest = 0;
-  async function refreshFinalPromptPreview() {
-    if (!generationForm || !finalPromptInput) return;
-    const requestId = ++promptPreviewRequest;
-    const prompt = $("#prompt")?.value || "";
-    if (!prompt.trim()) { finalPromptInput.value = ""; return; }
-    try {
-      const response = await fetch("/api/generation-prompt-preview", {
-        method: "POST", headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({
-          prompt,
-          negative_prompt: $("#negativePrompt")?.value || "",
-          image_preset: $("#imagePreset")?.value || "standard",
-          has_reference_image: Boolean($("#referenceImage")?.files?.length)
-        })
-      });
-      const data = await readJson(response);
-      if (requestId === promptPreviewRequest) {
-        finalPromptInput.value = data.prompt || prompt;
-        const negative = $("#negativePrompt");
-        if (negative && data.negative_prompt !== undefined) negative.value = data.negative_prompt;
-      }
-    } catch (error) {
-      if (requestId === promptPreviewRequest) finalPromptInput.value = prompt;
-    }
-  }
-  ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage"].forEach(selector => {
-    $(selector)?.addEventListener("input", refreshFinalPromptPreview);
-    $(selector)?.addEventListener("change", refreshFinalPromptPreview);
-  });
-  refreshFinalPromptPreview();
   generationForm?.addEventListener("submit",async event=>{
     event.preventDefault();
     const button=$("#generateButton");const status=$("#generationStatus");
@@ -1037,8 +983,6 @@
     const preview=$("#resultPreview");const placeholder=$("#resultPlaceholder");const download=$("#downloadImage");const pill=$("#imageSavedPill");
     preview.hidden=true;placeholder.hidden=false;download.hidden=true;
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
-    formData.set("prompt", finalPromptInput?.value || $("#prompt")?.value || "");
-    formData.set("prompt_is_final", "true");
     const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
       const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
