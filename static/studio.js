@@ -1512,7 +1512,7 @@
           photoActions.append(editWithPrompt,renamePhoto,replacePhoto,deletePhoto);
           figure.append(image,label,validation);
           if(validationDetail.textContent)figure.append(validationDetail);
-          figure.append(photoActions,replaceInput);photos.appendChild(figure);
+          figure.append(feedbackDetails,photoActions,replaceInput);photos.appendChild(figure);
         });
         if(!(group.photos||[]).length){
           const emptyPhotos=document.createElement("div");
