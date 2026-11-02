@@ -68,6 +68,19 @@ def test_reference_photo_prevents_forced_full_body_reframing():
     assert "cropped body" not in negative
 
 
+def test_explicit_full_body_request_overrides_reference_crop():
+    prompt, negative = build_generation_prompts(
+        "full-body head-to-toe photograph of a woman seated on a chair",
+        "",
+        "full_body_photo",
+        has_reference_image=True,
+    )
+    assert prompt.startswith("photorealistic full-body photograph")
+    assert "entire person visible from head to feet" in prompt
+    assert "cropped body" in negative
+    assert "cut off feet" in negative
+
+
 def test_prompt_style_overrides_photorealistic_preset():
     prompt, negative = build_generation_prompts(
         "anime illustration of a woman wearing a red dress", "keep clean lines", "full_body_photo"
