@@ -44,19 +44,19 @@ def evaluate_generation(*, human_scores: Mapping[str, Any] | None = None,
             raise ValueError("Unsupported feedback dimension: " + str(dimension))
         scores[dimension] = _normalized_rating(value)
         sources[dimension] = "human"
-    if pose_status in {"passed", "needs_review"}:
+    if pose_status in {"passed", "needs_review"} and "angle" not in scores:
         scores["angle"] = 1.0 if pose_status == "passed" else -0.65
         sources["angle"] = "pose_estimator"
         if pose_status == "needs_review":
             penalties.append("Requested head pose did not pass automatic validation.")
             review.append("angle")
     quality = technical_quality or {}
-    if quality.get("status") == "technical_checks_passed":
-        scores.setdefault("image_quality", 0.65)
-        sources.setdefault("image_quality", "technical_heuristic")
-    elif quality.get("status") == "needs_review":
-        scores.setdefault("image_quality", -0.65)
-        sources.setdefault("image_quality", "technical_heuristic")
+    if quality.get("status") == "technical_checks_passed" and "image_quality" not in scores:
+        scores["image_quality"] = 0.65
+        sources["image_quality"] = "technical_heuristic"
+    elif quality.get("status") == "needs_review" and "image_quality" not in scores:
+        scores["image_quality"] = -0.65
+        sources["image_quality"] = "technical_heuristic"
         penalties.extend(str(item) for item in quality.get("reasons", [])[:8])
         review.append("image_quality")
     for dimension in set(requested_dimensions or DIMENSIONS):
