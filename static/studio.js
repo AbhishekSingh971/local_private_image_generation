@@ -1542,7 +1542,7 @@
   }
   loadStatus();
   if($("#globalBodyModelStatus")||$("#globalBodyGenerationStatus")||$("#useGlobalBodyModel")||$("#datasetGroups"))loadGlobalBodyStatus().catch(()=>{});
-  if($("#profileList")||$("#trainProfile")||$("#faceProfile")||$("#videoProfile"))refreshProfiles().catch(error=>{
+  if($("#profileList")||$("#trainProfile")||$("#faceProfile")||$("#videoProfile")||$("#addPhotosProfile"))refreshProfiles().catch(error=>{
     const profileList=$("#profileList");if(profileList)profileList.textContent="Could not load profiles: "+error.message;
   });
   loadAssets();
