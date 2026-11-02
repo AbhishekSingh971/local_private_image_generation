@@ -2736,7 +2736,7 @@ def generate():
         prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1200)
         negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
-        strength = float(request.form.get("strength", "0.45"))
+        strength = None  # selected server-side after reference and task context are known
         steps = int(request.form.get("steps", "25"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
@@ -2776,8 +2776,8 @@ def generate():
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt:
         return jsonify(error="Enter a prompt describing the image you want."), 400
-    if not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
-        return jsonify(error="Strength must be 0.20–0.95 and steps must be 5–25."), 400
+    if not 5 <= steps <= 25:
+        return jsonify(error="Inference steps must be 5–25."), 400
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
@@ -2817,6 +2817,21 @@ def generate():
     if generation_profile == "preserve_reference" and init_image is None:
         return jsonify(error="Upload a reference image to use Preserve reference mode."), 400
 
+    # Reference strength is deliberately internal: preserve identity/composition by
+    # default and increase change only when the user's request clearly asks for it.
+    if init_image is None:
+        strength = 0.0
+    elif generation_profile == "preserve_reference":
+        strength = 0.28
+    elif re.search(r"\\b(reframe|change the pose|different pose|turn(?: the)? (?:head|body)|full[- ]body|head[- ]to[- ]toe|transform|replace the background|change the background)\\b", prompt, re.I):
+        strength = 0.62 if not profile_id else 0.48
+    else:
+        strength = 0.38 if profile_id else 0.46
+
+    effective_prompt, effective_negative = build_generation_prompts(
+        prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
+    )
+
     _set_generation_progress(
         task_id, asset_type="image", backend=backend, status="running", progress=1,
         current_step=0, total_steps=steps, stage="starting", message="Preparing your image request…",
@@ -2836,7 +2851,7 @@ def generate():
                 total_steps=steps, stage="connecting", message="Connecting to cloud GPU worker…",
             )
             data = {
-                "prompt": prompt, "negative_prompt": negative_prompt,
+                "prompt": effective_prompt, "negative_prompt": effective_negative,
                 "steps": str(steps), "strength": str(strength), "seed": str(seed),
                 "use_global_body_model": "true" if use_global_body_model else "false",
                 "task_id": task_id, "aspect_ratio": aspect_ratio, "image_preset": image_preset,
@@ -2921,12 +2936,7 @@ def generate():
                     message=f"Generating image · step {current} of {scheduler_steps}",
                 )
                 return callback_kwargs
-            if _truthy(request.form.get("prompt_is_final")):
-                effective_prompt, effective_negative_prompt = prompt, negative_prompt
-            else:
-                effective_prompt, effective_negative_prompt = build_generation_prompts(
-                    prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
-                )
+            effective_prompt, effective_negative_prompt = effective_prompt, effective_negative
             kwargs = {
                 "prompt": effective_prompt,
                 "negative_prompt": effective_negative_prompt or None,
