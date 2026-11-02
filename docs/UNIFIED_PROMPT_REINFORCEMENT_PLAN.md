@@ -1,7 +1,7 @@
 # Unified Prompt Reinforcement and Creative Pipeline
 
 **Branch:** `feature/unified-prompt-reinforcement-training`  
-**Status:** Architecture and implementation plan; this commit does not change runtime behavior.
+**Status:** Incremental implementation. Reward/penalty learning and automatic optimization are explicitly ON HOLD pending validated evaluation evidence.
 
 ## Goals
 
@@ -77,7 +77,11 @@ flowchart TD
 
 Each evaluator must declare its metric source and confidence. Technical checks are not a substitute for semantic or human judgments.
 
-### 5. Reward and penalty design
+### 5. Reward and penalty design — ON HOLD
+
+**No implementation in the current milestone.** Existing feedback and contextual-bandit code must remain unchanged. Do not feed unvalidated scores into generation settings, prompt selection, training, or backend routing. Resume only after task-specific evaluators have evidence, confidence, and regression tests. Until then, outputs may be stored and reviewed using existing behavior, but no automatic reward-driven adaptation is permitted.
+
+
 
 - Reuse `prompt_intelligence/evaluation.py`, `feedback_service.py`, `feedback_store.py`, and the contextual `PreferenceBandit` where appropriate.
 - Normalize rewards to [-1, 1], but store individual dimensions and evidence rather than only a scalar.
@@ -116,7 +120,8 @@ Each evaluator must declare its metric source and confidence. Technical checks a
 - [ ] Add migration-safe fields for prompt plan, original prompt, internal conditioning, rationale, metric evidence, reward/penalty details, model versions, and evaluator versions.
 - [ ] Add tests proving old profiles, LoRA files, datasets, generated assets, and existing feedback remain readable.
 
-### Phase B — single-input UX
+### Phase B — single-input UX (ACTIVE)
+
 - [ ] Replace visible positive/negative/final-prompt controls with one prompt input on image and video pages.
 - [ ] Apply the same one-prompt contract to face-angle, expression, and global body-type dataset generation.
 - [ ] Keep face profile, angle, expression, body-type scope, and global dropdowns as structured task context.
@@ -124,19 +129,25 @@ Each evaluator must declare its metric source and confidence. Technical checks a
 - [ ] Show a compact "prompt plan" explanation and allow the user to inspect the original request; do not require prompt editing in a second box.
 - [ ] Keep accessibility labels, validation, progress, cancellation, and error messages.
 
-### Phase C — prompt reinforcement engine
+### Phase C — prompt reinforcement engine (ACTIVE, deterministic safeguards first)
+
 - [ ] Extend the existing PromptEngine with schema-versioned task plans and a constraint ledger.
 - [ ] Implement task-specific prompt policies for image, video, face angles, expressions, and global body-type generation.
 - [ ] Add explicit aesthetic, human-alignment, bias-mitigation, and diversity objectives with configurable bounded weights.
 - [ ] Add a deterministic, transparent fallback when no semantic provider is configured.
 - [ ] Add adversarial tests for prompt injection in provider output, constraint deletion, invented identity details, and invalid task parameters.
 
-### Phase D — automatic parameter policy
+### Phase D — automatic parameter policy (ACTIVE)
+
 - [ ] Implement task-specific strength selection for reference-image generation and validate supported ranges.
 - [ ] Keep strength internal and record selected value plus rationale.
 - [ ] Add regression tests for identity-preserving edits, large requested transformations, no-reference text-to-image, and unsupported combinations.
 
-### Phase E — task evaluators and feedback
+### Phase E — task evaluators and feedback (ON HOLD)
+- [ ] Keep all reward-driven configuration changes disabled until validated evidence exists.
+- [ ] Do not change current feedback/bandit behavior during Phases B–D.
+
+
 - [ ] Define separate image, video, face-angle, expression, body-type, and training evaluators.
 - [ ] Separate technical checks, semantic/model estimates, and human scores in persisted evidence.
 - [ ] Add explainable reward and penalty reports with confidence, metric source, and missing-data handling.
@@ -197,3 +208,10 @@ Each evaluator must declare its metric source and confidence. Technical checks a
 8. Existing face profiles, LoRA models, datasets, and historical assets remain intact.
 9. Full fine-tuning is not advertised as available until a real, tested trainer is installed.
 10. Tests and a staged rollback path pass before the feature is enabled by default.
+
+## Current milestone hold point
+
+- Active now: migrate image/video to one prompt input; remove visible positive/negative/final prompt fields; remove the user-controlled image reference-strength slider; derive bounded strength server-side; retain global settings and task controls.
+- Still pending: migrate face-angle/expression/body-type dataset forms to the same single-prompt contract, add stronger constraint-ledger validation and provider-backed prompt understanding, and test all paths.
+- On hold: reward/penalty evaluator expansion, reward-driven automatic improvement, contextual-bandit updates, and any reinforcement learning from previous outputs.
+- Full fine-tuning remains unavailable until its dedicated trainer exists. Do not silently dispatch to LoRA.
