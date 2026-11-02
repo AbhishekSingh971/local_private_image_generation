@@ -58,6 +58,8 @@ from pose_validation import build_pose_control_image, estimate_head_pose, valida
 from training_generation import targets_for_dataset_type
 from image_quality import assess_image_quality
 from safe_diagnostics import format_exception_detail
+from prompt_intelligence.feedback_service import record_generation_feedback
+from prompt_intelligence.feedback_store import list_feedback
 
 from studio_db import (
     count_assets,
@@ -737,6 +739,86 @@ def api_list_assets():
     except Exception:
         app.logger.exception("Could not list media from the database")
         return jsonify(error="Could not read the media library. Check DATABASE_URL and database connectivity."), 503
+
+
+@app.route("/api/assets/<asset_id>/feedback", methods=["GET", "POST"])
+def api_asset_feedback(asset_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", asset_id or ""):
+        return jsonify(error="Invalid media ID."), 400
+    try:
+        asset = get_asset(asset_id)
+        if not asset:
+            return jsonify(error="Saved media not found."), 404
+        if request.method == "GET":
+            return jsonify(feedback=list_feedback(asset_id, limit=30))
+        payload = request.get_json(silent=True) or {}
+        scores = payload.get("scores") or {}
+        if not isinstance(scores, dict) or not scores:
+            return jsonify(error="Rate at least one evaluation dimension."), 400
+        allowed = {"identity", "angle", "expression", "body_proportions", "image_quality", "prompt_adherence"}
+        if set(scores) - allowed:
+            return jsonify(error="Unsupported feedback dimension."), 400
+        for key, value in scores.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 1 <= value <= 5:
+                return jsonify(error=f"{key} rating must be from 1 to 5."), 400
+        backend = (asset.get("backend") or "unknown").lower()
+        backend_class = "cloud" if backend in {"cloud_gpu", "runpod"} else ("local_gpu" if backend == "local_gpu" else backend)
+        mode = (asset.get("generation_mode") or "default")[:40]
+        task = asset.get("asset_type") or "image"
+        result = record_generation_feedback(
+            asset_id=asset_id,
+            profile_id=asset.get("profile_id"),
+            task=task,
+            configuration_id=f"{mode}:{backend_class}"[:120],
+            context={"task": task, "model_family": "animatediff_sd15" if task == "video" else "sd15",
+                     "backend_class": backend_class, "control_mode": mode},
+            human_scores=scores,
+            requested_dimensions=list(scores),
+        )
+        return jsonify(status="recorded", result=result), 201
+    except (TypeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not persist generation feedback")
+        return jsonify(error="Could not save feedback. Check DATABASE_URL and PostgreSQL connectivity."), 503
+
+
+@app.route("/api/face-photos/<photo_id>/feedback", methods=["POST"])
+def api_face_photo_feedback(photo_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", photo_id or ""):
+        return jsonify(error="Invalid face-photo ID."), 400
+    try:
+        record = get_face_photo_bytes(photo_id)
+        if not record:
+            return jsonify(error="Face-training photo not found."), 404
+        photo, _image_bytes = record
+        payload = request.get_json(silent=True) or {}
+        scores = payload.get("scores") or {}
+        if not isinstance(scores, dict) or not scores:
+            return jsonify(error="Rate at least one evaluation dimension."), 400
+        allowed = {"identity", "angle", "expression", "body_proportions", "image_quality", "prompt_adherence"}
+        if set(scores) - allowed:
+            return jsonify(error="Unsupported feedback dimension."), 400
+        for key, value in scores.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 1 <= value <= 5:
+                return jsonify(error=f"{key} rating must be from 1 to 5."), 400
+        kind = (photo.get("photo_kind") or "manual").lower()
+        target = (photo.get("angle_label") or kind)[:60]
+        pose_status = photo.get("validation_status") if kind == "angle" else None
+        result = record_generation_feedback(
+            asset_id=None, profile_id=photo.get("profile_id"), task="face_training",
+            configuration_id=f"{kind}:{target}"[:120],
+            context={"task": "face_training", "model_family": "sd15",
+                     "backend_class": "dataset", "control_mode": kind},
+            human_scores=scores, pose_status=pose_status,
+            requested_dimensions=list(scores),
+        )
+        return jsonify(status="recorded", result=result), 201
+    except (TypeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not persist face-training feedback")
+        return jsonify(error="Could not save face-training feedback. Check DATABASE_URL and PostgreSQL connectivity."), 503
 
 
 @app.get("/assets/<asset_id>/content")
