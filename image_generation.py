@@ -136,9 +136,32 @@ def build_generation_prompts(
     prefix = _FULL_BODY_PREFIX if use_full_body_framing else _PHOTO_PREFIX
     if key in {"photorealistic", "full_body_photo"} and is_human:
         prefix += _ANATOMY_DETAIL
+    # Give multi-person beach scenes explicit composition guidance. SD 1.5 often
+    # merges nearby people or drops limbs when a group scene is described only
+    # in natural language, so make the spatial arrangement and framing explicit.
+    beach_group_scene = (
+        bool(re.search(r"\\bbeach\\b|\\bseaside\\b|\\bshoreline\\b", clean_prompt, re.IGNORECASE))
+        and bool(re.search(r"\\bwoman\\b|\\bwomen\\b", clean_prompt, re.IGNORECASE))
+        and bool(re.search(r"\\b(?:two|2)\\s+(?:adult\\s+)?men\\b", clean_prompt, re.IGNORECASE))
+    )
+    if beach_group_scene:
+        prefix = (
+            "photorealistic wide full-body beach photograph, three separate adult people "
+            "visible head to toe, woman centered with two adult men positioned separately "
+            "one on each side, clear space between each person, all faces and limbs visible, "
+            "tropical trees clearly visible in the background, natural daylight, "
+            "realistic camera perspective, "
+        ) + prefix
+
     negative_prefix = _PHOTO_NEGATIVE
     if use_full_body_constraints:
         negative_prefix = _FULL_BODY_NEGATIVE + ", " + negative_prefix
+    if beach_group_scene:
+        negative_prefix += (
+            ", extra people, duplicated people, merged bodies, fused torsos, overlapping "
+            "limbs, hidden arms, hidden legs, cropped feet, cropped heads, out of frame, "
+            "extra hands, malformed fingers, distorted faces, text, watermark"
+        )
 
     enhanced_prompt = clean_prompt if clean_prompt.lower().startswith(prefix.rstrip(", ").lower()) else prefix + clean_prompt
     enhanced_negative = ", ".join(part for part in (negative_prefix, clean_negative) if part)
