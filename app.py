@@ -59,7 +59,7 @@ from training_generation import targets_for_dataset_type
 from image_quality import assess_image_quality
 from safe_diagnostics import format_exception_detail
 from prompt_intelligence.feedback_service import record_generation_feedback
-from prompt_intelligence.feedback_store import list_feedback
+from prompt_intelligence.feedback_store import list_feedback, list_feedback_for_source
 
 from studio_db import (
     count_assets,
@@ -768,6 +768,7 @@ def api_asset_feedback(asset_id):
         result = record_generation_feedback(
             asset_id=asset_id,
             profile_id=asset.get("profile_id"),
+            source_id=asset_id, source_type="asset",
             task=task,
             configuration_id=f"{mode}:{backend_class}"[:120],
             context={"task": task, "model_family": "animatediff_sd15" if task == "video" else "sd15",
@@ -783,7 +784,7 @@ def api_asset_feedback(asset_id):
         return jsonify(error="Could not save feedback. Check DATABASE_URL and PostgreSQL connectivity."), 503
 
 
-@app.route("/api/face-photos/<photo_id>/feedback", methods=["POST"])
+@app.route("/api/face-photos/<photo_id>/feedback", methods=["GET", "POST"])
 def api_face_photo_feedback(photo_id):
     if not re.fullmatch(r"[a-f0-9]{32}", photo_id or ""):
         return jsonify(error="Invalid face-photo ID."), 400
@@ -792,6 +793,8 @@ def api_face_photo_feedback(photo_id):
         if not record:
             return jsonify(error="Face-training photo not found."), 404
         photo, _image_bytes = record
+        if request.method == "GET":
+            return jsonify(feedback=list_feedback_for_source(photo_id, limit=30))
         payload = request.get_json(silent=True) or {}
         scores = payload.get("scores") or {}
         if not isinstance(scores, dict) or not scores:
@@ -806,7 +809,8 @@ def api_face_photo_feedback(photo_id):
         target = (photo.get("angle_label") or kind)[:60]
         pose_status = photo.get("validation_status") if kind == "angle" else None
         result = record_generation_feedback(
-            asset_id=None, profile_id=photo.get("profile_id"), task="face_training",
+            asset_id=None, profile_id=photo.get("profile_id"), source_id=photo_id,
+            source_type="face_photo", task="face_training",
             configuration_id=f"{kind}:{target}"[:120],
             context={"task": "face_training", "model_family": "sd15",
                      "backend_class": "dataset", "control_mode": kind},
