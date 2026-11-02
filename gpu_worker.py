@@ -193,6 +193,87 @@ def remote_health():
     )
 
 
+@worker.post("/api/remote/profiles/<profile_id>/lora")
+def remote_upload_profile_lora(profile_id):
+    """Install a validated local safetensors LoRA under its existing profile ID."""
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    uploaded = request.files.get("lora")
+    if not uploaded or Path(uploaded.filename or "").name != "pytorch_lora_weights.safetensors":
+        return jsonify(error="Upload pytorch_lora_weights.safetensors as the lora file."), 400
+    raw = uploaded.stream.read(60 * 1024 * 1024 + 1)
+    if not raw or len(raw) > 60 * 1024 * 1024:
+        return jsonify(error="LoRA file must be non-empty and no larger than 60 MB."), 413
+
+    # Parse the safetensors header without unpickling arbitrary Python objects.
+    try:
+        from safetensors import safe_open
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".safetensors") as temp_file:
+            temp_file.write(raw)
+            temp_file.flush()
+            with safe_open(temp_file.name, framework="pt", device="cpu") as model_file:
+                if not model_file.keys():
+                    raise ValueError("No tensors found.")
+    except Exception:
+        return jsonify(error="Uploaded LoRA is not a valid safetensors model."), 400
+
+    config_upload = request.files.get("adapter_config")
+    config_bytes = None
+    if config_upload and config_upload.filename:
+        if Path(config_upload.filename).name != "adapter_config.json":
+            return jsonify(error="Only adapter_config.json is accepted as optional metadata."), 400
+        config_bytes = config_upload.stream.read(256 * 1024 + 1)
+        if len(config_bytes) > 256 * 1024:
+            return jsonify(error="Adapter config exceeds the 256 KB limit."), 413
+        try:
+            config = json.loads(config_bytes.decode("utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("Expected a JSON object.")
+        except (UnicodeError, ValueError):
+            return jsonify(error="adapter_config.json is invalid JSON."), 400
+
+    profile = get_profile(profile_id)
+    if not profile:
+        try:
+            create_profile(
+                (request.form.get("name") or "Synced face profile").strip()[:80],
+                profile_id=profile_id,
+                token=(request.form.get("token") or "").strip() or None,
+                description=request.form.get("description") or "",
+            )
+        except (ValueError, RuntimeError) as exc:
+            return jsonify(error=str(exc)), 400
+
+    destination = model_path(profile_id)
+    destination.mkdir(parents=True, exist_ok=True)
+    weight_path = destination / "pytorch_lora_weights.safetensors"
+    config_path = destination / "adapter_config.json"
+    temp_weight = destination / ".pytorch_lora_weights.safetensors.uploading"
+    temp_config = destination / ".adapter_config.json.uploading"
+    try:
+        temp_weight.write_bytes(raw)
+        if config_bytes is not None:
+            temp_config.write_bytes(config_bytes)
+        os.replace(temp_weight, weight_path)
+        if config_bytes is not None:
+            os.replace(temp_config, config_path)
+        update_profile(
+            profile_id, local_model_ready=True, local_training_state="completed",
+            local_training_error=None,
+        )
+    except Exception as exc:
+        temp_weight.unlink(missing_ok=True)
+        temp_config.unlink(missing_ok=True)
+        weight_path.unlink(missing_ok=True)
+        return jsonify(error=f"Could not install LoRA on worker: {str(exc)[:500]}"), 500
+
+    return jsonify(status="installed", ready=True, profile_id=profile_id, bytes=len(raw))
+
+
 @worker.post("/api/remote/train-profile")
 def remote_train_profile():
     if not torch.cuda.is_available():
