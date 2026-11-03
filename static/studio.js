@@ -876,7 +876,12 @@
     if(status)status.textContent="Clearing shared body training data and saved adapters…";
     try{
       const result=await readJson(await fetch("/api/global-body/training-data",{method:"DELETE"}));
-      if(status)status.textContent="Shared body data cleared: "+result.photos_deleted+" photo(s), "+result.groups_deleted+" group(s), "+result.adapters_deleted+" saved adapter artifact(s). The shared profile was preserved.";
+      if(status){
+        status.textContent="Shared body data cleared: "+result.photos_deleted+" photo(s), "+result.groups_deleted+" group(s), "+result.adapters_deleted+" saved adapter artifact(s). The shared profile was preserved.";
+        if(result.remote_cleanup==="deleted")status.textContent+=" GHive worker photos and adapter were also removed.";
+        else if(result.remote_cleanup==="unavailable")status.textContent+=" GHive cleanup is pending: "+(result.remote_cleanup_error||"the worker could not be reached")+". Reconnect/update the worker and run Clear again to remove its cached copy.";
+        else if(result.remote_cleanup==="not_configured")status.textContent+=" No GHive worker is configured, so only local/database copies were cleared.";
+      }
       await loadDatasetGroups();
       await refreshProfiles();
       await loadGlobalBodyStatus();
