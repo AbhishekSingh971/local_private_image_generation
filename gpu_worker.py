@@ -242,6 +242,9 @@ def remote_upload_profile_lora(profile_id):
         except (UnicodeError, ValueError):
             return jsonify(error="adapter_config.json is invalid JSON."), 400
 
+    purpose = (request.form.get("purpose") or "identity").strip().lower()
+    if purpose not in {"identity", "body", "angle", "expression"}:
+        return jsonify(error="Adapter purpose must be identity, body, angle or expression."), 400
     profile = get_profile(profile_id)
     if not profile:
         try:
@@ -254,7 +257,11 @@ def remote_upload_profile_lora(profile_id):
         except (ValueError, RuntimeError) as exc:
             return jsonify(error=str(exc)), 400
 
-    destination = model_path(profile_id)
+    destination = (
+        model_path(profile_id)
+        if purpose == "identity" or (purpose == "body" and profile_id == local_engine.GLOBAL_BODY_PROFILE_ID)
+        else model_path(profile_id) / "components" / purpose
+    )
     destination.mkdir(parents=True, exist_ok=True)
     weight_path = destination / "pytorch_lora_weights.safetensors"
     config_path = destination / "adapter_config.json"
@@ -267,17 +274,18 @@ def remote_upload_profile_lora(profile_id):
         os.replace(temp_weight, weight_path)
         if config_bytes is not None:
             os.replace(temp_config, config_path)
-        update_profile(
-            profile_id, local_model_ready=True, local_training_state="completed",
-            local_training_error=None,
-        )
+        if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
+            update_profile(
+                profile_id, local_model_ready=True, local_training_state="completed",
+                local_training_error=None,
+            )
     except Exception as exc:
         temp_weight.unlink(missing_ok=True)
         temp_config.unlink(missing_ok=True)
         weight_path.unlink(missing_ok=True)
         return jsonify(error=f"Could not install LoRA on worker: {str(exc)[:500]}"), 500
 
-    return jsonify(status="installed", ready=True, profile_id=profile_id, bytes=len(raw))
+    return jsonify(status="installed", ready=True, profile_id=profile_id, purpose=purpose, bytes=len(raw))
 
 
 @worker.post("/api/remote/train-profile")
