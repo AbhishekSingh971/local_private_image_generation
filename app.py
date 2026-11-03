@@ -32,7 +32,10 @@ from flask import Flask, request, send_from_directory, send_file, jsonify, rende
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
-from image_generation import build_generation_prompts, fit_sd15_prompt, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_generation import (
+    build_generation_prompts, build_face_identity_prompt, fit_sd15_prompt,
+    resolve_generation_seed, resolve_image_dimensions, validate_image_preset,
+)
 from model_integrity import validate_animatediff_adapter, validate_sd15_model
 from face_profiles import (
     DATA_DIR,
@@ -262,6 +265,21 @@ def _generation_component_signature(*, use_global_body_model=False,
 
 def _truthy(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _lora_weight_signature(folder: Path | None):
+    """Return a cache key that changes whenever an identity/component LoRA is retrained or synced."""
+    if folder is None:
+        return None
+    for filename in ("pytorch_lora_weights.safetensors", "pytorch_lora_weights.bin"):
+        path = folder / filename
+        try:
+            stat = path.stat()
+            if path.is_file():
+                return (filename, int(stat.st_size), int(stat.st_mtime_ns))
+        except OSError:
+            continue
+    return None
 
 
 def _cloud_worker_token() -> str:
@@ -3192,19 +3210,40 @@ def _load_cpu_or_gpu_pipeline(
                 model_error = str(exc)
                 raise
 
-        requested_loras = (profile_id or None, bool(use_global_body_model), bool(use_profile_body_component), face_angle or "", face_expression or "")
+        identity_signature = _lora_weight_signature(model_path(profile_id)) if profile_id else None
+        global_body_signature = _lora_weight_signature(model_path(GLOBAL_BODY_PROFILE_ID)) if use_global_body_model else None
+        component_signatures = ()
+        if profile_id:
+            requested_components = (
+                ("body", bool(use_profile_body_component)),
+                ("angle", bool(face_angle)),
+                ("expression", bool(face_expression)),
+            )
+            component_signatures = tuple(
+                (kind, _lora_weight_signature(model_path(profile_id) / "components" / kind))
+                for kind, requested in requested_components if requested
+            )
+        requested_loras = (
+            profile_id or None, identity_signature,
+            bool(use_global_body_model), global_body_signature,
+            bool(use_profile_body_component), component_signatures,
+            face_angle or "", face_expression or "",
+        )
         if active_lora != requested_loras:
             if active_lora is not None:
                 pipe.unload_lora_weights()
             adapter_names = []
             adapter_weights = []
+            identity_adapter_status = "not_selected"
             if profile_id:
                 identity_path = model_path(profile_id)
-                if not profile_ready_for_backend(profile_id, "local") or not identity_path.is_dir():
-                    raise ValueError("This face profile has no locally trained LoRA. Train it locally or turn on GPU acceleration and select the cloud GPU.")
+                identity_file_signature = _lora_weight_signature(identity_path)
+                if not profile_ready_for_backend(profile_id, "local") or identity_file_signature is None:
+                    raise ValueError("The selected face profile's identity LoRA weights are missing on this device. Sync the profile to this device or select the backend where it is trained.")
                 pipe.load_lora_weights(str(identity_path), adapter_name="face_identity")
                 adapter_names.append("face_identity")
                 adapter_weights.append(1.0)
+                identity_adapter_status = "loaded"
             if use_global_body_model:
                 body_profile = ensure_global_body_profile()
                 body_path = model_path(GLOBAL_BODY_PROFILE_ID)
@@ -3238,7 +3277,10 @@ def _load_cpu_or_gpu_pipeline(
             if adapter_names:
                 pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
             pipe._private_component_adapter_status = component_status
+            pipe._private_identity_adapter_status = identity_adapter_status
             active_lora = requested_loras
+        if profile_id and getattr(pipe, "_private_identity_adapter_status", "not_loaded") != "loaded":
+            raise RuntimeError("The selected trained face identity adapter was not loaded; image generation was stopped to prevent a base-model face.")
         return pipe
 
 
