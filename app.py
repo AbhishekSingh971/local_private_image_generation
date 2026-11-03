@@ -2755,9 +2755,9 @@ def api_face_train_status(profile_id):
 
 def _load_cpu_or_gpu_pipeline(
     mode, profile_id, compute_backend="cpu", *, use_global_body_model=False,
-    face_angle=None, face_expression=None,
+    face_angle=None, face_expression=None, use_profile_body_component=False,
 ):
-    """Load identity plus optional, independently trained component LoRAs."""
+    """Load identity plus optional, independently trained body/angle/expression LoRAs."""
     global pipe, pipeline_mode, pipeline_device, active_lora, model_error
     global video_pipe, active_video_lora
     from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
@@ -2873,7 +2873,7 @@ def _load_cpu_or_gpu_pipeline(
                 model_error = str(exc)
                 raise
 
-        requested_loras = (profile_id or None, bool(use_global_body_model), face_angle or "", face_expression or "")
+        requested_loras = (profile_id or None, bool(use_global_body_model), bool(use_profile_body_component), face_angle or "", face_expression or "")
         if active_lora != requested_loras:
             if active_lora is not None:
                 pipe.unload_lora_weights()
@@ -2894,9 +2894,10 @@ def _load_cpu_or_gpu_pipeline(
                 pipe.load_lora_weights(str(body_path), adapter_name="global_body")
                 adapter_names.append("global_body")
                 adapter_weights.append(0.75)
-            component_status = {"angle": "not_requested", "expression": "not_requested"}
+            component_status = {"body": "not_requested", "angle": "not_requested", "expression": "not_requested"}
             if profile_id:
-                for component_kind, selected_value in (("angle", face_angle), ("expression", face_expression)):
+                component_requests = (("body", use_profile_body_component), ("angle", face_angle), ("expression", face_expression))
+                for component_kind, selected_value in component_requests:
                     if not selected_value:
                         continue
                     component_path = model_path(profile_id) / "components" / component_kind
@@ -2907,8 +2908,8 @@ def _load_cpu_or_gpu_pipeline(
                     adapter_name = "face_" + component_kind
                     pipe.load_lora_weights(str(component_path), adapter_name=adapter_name)
                     adapter_names.append(adapter_name)
-                    env_key = "FACE_ANGLE_LORA_SCALE" if component_kind == "angle" else "FACE_EXPRESSION_LORA_SCALE"
-                    default_weight = "0.45" if component_kind == "angle" else "0.55"
+                    env_key = {"body": "FACE_BODY_LORA_SCALE", "angle": "FACE_ANGLE_LORA_SCALE", "expression": "FACE_EXPRESSION_LORA_SCALE"}[component_kind]
+                    default_weight = {"body": "0.55", "angle": "0.45", "expression": "0.55"}[component_kind]
                     try:
                         component_weight = float(os.environ.get(env_key, default_weight))
                     except ValueError:
@@ -2960,6 +2961,7 @@ def generate():
         backend = _resolve_compute_backend(request.form)
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = _truthy(request.form.get("use_global_body_model"))
+        use_profile_body_component = _truthy(request.form.get("use_profile_body_component"))
         face_angle = (request.form.get("face_angle") or "").strip().lower()
         face_expression = (request.form.get("face_expression") or "").strip().lower()
         angle_prompts = {
@@ -2990,6 +2992,8 @@ def generate():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
+    if (use_profile_body_component and not profile_id:
+        return jsonify(error="Select a face profile before using its body component."), 400
     if (face_angle or face_expression) and not profile_id:
         return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
     if face_angle:
@@ -3084,6 +3088,7 @@ def generate():
                 "prompt": effective_prompt, "negative_prompt": effective_negative,
                 "steps": str(steps), "strength": str(strength), "seed": str(seed),
                 "use_global_body_model": "true" if use_global_body_model else "false",
+                "use_profile_body_component": "true" if use_profile_body_component else "false",
                 "task_id": task_id, "aspect_ratio": aspect_ratio, "image_preset": image_preset,
                 "face_angle": face_angle, "face_expression": face_expression,
                 "pose_control_type": "body_openpose" if pose_control_image is not None else "",
@@ -3137,6 +3142,7 @@ def generate():
                     generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
                                          "image_preset": image_preset, "face_profile_id": profile_id,
                                          "use_global_body_model": use_global_body_model,
+                                         "use_profile_body_component": use_profile_body_component,
                                          "strategy_id": prompt_plan["strategy_id"],
                                          "strategy_version": prompt_plan["strategy_version"],
                                          "prompt_provider": prompt_plan["provider"],
@@ -3173,6 +3179,7 @@ def generate():
             pipeline = _load_cpu_or_gpu_pipeline(
                 mode, profile_id, backend, use_global_body_model=use_global_body_model,
                 face_angle=face_angle, face_expression=face_expression,
+                use_profile_body_component=use_profile_body_component,
             )
             generator_device = "cuda" if backend == "local_gpu" else "cpu"
             _set_generation_progress(
@@ -3285,6 +3292,7 @@ def generate_video():
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         face_angle = (request.form.get("face_angle") or "").strip().lower()
         face_expression = (request.form.get("face_expression") or "").strip().lower()
+        use_profile_body_component = _truthy(request.form.get("use_profile_body_component"))
         if face_angle not in {"", "front", "three_quarter_left", "three_quarter_right", "left_profile", "right_profile"}:
             raise ValueError("Choose a supported video face angle.")
         if face_expression not in {"", "neutral", "smile", "laugh", "serious", "surprised"}:
@@ -3311,6 +3319,8 @@ def generate_video():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
+    if (use_profile_body_component and not profile_id:
+        return jsonify(error="Select a face profile before using its video body component."), 400
     if (face_angle or face_expression) and not profile_id:
         return jsonify(error="Select a face profile before using video angle or expression controls."), 400
     if face_angle:
@@ -3326,7 +3336,8 @@ def generate_video():
             context={"profile_id": profile_id or "global", "control_mode": "animatediff",
                      "backend_class": "cloud" if backend == "cloud_gpu" else backend,
                      "model_family": "animatediff_sd15", "face_angle": face_angle,
-                     "face_expression": face_expression},
+                     "face_expression": face_expression,
+                     "use_profile_body_component": use_profile_body_component},
         )
     except PromptEngineError as exc:
         return jsonify(error=str(exc)), 502
@@ -3361,6 +3372,7 @@ def generate_video():
                 data["face_angle"] = face_angle
             if face_expression:
                 data["face_expression"] = face_expression
+            data["use_profile_body_component"] = "true" if use_profile_body_component else "false"
             try:
                 response = runpod_request(
                     "POST", "/api/remote/generate-video", data=data, timeout=(20, 1200)
@@ -3452,12 +3464,12 @@ def generate_video():
                         active_video_lora = None
                     adapter_names = []
                     adapter_weights = []
-                    video_component_status = {"angle": "not_requested", "expression": "not_requested"}
+                    video_component_status = {"body": "not_requested", "angle": "not_requested", "expression": "not_requested"}
                     if profile_id:
                         video_pipe.load_lora_weights(str(model_path(profile_id)), adapter_name="face_identity")
                         adapter_names.append("face_identity")
                         adapter_weights.append(1.0)
-                        for component_kind, selected_value in (("angle", face_angle), ("expression", face_expression)):
+                        for component_kind, selected_value in (("body", use_profile_body_component), ("angle", face_angle), ("expression", face_expression)):
                             if not selected_value:
                                 continue
                             component_path = model_path(profile_id) / "components" / component_kind
@@ -3466,8 +3478,8 @@ def generate_video():
                                 adapter_name = "face_" + component_kind
                                 video_pipe.load_lora_weights(str(component_path), adapter_name=adapter_name)
                                 adapter_names.append(adapter_name)
-                                env_key = "FACE_ANGLE_LORA_SCALE" if component_kind == "angle" else "FACE_EXPRESSION_LORA_SCALE"
-                                default_weight = "0.45" if component_kind == "angle" else "0.55"
+                                env_key = {"body": "FACE_BODY_LORA_SCALE", "angle": "FACE_ANGLE_LORA_SCALE", "expression": "FACE_EXPRESSION_LORA_SCALE"}[component_kind]
+                                default_weight = {"body": "0.55", "angle": "0.45", "expression": "0.55"}[component_kind]
                                 try:
                                     weight = float(os.environ.get(env_key, default_weight))
                                 except ValueError:
