@@ -12,6 +12,8 @@
         <div><label for="faceExpression">Expression <span class="optional">optional</span></label><select id="faceExpression" name="face_expression"><option value="">Use prompt / default</option><option value="neutral">Neutral</option><option value="smile">Gentle smile</option><option value="laugh">Laughing</option><option value="serious">Serious</option><option value="surprised">Surprised</option></select></div>
       </div>
       <label class="switchline" for="useGlobalBodyModel"><input id="useGlobalBodyModel" name="use_global_body_model" type="checkbox" value="true"> Apply shared body-type model</label>
+      <label class="switchline" for="useProfileBodyComponent"><input id="useProfileBodyComponent" name="use_profile_body_component" type="checkbox" value="true" disabled> Apply this profile’s body component</label>
+      <p class="field-help">This uses the separately trained body LoRA for the selected face profile, if available. It is distinct from the shared global body-type model.</p>
       <p id="globalBodyGenerationStatus" class="field-help">Optional. Generate body samples and train the shared model from Training datasets before using it.</p>
       <label for="referenceImage">Reference image <span class="optional">optional</span></label><input id="referenceImage" name="image" type="file" accept="image/png,image/jpeg,image/webp">
       <p class="field-help">With a CUDA GPU, the studio also attempts face-reference IP-Adapter conditioning from this image, alongside the selected face LoRA. CPU generation uses the reference through img2img without the extra adapter; if the optional adapter cannot load, generation falls back safely.</p>
