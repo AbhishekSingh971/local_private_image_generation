@@ -239,6 +239,32 @@
     }
     loadGeneratedPhotoPicker();
   }
+  function updateFaceIdentityStatus() {
+    const status=$("#faceIdentityStatus");
+    const selectedId=$("#faceProfile")?.value||"";
+    if(!status)return;
+    if(!selectedId){
+      status.textContent="No trained face selected. The prompt-derived face matrix will use only facial traits in your prompt; it does not lock a reusable identity.";
+      return;
+    }
+    const profile=profiles.find(item=>item.id===selectedId);
+    if(!profile){
+      status.textContent="Selected face profile could not be found. Refresh profiles before generating.";
+      return;
+    }
+    const requested=computeBackend?.value||"auto";
+    const backend=requested==="auto"?(computeAvailability?.auto_backend||"auto"):requested;
+    const cloud=backend==="cloud_gpu"||backend==="runpod";
+    const ready=cloud?Boolean(profile.runpod_model_ready):backend==="auto"
+      ?Boolean(profile.local_model_ready||profile.runpod_model_ready)
+      :Boolean(profile.local_model_ready);
+    status.textContent=ready
+      ? "Trained identity selected: "+profile.name+". The matching trigger token and identity LoRA will be applied on "+(cloud?"GHive GPU":backend==="local_gpu"?"System GPU":backend==="cpu"?"Local CPU":"the available backend")+"."
+      : "Trained identity selected: "+profile.name+", but its LoRA is not trained on the currently selected backend. Generation will stop rather than silently use a different face.";
+  }
+  $("#faceProfile")?.addEventListener("change",updateFaceIdentityStatus);
+  computeBackend?.addEventListener("change",updateFaceIdentityStatus);
+
   async function refreshProfiles() {
     const response = await fetch("/api/face-profiles", {cache:"no-store", headers:{"Accept":"application/json"}});
     const data = await readJson(response);
@@ -253,6 +279,7 @@
       });
     }
     updateFaceConditionControls();
+    updateFaceIdentityStatus();
     return profiles;
   }
 
@@ -1095,7 +1122,14 @@
       download.href=data.image_url+"?download=1";download.hidden=false;
       pill.textContent="Saved to library";
       setFinalGenerationProgress("image",true,data.message||"Image generated and saved to the library.");
-      if(status)status.textContent=(data.message||"Image generated.")+" Saved as “"+data.title+"”.";
+      if(status){
+        const identityMessage=data.face_identity_mode==="trained_lora"
+          ? " Trained face identity applied: "+(data.face_profile||"selected profile")+"."
+          : data.face_identity_mode==="prompt_matrix"
+            ? " No face LoRA selected; generated facial structure from the prompt-derived feature matrix."
+            : " No face identity adapter was selected.";
+        status.textContent=(data.message||"Image generated.")+" Saved as “"+data.title+"”."+identityMessage;
+      }
     }catch(error){
       setFinalGenerationProgress("image",false,error.message);
       if(status)status.textContent="Generation failed: "+error.message;
