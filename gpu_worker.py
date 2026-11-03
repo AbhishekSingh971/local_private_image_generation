@@ -727,11 +727,6 @@ def remote_generate_video():
             raise ValueError("Unsupported video face angle.")
         if face_expression not in {"", "neutral", "smile", "laugh", "serious", "surprised"}:
             raise ValueError("Unsupported video expression.")
-        video_settings = validate_video_settings(steps=steps, frames=frames, fps=fps, seed=seed)
-        steps, frames, fps, seed = (
-            video_settings["steps"], video_settings["frames"],
-            video_settings["fps"], video_settings["seed"],
-        )
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
