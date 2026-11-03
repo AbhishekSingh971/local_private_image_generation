@@ -609,11 +609,11 @@ def remote_generate():
         }
         if image is not None:
             kwargs.update(image=image, strength=strength)
+            if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
+                kwargs["ip_adapter_image"] = image
         if pose_control_image is not None:
             kwargs["control_image"] = pose_control_image
             kwargs["controlnet_conditioning_scale"] = 1.0
-            if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
-                kwargs["ip_adapter_image"] = image
         result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
