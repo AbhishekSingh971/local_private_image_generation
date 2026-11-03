@@ -347,8 +347,6 @@ def _load_profile_identity_reference(profile_id: str | None):
             score += 70
         if record.get("validation_status") == "passed":
             score += 10
-        if record.get("photo_kind") == "manual":
-            score += 5
         if score:
             scored.append((score, record))
     if not scored:
