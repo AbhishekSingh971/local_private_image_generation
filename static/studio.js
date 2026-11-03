@@ -135,6 +135,17 @@
     });
   }
   $("#faceProfile")?.addEventListener("change",updateFaceConditionControls);
+  function updateVideoFaceConditionControls() {
+    const selected=Boolean($("#videoProfile")?.value);
+    ["videoFaceAngle","videoFaceExpression"].forEach(id=>{
+      const control=$("#"+id);
+      if(!control)return;
+      control.disabled=!selected;
+      if(!selected)control.value="";
+    });
+  }
+  $("#videoProfile")?.addEventListener("change",updateVideoFaceConditionControls);
+  updateVideoFaceConditionControls();
 
   function makeTag(text, state) {
     const node = document.createElement("span");
