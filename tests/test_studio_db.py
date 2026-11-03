@@ -395,3 +395,35 @@ def test_replacing_photo_resets_pose_validation(tmp_path, monkeypatch):
     assert metadata["validation_status"] == "needs_review"
     assert metadata["actual_yaw"] is None
     assert "replaced" in metadata["validation_message"]
+
+
+def test_ensure_column_skips_noop_ddl_when_column_exists():
+    class FakeCursor:
+        def __init__(self):
+            self.executed = []
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def execute(self, statement, params=None):
+            self.executed.append((statement, params))
+        def fetchone(self):
+            return {"column_exists": True}
+
+    class FakeConnection:
+        def __init__(self):
+            self.fake_cursor = FakeCursor()
+        def cursor(self):
+            return self.fake_cursor
+
+    connection = FakeConnection()
+    changed = studio_db._ensure_column(
+        connection, "generated_assets", "generation_metadata",
+        "JSONB NOT NULL DEFAULT '{}'::jsonb",
+    )
+
+    assert changed is False
+    assert len(connection.fake_cursor.executed) == 1
+    statement, params = connection.fake_cursor.executed[0]
+    assert "information_schema.columns" in statement
+    assert params == ("generated_assets", "generation_metadata")
