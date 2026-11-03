@@ -663,7 +663,7 @@ def _persist_face_model_bundle(profile_id: str, backend: str, bundle_data: bytes
     )
 
 
-def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: str) -> None:
+def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: str, purpose: str = "identity") -> None:
     profile = get_profile(profile_id)
     if not profile:
         return
@@ -675,6 +675,7 @@ def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: st
         "--steps", str(steps),
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
+        "--dataset-purpose", purpose,
     ]
     try:
         completed = subprocess.run(
@@ -684,28 +685,31 @@ def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: st
         logs = (completed.stdout or "") + "\n" + (completed.stderr or "")
         if completed.returncode != 0:
             error = logs.strip()[-3500:] or f"Trainer exited with code {completed.returncode}."
+            if purpose == "identity" or is_global_body_profile(profile_id):
+                update_profile(
+                    profile_id, local_training_state="failed",
+                    local_training_error=error, local_model_ready=False,
+                )
+            with LOCAL_TRAIN_JOBS_LOCK:
+                LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "purpose": purpose, "error": error}
+            return
+        _persist_face_model_bundle(profile_id, "local")
+        if purpose == "identity" or is_global_body_profile(profile_id):
+            update_profile(
+                profile_id, local_training_state="completed",
+                local_training_error=None, local_model_ready=True,
+            )
+        with LOCAL_TRAIN_JOBS_LOCK:
+            LOCAL_TRAIN_JOBS[job_id] = {"status": "completed", "purpose": purpose, "message": f"{purpose.title()} LoRA trained locally."}
+    except Exception as exc:
+        error = str(exc)
+        if purpose == "identity" or is_global_body_profile(profile_id):
             update_profile(
                 profile_id, local_training_state="failed",
                 local_training_error=error, local_model_ready=False,
             )
-            with LOCAL_TRAIN_JOBS_LOCK:
-                LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
-            return
-        _persist_face_model_bundle(profile_id, "local")
-        update_profile(
-            profile_id, local_training_state="completed",
-            local_training_error=None, local_model_ready=True,
-        )
         with LOCAL_TRAIN_JOBS_LOCK:
-            LOCAL_TRAIN_JOBS[job_id] = {"status": "completed", "message": "Face LoRA trained locally."}
-    except Exception as exc:
-        error = str(exc)
-        update_profile(
-            profile_id, local_training_state="failed",
-            local_training_error=error, local_model_ready=False,
-        )
-        with LOCAL_TRAIN_JOBS_LOCK:
-            LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
+            LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "purpose": purpose, "error": error}
 
 
 @app.errorhandler(413)
@@ -2419,7 +2423,14 @@ def api_train_face_profile(profile_id):
     profile = get_profile(profile_id)
     if not profile:
         return jsonify(error="Face profile not found."), 404
-    training_purpose = "body" if is_global_body_profile(profile_id) else "identity"
+    default_purpose = "body" if is_global_body_profile(profile_id) else "identity"
+    training_purpose = (request.form.get("purpose") or default_purpose).strip().lower()
+    if training_purpose not in {"identity", "body", "expression", "angle"}:
+        return jsonify(error="Training purpose must be identity, body, expression or angle."), 400
+    if is_global_body_profile(profile_id) and training_purpose != "body":
+        return jsonify(error="The reserved shared profile can only train the body component."), 400
+    if not is_global_body_profile(profile_id) and training_purpose == "identity" and request.form.get("purpose") == "body":
+        return jsonify(error="Choose the body purpose to train a separate body component."), 400
     try:
         eligible_training_images = _eligible_profile_training_images(profile_id, training_purpose)
     except Exception:
@@ -2486,6 +2497,7 @@ def api_train_face_profile(profile_id):
                     "steps": str(steps),
                     "resolution": str(resolution),
                     "training_method": training_method,
+                    "purpose": training_purpose,
                 },
                 files=files, timeout=(15, 90),
             )
@@ -2511,14 +2523,15 @@ def api_train_face_profile(profile_id):
         )), 400
 
     job_id = uuid.uuid4().hex
-    update_profile(
-        profile_id, local_training_state="running", local_training_job_id=job_id,
-        local_training_error=None, local_model_ready=False,
-    )
+    if training_purpose == "identity" or is_global_body_profile(profile_id):
+        update_profile(
+            profile_id, local_training_state="running", local_training_job_id=job_id,
+            local_training_error=None, local_model_ready=False,
+        )
     with LOCAL_TRAIN_JOBS_LOCK:
-        LOCAL_TRAIN_JOBS[job_id] = {"status": "running", "profile_id": profile_id}
-    TRAINING_POOL.submit(_run_local_training, profile_id, steps, resolution, job_id)
-    return jsonify(status="running", backend="local", training_method=training_method, job_id=job_id, message="Local face training has started."), 202
+        LOCAL_TRAIN_JOBS[job_id] = {"status": "running", "profile_id": profile_id, "purpose": training_purpose}
+    TRAINING_POOL.submit(_run_local_training, profile_id, steps, resolution, job_id, training_purpose)
+    return jsonify(status="running", backend="local", purpose=training_purpose, training_method=training_method, job_id=job_id, message=f"Local {training_purpose} LoRA training has started."), 202
 
 
 @app.post("/api/face-profiles/<profile_id>/sync-cloud-lora")
