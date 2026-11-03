@@ -153,6 +153,7 @@ def validate_animatediff_adapter(adapter_dir):
 ANIMATEDIFF_ALLOW_PATTERNS = (
     "config.json",
     "diffusion_pytorch_model.safetensors",
+    "diffusion_pytorch_model.fp16.safetensors",
 )
 
 
@@ -162,8 +163,11 @@ SD15_ALLOW_PATTERNS = (
     "tokenizer/*",
     "text_encoder/config.json",
     "text_encoder/model.safetensors",
+    "text_encoder/model.fp16.safetensors",
     "unet/config.json",
     "unet/diffusion_pytorch_model.safetensors",
+    "unet/diffusion_pytorch_model.fp16.safetensors",
     "vae/config.json",
     "vae/diffusion_pytorch_model.safetensors",
+    "vae/diffusion_pytorch_model.fp16.safetensors",
 )
