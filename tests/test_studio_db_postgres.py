@@ -115,11 +115,14 @@ def test_face_dataset_job_lifecycle_and_saved_asset_persistence(postgres_databas
             asset_type="image", title="Saved source test", filename="saved-source.png",
             mime_type="image/png", media_data=b"saved-image-placeholder",
             prompt="integration source", backend="cpu", generation_mode="txt2img",
+            generation_metadata={"seed": 1234, "steps": 25, "width": 512, "height": 768},
         )
         asset_id = asset["id"]
         restored = studio_db.get_asset(asset_id, include_content=True)
         assert restored["asset_type"] == "image"
         assert restored["media_data"] == b"saved-image-placeholder"
+        assert restored["generation_metadata"]["seed"] == 1234
+        assert restored["generation_metadata"]["width"] == 512
     finally:
         if asset_id:
             studio_db.delete_asset(asset_id)
