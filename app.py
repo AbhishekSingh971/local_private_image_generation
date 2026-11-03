@@ -3527,7 +3527,9 @@ def generate_video():
                                      "face_profile_id": profile_id, "motion_adapter": "animatediff",
                                      "strategy_id": prompt_plan["strategy_id"],
                                      "strategy_version": prompt_plan["strategy_version"],
-                                     "prompt_provider": prompt_plan["provider"]},
+                                     "prompt_provider": prompt_plan["provider"],
+                                     "face_angle": face_angle, "face_expression": face_expression,
+                                     "component_adapters": getattr(video_pipe, "_private_video_component_adapter_status", {})},
             )
         except RuntimeError as exc:
             _set_generation_progress(
