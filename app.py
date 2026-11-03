@@ -3305,6 +3305,7 @@ def api_generation_prompt_preview():
 def generate():
     try:
         prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1200)
+        user_prompt = prompt
         negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = None  # selected server-side after reference and task context are known
@@ -3357,12 +3358,23 @@ def generate():
         return jsonify(error="Select a face profile before using its body component."), 400
     if use_profile_body_component and use_global_body_model:
         return jsonify(error="Choose either the shared global body model or this profile’s body component, not both at once."), 400
-    if (face_angle or face_expression) and not profile_id:
-        return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
     if face_angle:
         prompt += ", head angle: " + angle_prompts[face_angle]
     if face_expression:
         prompt += ", facial expression: " + expression_prompts[face_expression]
+
+    # The trigger token is mandatory for a trained LoRA: FaceDataset was trained
+    # with the caption prefix "a photo of {token} person". Without it, the right
+    # weights can be loaded but the identity can still be weakly activated.
+    try:
+        prompt, face_prompt_matrix = build_face_identity_prompt(
+            prompt,
+            profile_token=profile.get("token") if profile else None,
+            profile_description=profile.get("description", "") if profile else "",
+        )
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    face_identity_mode = face_prompt_matrix.get("mode", "base_prompt")
     if use_global_body_model:
         try:
             body_profile = ensure_global_body_profile()
@@ -3377,8 +3389,8 @@ def generate():
         except (RuntimeError, ValueError) as exc:
             return jsonify(error=str(exc)), 400
 
-    if len(prompt) > 1200:
-        return jsonify(error="The prompt plus face/body controls exceeds 1200 characters. Shorten the text prompt."), 400
+    if len(prompt) > 2400:
+        return jsonify(error="The expanded prompt exceeds 2400 characters after face/body controls. Shorten the original prompt."), 400
 
     image_file = request.files.get("image")
     pose_file = request.files.get("pose_control_image")
@@ -3419,6 +3431,8 @@ def generate():
             prompt, negative_prompt, task="image",
             context={"profile_id": profile_id or "global", "full_body": image_preset == "full_body_photo",
                      "face_angle": face_angle, "face_expression": face_expression,
+                     "face_matrix": face_prompt_matrix,
+                     "face_identity_mode": face_identity_mode,
                      "model_family": "sd15",
                      "backend_class": "cloud" if backend == "cloud_gpu" else backend,
                      "control_mode": "body_openpose" if pose_control_image is not None else ("img2img" if init_image is not None else "txt2img"),
@@ -3499,6 +3513,14 @@ def generate():
                 cloud_component_status = json.loads(response.headers.get("X-Component-Adapter-Status", "{}"))
             except (TypeError, ValueError):
                 cloud_component_status = {"angle": "unknown", "expression": "unknown"}
+            cloud_identity_status = response.headers.get("X-Face-Identity-Adapter", "not_reported")
+            if profile_id and cloud_identity_status != "loaded":
+                output_path.unlink(missing_ok=True)
+                return jsonify(error=(
+                    "GHive did not confirm that the selected face identity LoRA was loaded. "
+                    "Update/restart gpu_worker.py, sync this face LoRA to GHive, and retry. "
+                    "The image was not saved as a successful identity generation."
+                )), 502
             try:
                 _resize_image_file(output_path, output_max_edge)
             except Exception as exc:
@@ -3506,9 +3528,13 @@ def generate():
                 return jsonify(error=f"Could not resize image to the selected output resolution: {exc}"), 500
             try:
                 asset = _persist_generated_asset(
-                    "image", filename, title=title, prompt=prompt, negative_prompt=effective_negative,
+                    "image", filename, title=title, prompt=user_prompt, negative_prompt=effective_negative,
                     profile=profile, backend="cloud_gpu", generation_mode=mode,
                     generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
+                                         "effective_prompt": effective_prompt,
+                                         "face_identity_mode": face_identity_mode,
+                                         "face_identity_adapter": cloud_identity_status,
+                                         "face_prompt_matrix": face_prompt_matrix,
                                          "image_preset": image_preset, "face_profile_id": profile_id,
                                          "use_global_body_model": use_global_body_model,
                                          "use_profile_body_component": use_profile_body_component,
@@ -3535,6 +3561,9 @@ def generate():
                 mode=mode,
                 seed=seed,
                 face_profile=profile["name"] if profile else None,
+                face_identity_mode=face_identity_mode,
+                face_identity_adapter=cloud_identity_status,
+                face_prompt_matrix=face_prompt_matrix,
                 backend="cloud_gpu", message="Generated on the selected cloud GPU and saved to the database library.",
             )
 
@@ -3551,6 +3580,9 @@ def generate():
                 face_angle=face_angle, face_expression=face_expression,
                 use_profile_body_component=use_profile_body_component,
             )
+            identity_adapter_status = getattr(pipeline, "_private_identity_adapter_status", "not_selected")
+            if profile_id and identity_adapter_status != "loaded":
+                raise RuntimeError("The selected trained face identity adapter was not loaded; generation was stopped.")
             generator_device = "cuda" if backend == "local_gpu" else "cpu"
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=5,
@@ -3613,9 +3645,13 @@ def generate():
         )
         try:
             asset = _persist_generated_asset(
-                "image", filename, title=title, prompt=prompt, negative_prompt=effective_negative,
+                "image", filename, title=title, prompt=user_prompt, negative_prompt=effective_negative,
                 profile=profile, backend=backend, generation_mode=mode,
                 generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
+                                     "effective_prompt": effective_prompt,
+                                     "face_identity_mode": face_identity_mode,
+                                     "face_identity_adapter": identity_adapter_status,
+                                     "face_prompt_matrix": face_prompt_matrix,
                                      "image_preset": image_preset, "face_profile_id": profile_id,
                                      "use_global_body_model": use_global_body_model,
                                      "use_profile_body_component": use_profile_body_component,
@@ -3646,6 +3682,9 @@ def generate():
             mode="img2img" if init_image is not None else "txt2img",
             seed=seed,
             face_profile=profile["name"] if profile else None,
+            face_identity_mode=face_identity_mode,
+            face_identity_adapter=identity_adapter_status,
+            face_prompt_matrix=face_prompt_matrix,
             backend=backend, message=message,
         )
     finally:
