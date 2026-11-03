@@ -32,7 +32,7 @@ from flask import Flask, request, send_from_directory, send_file, jsonify, rende
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
-from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_generation import build_generation_prompts, fit_sd15_prompt, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from model_integrity import validate_animatediff_adapter, validate_sd15_model
 from face_profiles import (
     DATA_DIR,
@@ -1401,37 +1401,45 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
     use_face_lora = bool(profile and profile_ready_for_backend(job["profile_id"], lora_backend))
     profile_id_for_generation = job["profile_id"] if use_face_lora else None
     dataset_type = job["dataset_type"]
-    identity_instruction = (
-        "Preserve the exact recognizable identity from the input photo: same adult person, facial proportions, eye spacing, nose, lips, jawline, skin tone, apparent age, and hairstyle. Keep natural photorealistic skin texture and lighting. Do not change gender presentation, ethnicity, makeup style, hair, or background unnecessarily. "
-    )
     if dataset_type == "face_angles":
         yaw = float(target["yaw"])
         pitch = float(target["pitch"])
-        pose_instruction = (
-            f"MANDATORY VISIBLE HEAD ROTATION: yaw {yaw:+.0f} degrees and pitch {pitch:+.0f} degrees. "
-            + target["prompt"] + ". "
-            + "This must be a genuinely different head pose, not a frontal face with eyes looking sideways. Rotate the skull, nose, mouth, chin, and both ears together. "
-            + "For a left turn, the nose points toward the subject's own left; for a right turn, it points toward the subject's own right. "
-            + "At 30 degrees show clear facial asymmetry; at 55 degrees the far eye is only partly visible; at 90 degrees show a true side silhouette with only one eye visible. "
-            + "Keep the same recognizable person, but do not preserve the source's frontal head direction when it conflicts with this target. "
+        abs_yaw = abs(yaw)
+        if abs_yaw < 15:
+            view_instruction = "front-facing view"
+            direction_instruction = "nose points toward the camera"
+        else:
+            direction = "right" if yaw > 0 else "left"
+            if abs_yaw >= 75:
+                view_instruction = "true side profile with only the near eye visible"
+            elif abs_yaw >= 40:
+                view_instruction = "three-quarter view with the far eye partly visible"
+            else:
+                view_instruction = "slight three-quarter view with both eyes visible"
+            direction_instruction = f"head turned {abs_yaw:.0f} degrees toward the subject's {direction}; nose points {direction}"
+        pitch_instruction = (
+            "chin slightly raised" if pitch >= 8
+            else "chin lowered" if pitch <= -8
+            else ""
+        )
+        prompt = (
+            "Same adult person as the reference; preserve identity, face shape, eyes, nose, lips, jawline, skin tone and hairstyle. "
+            f"{view_instruction}: {direction_instruction}. {pitch_instruction}. "
+            "Photorealistic close head-and-shoulders portrait, natural skin texture and lighting."
         )
         strength = float(target["strength"])
     else:
         yaw = pitch = None
-        pose_instruction = (
-            "Keep the source head direction, camera angle, head tilt, hair, face shape, and lighting unchanged. "
-            "Change the facial expression only: " + target["prompt"] + ". "
+        prompt = (
+            "Same adult person as the reference; preserve identity, face shape, eyes, nose, lips, jawline and hairstyle. "
+            f"Keep the same head direction and change only the facial expression: {target['prompt']}. "
+            "Photorealistic close portrait, natural skin texture and lighting."
         )
         strength = float(target["strength"])
-    prompt = identity_instruction + pose_instruction + "Photorealistic close head-and-shoulders DSLR portrait, realistic anatomy, no illustration."
     negative_prompt = (
-        "different person, identity drift, changed face shape, different eyes, different nose, different lips, changed hairstyle, "
-        "frontal face when a side profile is requested, wrong head direction, looking only with the eyes, duplicate face, "
-        "child, elderly face, cartoon, anime, illustration, CGI, 3D render, plastic skin, distorted features, asymmetrical eyes, "
-        "blur, watermark, logo, text, frame"
+        "different person, altered face, changed hairstyle, wrong head direction, frontal view, eyes looking sideways, "
+        "duplicate face, cartoon, anime, CGI, plastic skin, distortion, blur, text, watermark"
     )
-    if len(prompt) > 1200:
-        prompt = prompt[:1190]
     width, height = resolve_image_dimensions("square")
     init_image = ImageOps.fit(source_image.convert("RGB"), (width, height), method=Image.Resampling.LANCZOS)
     seed = (int(task_id[:8], 16) + (target_index + 1) * 7919) % (2**31 - 1)
@@ -1457,6 +1465,7 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
                 "strength": str(strength), "seed": str(seed), "task_id": task_id,
                 "aspect_ratio": "square", "image_preset": "photorealistic",
                 "use_global_body_model": "false",
+                "prompt_is_final": "true",
             }
             if profile_id_for_generation:
                 data["face_profile_id"] = profile_id_for_generation
@@ -1494,6 +1503,8 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
         pipeline = _load_cpu_or_gpu_pipeline(pipeline_mode_for_target, profile_id_for_generation, backend)
         generator_device = "cuda" if backend == "local_gpu" else "cpu"
         effective_prompt, effective_negative = build_generation_prompts(prompt, negative_prompt, "photorealistic", has_reference_image=True)
+        effective_prompt = fit_sd15_prompt(pipeline.tokenizer, effective_prompt)
+        effective_negative = fit_sd15_prompt(pipeline.tokenizer, effective_negative)
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="running", progress=4,
             total_steps=22, stage="denoising", message="Generating " + target["label"] + " with explicit pose targets…",
