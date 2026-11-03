@@ -15,6 +15,11 @@
         <div><label for="videoFrames">Frames</label><select id="videoFrames" name="frames"><option value="8">8 · shortest</option><option value="16" selected>16 · starting point</option><option value="24">24 · longer</option></select></div>
         <div><label for="videoSteps">Inference steps</label><select id="videoSteps" name="steps"><option value="5">5</option><option value="8">8</option><option value="12" selected>12 · start here</option><option value="16">16</option><option value="20">20 · slower</option></select></div>
       </div>
+      <div class="twocol">
+        <div><label for="videoFps">Playback FPS</label><select id="videoFps" name="fps"><option value="6">6 · slower motion</option><option value="8" selected>8 · AnimateDiff baseline</option><option value="12">12 · faster playback</option></select></div>
+        <div><label for="videoSeed">Seed <span class="optional">optional</span></label><input id="videoSeed" name="seed" type="number" min="0" max="2147483647" step="1" placeholder="Random seed"></div>
+      </div>
+      <p class="field-help">Save a seed to reproduce the same starting noise and compare prompt or setting changes. The same seed does not guarantee identical output across different model versions or software environments. FPS changes playback speed, not the number of generated motion frames.</p>
       <label for="videoTitle">Save as</label><input id="videoTitle" name="title" type="text" maxlength="160" placeholder="e.g. Cinematic turn 01">
       <button type="submit" id="videoButton">Generate video</button>
       <div id="videoStatus" class="status" role="status" aria-live="polite"></div>
