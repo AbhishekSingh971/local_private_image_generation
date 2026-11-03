@@ -1174,6 +1174,21 @@ def api_clear_global_body_training_data():
 
         filenames = [item.name for item in dataset_images(GLOBAL_BODY_PROFILE_ID)]
         staged = _stage_profile_dataset_files(GLOBAL_BODY_PROFILE_ID, filenames)
+        remote_cleanup = "not_configured"
+        remote_cleanup_error = ""
+        if cloud_worker_configured():
+            try:
+                cloud_worker_request("DELETE", "/api/remote/global-body-model", timeout=(10, 30))
+                remote_cleanup = "deleted"
+            except RuntimeError as remote_exc:
+                # A live remote training job must finish before either copy is cleared.
+                if "HTTP 409" in str(remote_exc):
+                    _restore_staged_profile_files(staged)
+                    return jsonify(error=str(remote_exc)), 409
+                # The local data can still be safely cleared. The UI reports that a
+                # disconnected/older worker may need this action repeated after reconnect.
+                remote_cleanup = "unavailable"
+                remote_cleanup_error = str(remote_exc)[:600]
         try:
             result = clear_face_profile_training_data(GLOBAL_BODY_PROFILE_ID)
         except Exception:
@@ -1203,7 +1218,14 @@ def api_clear_global_body_training_data():
             photos_deleted=int(result.get("photos_deleted", 0)),
             groups_deleted=int(result.get("groups_deleted", 0)),
             adapters_deleted=int(result.get("artifacts_deleted", 0)),
-            message="Shared body training data and saved adapter artifacts were cleared. The shared profile and globalbody trigger token were preserved.",
+            remote_cleanup=remote_cleanup,
+            remote_cleanup_error=remote_cleanup_error,
+            message=(
+                "Shared body training data and saved adapter artifacts were cleared. "
+                "The shared profile and globalbody trigger token were preserved."
+                + (" GHive worker adapter and photos were also removed." if remote_cleanup == "deleted" else "")
+                + (" GHive cleanup could not be confirmed: " + remote_cleanup_error if remote_cleanup == "unavailable" else "")
+            ),
         )
     except Exception:
         app.logger.exception("Could not clear shared body training data")
