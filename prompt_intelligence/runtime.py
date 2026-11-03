@@ -36,7 +36,7 @@ def _strategy_for(task: str, context: Mapping[str, Any]) -> str:
         candidates = VIDEO_STRATEGIES
     else:
         candidates = ["baseline"]
-        if context.get("profile_id"):
+        if context.get("profile_id") not in (None, "", "global"):
             candidates.append("identity_guard")
         if context.get("full_body"):
             candidates.append("full_body_guard")
