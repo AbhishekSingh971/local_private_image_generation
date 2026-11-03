@@ -2514,7 +2514,7 @@ def api_train_face_profile(profile_id):
             profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
             runpod_training_error=None, runpod_model_ready=False,
         )
-        return jsonify(status="running", backend="runpod", training_method=training_method, job_id=job_id, message="Cloud GPU face training has started."), 202
+        return jsonify(status="running", backend="runpod", purpose=training_purpose, training_method=training_method, job_id=job_id, message=f"Cloud GPU {training_purpose} LoRA training has started."), 202
 
     if not torch.cuda.is_available():
         return jsonify(error=(
@@ -2532,6 +2532,36 @@ def api_train_face_profile(profile_id):
         LOCAL_TRAIN_JOBS[job_id] = {"status": "running", "profile_id": profile_id, "purpose": training_purpose}
     TRAINING_POOL.submit(_run_local_training, profile_id, steps, resolution, job_id, training_purpose)
     return jsonify(status="running", backend="local", purpose=training_purpose, training_method=training_method, job_id=job_id, message=f"Local {training_purpose} LoRA training has started."), 202
+
+
+@app.get("/api/face-profiles/<profile_id>/component-train-status/<job_id>")
+def api_component_train_status(profile_id, job_id):
+    """Read a purpose-specific LoRA job without changing the identity model status."""
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id or ""):
+        return jsonify(error="Invalid training job ID."), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile not found."), 404
+    backend = (request.args.get("backend") or "local").strip().lower()
+    if backend == "local":
+        with LOCAL_TRAIN_JOBS_LOCK:
+            job = dict(LOCAL_TRAIN_JOBS.get(job_id) or {})
+        if not job or job.get("profile_id") != profile_id:
+            return jsonify(error="Component training job not found."), 404
+        return jsonify(job=job)
+    if backend in {"cloud_gpu", "runpod"}:
+        try:
+            job = cloud_worker_request("GET", f"/api/remote/jobs/{job_id}", timeout=(8, 12)).json()
+        except RuntimeError as exc:
+            return jsonify(error=str(exc)), 502
+        if job.get("profile_id") != profile_id:
+            return jsonify(error="Component training job does not belong to this profile."), 404
+        return jsonify(job=job)
+    return jsonify(error="Backend must be local or cloud_gpu."), 400
 
 
 @app.post("/api/face-profiles/<profile_id>/sync-cloud-lora")
