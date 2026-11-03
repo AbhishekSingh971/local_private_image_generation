@@ -3205,7 +3205,11 @@ def generate():
                     kwargs["ip_adapter_image"] = init_image
             if pose_control_image is not None:
                 kwargs["control_image"] = pose_control_image
-                kwargs["controlnet_conditioning_scale"] = float(os.environ.get("BODY_POSE_CONTROLNET_SCALE", "1.0"))
+                try:
+                    pose_scale = float(os.environ.get("BODY_POSE_CONTROLNET_SCALE", "1.0"))
+                except ValueError:
+                    pose_scale = 1.0
+                kwargs["controlnet_conditioning_scale"] = max(0.0, min(2.0, pose_scale))
             result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=95,
