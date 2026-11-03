@@ -106,7 +106,8 @@ INPUT_DIR = DATA_DIR / "inputs"
 OUTPUT_DIR = DATA_DIR / "outputs"
 VIDEO_OUTPUT_DIR = DATA_DIR / "videos"
 MODEL_DIR = APP_DIR / "models" / "stable-diffusion-v1-5"
-MOTION_DIR = APP_DIR / "models" / "animatediff-motion-adapter-v1-5-2"
+MOTION_PATH_OVERRIDE = os.environ.get("ANIMATEDIFF_MODEL_PATH", "").strip()
+MOTION_DIR = Path(MOTION_PATH_OVERRIDE).expanduser() if MOTION_PATH_OVERRIDE else APP_DIR / "models" / "animatediff-motion-adapter-v1-5-2"
 for folder in (INPUT_DIR, OUTPUT_DIR, VIDEO_OUTPUT_DIR, MODEL_DIR, LORA_DIR):
     folder.mkdir(parents=True, exist_ok=True)
 
