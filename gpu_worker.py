@@ -740,39 +740,40 @@ def remote_generate_video():
                     pass
                 VIDEO_PIPE.to("cuda")
                 VIDEO_ACTIVE_LORA = None
-            if VIDEO_ACTIVE_LORA != profile_id:
+            requested_adapters = (profile_id, face_angle, face_expression)
+            if VIDEO_ACTIVE_LORA != requested_adapters:
                 if VIDEO_ACTIVE_LORA is not None:
                     VIDEO_PIPE.unload_lora_weights()
-                    VIDEO_ACTIVE_LORA = None
-                requested_adapters = (profile_id, face_angle, face_expression)
-                if VIDEO_ACTIVE_LORA != requested_adapters:
-                    if VIDEO_ACTIVE_LORA is not None:
-                        VIDEO_PIPE.unload_lora_weights()
-                    adapter_names = []
-                    adapter_weights = []
-                    if profile_id:
-                        VIDEO_PIPE.load_lora_weights(str(model_path(profile_id)), adapter_name="face_identity")
-                        adapter_names.append("face_identity")
-                        adapter_weights.append(1.0)
-                        for component_kind, selected_value in (("angle", face_angle), ("expression", face_expression)):
-                            if not selected_value:
-                                continue
-                            component_path = model_path(profile_id) / "components" / component_kind
-                            component_weights = (component_path / "pytorch_lora_weights.safetensors", component_path / "pytorch_lora_weights.bin")
-                            if any(path.is_file() for path in component_weights):
-                                adapter_name = "face_" + component_kind
-                                VIDEO_PIPE.load_lora_weights(str(component_path), adapter_name=adapter_name)
-                                adapter_names.append(adapter_name)
-                                env_key = "FACE_ANGLE_LORA_SCALE" if component_kind == "angle" else "FACE_EXPRESSION_LORA_SCALE"
-                                default_weight = "0.45" if component_kind == "angle" else "0.55"
-                                try:
-                                    weight = float(os.environ.get(env_key, default_weight))
-                                except ValueError:
-                                    weight = float(default_weight)
-                                adapter_weights.append(max(0.0, min(1.0, weight)))
-                    if adapter_names:
-                        VIDEO_PIPE.set_adapters(adapter_names, adapter_weights=adapter_weights)
-                    VIDEO_ACTIVE_LORA = requested_adapters
+                adapter_names = []
+                adapter_weights = []
+                component_status = {"angle": "not_requested", "expression": "not_requested"}
+                if profile_id:
+                    VIDEO_PIPE.load_lora_weights(str(model_path(profile_id)), adapter_name="face_identity")
+                    adapter_names.append("face_identity")
+                    adapter_weights.append(1.0)
+                    for component_kind, selected_value in (("angle", face_angle), ("expression", face_expression)):
+                        if not selected_value:
+                            continue
+                        component_path = model_path(profile_id) / "components" / component_kind
+                        component_weights = (component_path / "pytorch_lora_weights.safetensors", component_path / "pytorch_lora_weights.bin")
+                        if any(path.is_file() for path in component_weights):
+                            adapter_name = "face_" + component_kind
+                            VIDEO_PIPE.load_lora_weights(str(component_path), adapter_name=adapter_name)
+                            adapter_names.append(adapter_name)
+                            env_key = "FACE_ANGLE_LORA_SCALE" if component_kind == "angle" else "FACE_EXPRESSION_LORA_SCALE"
+                            default_weight = "0.45" if component_kind == "angle" else "0.55"
+                            try:
+                                weight = float(os.environ.get(env_key, default_weight))
+                            except ValueError:
+                                weight = float(default_weight)
+                            adapter_weights.append(max(0.0, min(1.0, weight)))
+                            component_status[component_kind] = "loaded"
+                        else:
+                            component_status[component_kind] = "not_trained_prompt_only"
+                if adapter_names:
+                    VIDEO_PIPE.set_adapters(adapter_names, adapter_weights=adapter_weights)
+                VIDEO_PIPE._private_video_component_adapter_status = component_status
+                VIDEO_ACTIVE_LORA = requested_adapters
         _set_generation_progress(task_id, asset_type="video", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting video denoising steps on the cloud GPU…")
         def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
             scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
