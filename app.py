@@ -3018,6 +3018,8 @@ def generate_video():
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
+        fps = int(request.form.get("fps", "8"))
+        seed = resolve_generation_seed(request.form.get("seed"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
         backend = _resolve_compute_backend(request.form)
@@ -3028,8 +3030,8 @@ def generate_video():
         return jsonify(error=str(exc) or "Invalid video settings."), 400
     if not prompt:
         return jsonify(error="Enter a video prompt."), 400
-    if not 5 <= steps <= 20 or frames not in (8, 16, 24):
-        return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
+    if not 5 <= steps <= 20 or frames not in (8, 16, 24) or fps not in (6, 8, 12):
+        return jsonify(error="Choose 5–20 steps, 8/16/24 frames, and 6/8/12 FPS."), 400
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
@@ -3054,7 +3056,11 @@ def generate_video():
                 task_id, asset_type="video", backend="cloud_gpu", status="running", progress=2,
                 total_steps=steps, stage="connecting", message="Connecting to cloud GPU worker…",
             )
-            data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames), "task_id": task_id}
+            data = {
+                "prompt": prompt, "negative_prompt": negative_prompt,
+                "steps": str(steps), "frames": str(frames), "fps": str(fps),
+                "seed": str(seed), "task_id": task_id,
+            }
             if profile_id:
                 data["face_profile_id"] = profile_id
             try:
@@ -3146,7 +3152,7 @@ def generate_video():
                     message=f"Generating video · step {current} of {scheduler_steps} · {frames} frames",
                 )
                 return callback_kwargs
-            generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+            generator = torch.Generator(device="cuda").manual_seed(seed)
             result = video_pipe(
                 prompt=prompt, negative_prompt=negative_prompt or None,
                 num_frames=frames, num_inference_steps=steps,
@@ -3159,7 +3165,7 @@ def generate_video():
             )
             filename = f"{uuid.uuid4().hex}.mp4"
             output_path = VIDEO_OUTPUT_DIR / filename
-            export_to_video(result.frames[0], str(output_path), fps=8)
+            export_to_video(result.frames[0], str(output_path), fps=fps)
             _resize_video_file(output_path, output_max_edge)
         except Exception as exc:
             _set_generation_progress(
