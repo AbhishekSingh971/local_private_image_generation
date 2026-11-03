@@ -61,6 +61,7 @@ from video_generation import validate_video_settings
 from image_quality import assess_image_quality
 from safe_diagnostics import format_exception_detail
 from prompt_intelligence.feedback_service import record_generation_feedback
+from prompt_intelligence.runtime import prepare_generation_prompt, PromptEngineError
 from prompt_intelligence.feedback_store import list_feedback, list_feedback_for_source
 
 from studio_db import (
@@ -829,9 +830,11 @@ def api_asset_feedback(asset_id):
             profile_id=asset.get("profile_id"),
             source_id=asset_id, source_type="asset",
             task=task,
-            configuration_id=f"{mode}:{backend_class}"[:120],
+            configuration_id=f"{mode}:{backend_class}:{(asset.get('generation_metadata') or {}).get('strategy_id', 'baseline')}"[:120],
             context={"task": task, "model_family": "animatediff_sd15" if task == "video" else "sd15",
-                     "backend_class": backend_class, "control_mode": mode},
+                     "backend_class": backend_class, "control_mode": mode,
+                     "profile_id": asset.get("profile_id") or "global",
+                     "strategy_version": (asset.get("generation_metadata") or {}).get("strategy_version", "v2")},
             human_scores=scores,
             technical_quality=quality_report,
             requested_dimensions=list(scores),
@@ -2640,9 +2643,10 @@ def api_face_train_status(profile_id):
 
 
 def _load_cpu_or_gpu_pipeline(
-    mode, profile_id, compute_backend="cpu", *, use_global_body_model=False
+    mode, profile_id, compute_backend="cpu", *, use_global_body_model=False,
+    face_angle=None, face_expression=None,
 ):
-    """Load one face identity and optionally the reusable shared-body LoRA."""
+    """Load identity plus optional, independently trained component LoRAs."""
     global pipe, pipeline_mode, pipeline_device, active_lora, model_error
     global video_pipe, active_video_lora
     from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
@@ -2749,7 +2753,7 @@ def _load_cpu_or_gpu_pipeline(
                 model_error = str(exc)
                 raise
 
-        requested_loras = (profile_id or None, bool(use_global_body_model))
+        requested_loras = (profile_id or None, bool(use_global_body_model), face_angle or "", face_expression or "")
         if active_lora != requested_loras:
             if active_lora is not None:
                 pipe.unload_lora_weights()
@@ -2770,8 +2774,30 @@ def _load_cpu_or_gpu_pipeline(
                 pipe.load_lora_weights(str(body_path), adapter_name="global_body")
                 adapter_names.append("global_body")
                 adapter_weights.append(0.75)
+            component_status = {"angle": "not_requested", "expression": "not_requested"}
+            if profile_id:
+                for component_kind, selected_value in (("angle", face_angle), ("expression", face_expression)):
+                    if not selected_value:
+                        continue
+                    component_path = model_path(profile_id) / "components" / component_kind
+                    component_files = (component_path / "pytorch_lora_weights.safetensors", component_path / "pytorch_lora_weights.bin")
+                    if not component_path.is_dir() or not any(path.is_file() for path in component_files):
+                        component_status[component_kind] = "not_trained_prompt_only"
+                        continue
+                    adapter_name = "face_" + component_kind
+                    pipe.load_lora_weights(str(component_path), adapter_name=adapter_name)
+                    adapter_names.append(adapter_name)
+                    env_key = "FACE_ANGLE_LORA_SCALE" if component_kind == "angle" else "FACE_EXPRESSION_LORA_SCALE"
+                    default_weight = "0.45" if component_kind == "angle" else "0.55"
+                    try:
+                        component_weight = float(os.environ.get(env_key, default_weight))
+                    except ValueError:
+                        component_weight = float(default_weight)
+                    adapter_weights.append(max(0.0, min(1.0, component_weight)))
+                    component_status[component_kind] = "loaded"
             if adapter_names:
                 pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
+            pipe._private_component_adapter_status = component_status
             active_lora = requested_loras
         return pipe
 
@@ -2893,9 +2919,18 @@ def generate():
     else:
         strength = 0.38 if profile_id else 0.46
 
-    effective_prompt, effective_negative = build_generation_prompts(
-        prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
-    )
+    try:
+        prompt_plan = prepare_generation_prompt(
+            prompt, negative_prompt, task="image",
+            context={"profile_id": profile_id or "global", "full_body": image_preset == "full_body_photo",
+                     "face_angle": face_angle, "face_expression": face_expression,
+                     "control_mode": "reference" if init_image is not None else "text"},
+            preset=image_preset, has_reference_image=init_image is not None,
+        )
+    except PromptEngineError as exc:
+        return jsonify(error=str(exc)), 502
+    effective_prompt = prompt_plan["prompt"]
+    effective_negative = prompt_plan["negative_prompt"]
 
     _set_generation_progress(
         task_id, asset_type="image", backend=backend, status="running", progress=1,
@@ -2920,6 +2955,7 @@ def generate():
                 "steps": str(steps), "strength": str(strength), "seed": str(seed),
                 "use_global_body_model": "true" if use_global_body_model else "false",
                 "task_id": task_id, "aspect_ratio": aspect_ratio, "image_preset": image_preset,
+                "face_angle": face_angle, "face_expression": face_expression,
                 "prompt_is_final": "true",
             }
             if profile_id:
@@ -2958,7 +2994,11 @@ def generate():
                     profile=profile, backend="cloud_gpu", generation_mode="img2img" if init_image is not None else "txt2img",
                     generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
                                          "image_preset": image_preset, "face_profile_id": profile_id,
-                                         "use_global_body_model": use_global_body_model},
+                                         "use_global_body_model": use_global_body_model,
+                                         "strategy_id": prompt_plan["strategy_id"],
+                                         "strategy_version": prompt_plan["strategy_version"],
+                                         "prompt_provider": prompt_plan["provider"],
+                                         "component_adapters": {"angle": "cloud_worker_pending", "expression": "cloud_worker_pending"},},
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -2988,7 +3028,8 @@ def generate():
                 total_steps=steps, stage="loading_model", message="Loading the image model and selected face…",
             )
             pipeline = _load_cpu_or_gpu_pipeline(
-                mode, profile_id, backend, use_global_body_model=use_global_body_model
+                mode, profile_id, backend, use_global_body_model=use_global_body_model,
+                face_angle=face_angle, face_expression=face_expression,
             )
             generator_device = "cuda" if backend == "local_gpu" else "cpu"
             _set_generation_progress(
@@ -3049,7 +3090,11 @@ def generate():
                 profile=profile, backend=backend, generation_mode="img2img" if init_image is not None else "txt2img",
                 generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
                                      "image_preset": image_preset, "face_profile_id": profile_id,
-                                     "use_global_body_model": use_global_body_model},
+                                     "use_global_body_model": use_global_body_model,
+                                     "strategy_id": prompt_plan["strategy_id"],
+                                     "strategy_version": prompt_plan["strategy_version"],
+                                     "prompt_provider": prompt_plan["provider"],
+                                     "component_adapters": getattr(pipeline, "_private_component_adapter_status", {}),},
             )
         except RuntimeError as exc:
             _set_generation_progress(
@@ -3112,6 +3157,16 @@ def generate_video():
     if backend == "cpu":
         return jsonify(error="Video generation requires a GPU. Turn on GPU acceleration and select an available System GPU or cloud GPU."), 400
 
+    try:
+        prompt_plan = prepare_generation_prompt(
+            prompt, negative_prompt, task="video",
+            context={"profile_id": profile_id or "global", "control_mode": "text_to_video",
+                     "model_family": "animatediff_sd15"},
+        )
+    except PromptEngineError as exc:
+        return jsonify(error=str(exc)), 502
+    prompt = prompt_plan["prompt"]
+    negative_prompt = prompt_plan["negative_prompt"]
     _set_generation_progress(
         task_id, asset_type="video", backend=backend, status="running", progress=1,
         current_step=0, total_steps=steps, stage="starting", message="Preparing your video request…",
@@ -3164,7 +3219,10 @@ def generate_video():
                     "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                     profile=profile, backend="cloud_gpu", generation_mode="animatediff",
                     generation_metadata={"seed": seed, "steps": steps, "frames": frames, "fps": fps,
-                                         "face_profile_id": profile_id, "motion_adapter": "animatediff"},
+                                         "face_profile_id": profile_id, "motion_adapter": "animatediff",
+                                         "strategy_id": prompt_plan["strategy_id"],
+                                         "strategy_version": prompt_plan["strategy_version"],
+                                         "prompt_provider": prompt_plan["provider"]},
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -3267,7 +3325,10 @@ def generate_video():
                 "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                 profile=profile, backend="local_gpu", generation_mode="animatediff",
                 generation_metadata={"seed": seed, "steps": steps, "frames": frames, "fps": fps,
-                                     "face_profile_id": profile_id, "motion_adapter": "animatediff"},
+                                     "face_profile_id": profile_id, "motion_adapter": "animatediff",
+                                     "strategy_id": prompt_plan["strategy_id"],
+                                     "strategy_version": prompt_plan["strategy_version"],
+                                     "prompt_provider": prompt_plan["provider"]},
             )
         except RuntimeError as exc:
             _set_generation_progress(
