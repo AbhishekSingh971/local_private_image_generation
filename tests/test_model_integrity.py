@@ -7,7 +7,9 @@ import pytest
 from model_integrity import (
     REQUIRED_CONFIG_FILES,
     REQUIRED_WEIGHT_OPTIONS,
+    missing_animatediff_adapter_files,
     missing_sd15_model_files,
+    validate_animatediff_adapter,
     validate_sd15_model,
 )
 
@@ -63,3 +65,18 @@ def test_missing_model_directory_is_reported(tmp_path):
     assert missing_sd15_model_files(missing_dir) == ["<model directory>"]
     with pytest.raises(RuntimeError, match="model is incomplete"):
         validate_sd15_model(missing_dir)
+
+
+
+def test_animatediff_adapter_requires_checkpoint_not_just_config(tmp_path):
+    _write_nonempty(tmp_path / "config.json")
+    missing = missing_animatediff_adapter_files(tmp_path)
+    assert missing == ["<valid AnimateDiff safetensors weights>"]
+    with pytest.raises(RuntimeError, match="AnimateDiff MotionAdapter is incomplete"):
+        validate_animatediff_adapter(tmp_path)
+
+
+def test_animatediff_adapter_passes_with_valid_weights(tmp_path):
+    _write_nonempty(tmp_path / "config.json")
+    _write_valid_safetensors(tmp_path / "diffusion_pytorch_model.safetensors")
+    assert validate_animatediff_adapter(tmp_path) == tmp_path
