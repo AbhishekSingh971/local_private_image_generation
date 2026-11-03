@@ -279,8 +279,15 @@ def main():
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        if purpose in {"expression", "angle"} and args.profile_id:
-            # Experimental component adapters must never overwrite the identity LoRA.
+        component_output = (
+            args.profile_id
+            and (
+                purpose in {"expression", "angle"}
+                or (purpose == "body" and args.profile_id != GLOBAL_BODY_PROFILE_ID)
+            )
+        )
+        if component_output:
+            # Non-identity components must never overwrite the identity LoRA.
             output = OUTPUT_ROOT / args.profile_id / "components" / purpose
         else:
             output = OUTPUT_ROOT / args.output_name
