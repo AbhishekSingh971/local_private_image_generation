@@ -817,7 +817,11 @@ def remote_generate_video():
         video_path = local_engine.VIDEO_OUTPUT_DIR / filename
         export_to_video(result.frames[0], str(video_path), fps=fps)
         _set_generation_progress(task_id, asset_type="video", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Video generation completed on the cloud GPU.")
-        return send_file(video_path, mimetype="video/mp4", download_name="generated.mp4")
+        response = send_file(video_path, mimetype="video/mp4", download_name="generated.mp4")
+        response.headers["X-Component-Adapter-Status"] = json.dumps(
+            getattr(VIDEO_PIPE, "_private_video_component_adapter_status", {})
+        )
+        return response
     except Exception as exc:
         _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="Video generation failed on the cloud GPU.")
         message = str(exc)
