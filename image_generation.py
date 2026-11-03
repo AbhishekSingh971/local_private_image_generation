@@ -18,6 +18,31 @@ IMAGE_DIMENSIONS = {
 IMAGE_PRESETS = {"standard", "photorealistic", "full_body_photo"}
 MAX_GENERATION_SEED = (2 ** 31) - 1
 
+# The browser accepts a 1,200-character user prompt. Prompt planning may add
+# reviewed quality, framing, anatomy and identity constraints before it reaches
+# the GPU worker, so remote transport limits must cover the expanded prompt too.
+MAX_REMOTE_PROMPT_CHARS = 2400
+MAX_REMOTE_NEGATIVE_PROMPT_CHARS = 1200
+
+
+def validate_remote_generation_prompts(prompt: str, negative_prompt: str = "") -> tuple[str, str]:
+    """Validate the expanded prompts sent from the app to a remote GPU worker."""
+    positive = str(prompt or "").strip()
+    negative = str(negative_prompt or "").strip()
+    if not positive:
+        raise ValueError(
+            "The cloud GPU worker received an empty prompt. Check that the Prompt field is filled and submitted."
+        )
+    if len(positive) > MAX_REMOTE_PROMPT_CHARS:
+        raise ValueError(
+            f"The expanded prompt exceeds the remote limit of {MAX_REMOTE_PROMPT_CHARS} characters."
+        )
+    if len(negative) > MAX_REMOTE_NEGATIVE_PROMPT_CHARS:
+        raise ValueError(
+            f"The expanded negative prompt exceeds the remote limit of {MAX_REMOTE_NEGATIVE_PROMPT_CHARS} characters."
+        )
+    return positive, negative
+
 
 
 def fit_sd15_prompt(tokenizer, prompt: str, max_tokens: int = 77) -> str:
