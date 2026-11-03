@@ -521,6 +521,13 @@ def _run_async_remote_generation(job_id, form_data, file_data):
                 status_code = response.status_code
                 body = response.get_data()
                 content_type = response.mimetype
+                # Preserve adapter-confirmation headers across the async result
+                # endpoint; the app must verify that GHive actually loaded the
+                # selected identity LoRA before it reports a successful image.
+                response_headers = {
+                    name: value for name, value in response.headers.items()
+                    if name.lower().startswith("x-")
+                }
             if status_code == 429:
                 # Another worker workload acquired the shared GPU lock first.
                 # Keep this task queued instead of failing the face-angle batch.
@@ -538,7 +545,10 @@ def _run_async_remote_generation(job_id, form_data, file_data):
                 return
             with REMOTE_GENERATION_JOBS_LOCK:
                 job = REMOTE_GENERATION_JOBS.get(job_id, {})
-                job.update(status="completed", result=body, content_type=content_type, finished_at=time.time())
+                job.update(
+                    status="completed", result=body, content_type=content_type,
+                    response_headers=response_headers, finished_at=time.time(),
+                )
             return
     except Exception as exc:
         with REMOTE_GENERATION_JOBS_LOCK:
