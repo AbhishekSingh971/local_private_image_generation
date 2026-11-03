@@ -1,6 +1,6 @@
 # Implementation Plan v2 — Reinforced Prompt Intelligence and Identity-Aware Training
 
-**Status:** Planning baseline committed; implementation not yet started on this branch  
+**Status:** Phase 0 source audit documented; runtime baseline tests pending; implementation not yet started on this branch  
 **Base branch:** `feature/unified-prompt-reinforcement-training`  
 **Working branch:** `feature/identity-expression-body-training-v2`
 
@@ -88,12 +88,12 @@ Single user prompt + task + explicit UI settings + profile context
 - Preserve user-specified details and negative constraints. Never silently remove constraints to improve a reward score.
 
 ### A3. Feedback and reward
-- Capture explicit keep/reject/rating feedback and optional dimension-level feedback.
+- Capture explicit keep/reject/rating feedback and optional dimension-level feedback. Existing feedback endpoints and PostgreSQL tables are present, but the current selector is not yet used by generation prompts.
 - Keep dimensions separate: prompt adherence, identity consistency, requested angle/expression/pose accuracy, body consistency, technical image quality, temporal video consistency, and user preference.
 - Normalize each feedback dimension to a documented range and use versioned weights. Do not collapse all dimensions into a single aesthetic score.
 - A candidate with a high aesthetic score but poor prompt adherence or identity consistency must not be treated as a success.
 - Store the selected arm/configuration, context key, feedback provenance, reward components, aggregate reward, model/checkpoint hash, seed, scheduler, CFG, steps, resolution, controls, backend, and software versions.
-- Persist observations and bandit state in PostgreSQL with migrations, idempotency, and safe concurrent updates.
+- Persist observations and bandit state in PostgreSQL with migrations, idempotency, and safe concurrent updates. Audit finding: current observation and bandit-state writes are separate, and current context keys omit profile ID; fix both before using rewards to influence future requests.
 - Start with UCB1 or another documented contextual-bandit baseline over prevalidated arms. Add exploration limits, minimum sample counts, cold-start defaults, and a deterministic fallback.
 - Use only feedback from completed, attributable jobs. Ignore failed/cancelled jobs and incomplete evaluations.
 - Add offline replay/A-B evaluation and a way to disable learning or reset a context's learned statistics.
@@ -108,7 +108,7 @@ Single user prompt + task + explicit UI settings + profile context
 ## 5. Workstream B — Four separate training capabilities
 
 ### B1. Face identity
-- Preserve the current per-profile face LoRA workflow as the identity foundation.
+- Preserve the current per-profile face LoRA workflow as the identity foundation. Audit finding: the existing trainer currently enumerates all profile-folder images, so add dataset-purpose filtering before training to prevent angle/expression samples leaking into identity training by default.
 - Improve dataset review: duplicate detection, blur/occlusion checks, face crop quality, identity consistency checks, and explicit user approval.
 - Track source images separately from generated/synthetic augmentation.
 - Evaluate identity on held-out real reference images and varied prompts.
@@ -129,7 +129,7 @@ Single user prompt + task + explicit UI settings + profile context
 - Evaluate expression accuracy and identity preservation independently, including eyes, mouth, jaw, and cheek deformation.
 
 ### B4. Body type
-- Turn the existing Body Type dataset grouping/filter into a real body-profile and training workflow; do not assume the filter means body training already exists.
+- Extend the existing reserved shared global body profile/LoRA and Body Type dataset workflow; do not create a duplicate global body model. The current feature is a shared caption/prompt-driven body LoRA, not a 3D body scanner. Add an explicit distinction between shared body-style learning and per-person body-shape preservation.
 - Define a body profile associated with a face profile but independently versioned.
 - Capture front, back, side, and three-quarter references where available; record camera/perspective limitations and image provenance.
 - Separate body shape/proportions from pose and movement. Pose changes must not rewrite body-shape identity.
@@ -151,10 +151,10 @@ Single user prompt + task + explicit UI settings + profile context
 ## 7. To-do list and acceptance criteria
 
 ### Phase 0 — Repository and compatibility audit
-- [ ] Inspect current prompt-engine call sites, reward module, UI forms, job models, migrations, local worker, and GHive worker.
-- [ ] Map current angle/expression dataset generation and identify exact extension points.
-- [ ] Confirm base checkpoint and all ControlNet/IP-Adapter/model-family compatibility.
-- [ ] Inventory tests and establish baseline test results before edits.
+- [x] Inspect current prompt-engine call sites, reward module, core job/database models, local worker, and GHive worker. See `docs/PHASE_0_AUDIT.md`.
+- [x] Map current angle/expression dataset generation and identify exact extension points. Existing nine-angle and ten-expression jobs will be extended, not recreated.
+- [ ] Confirm base checkpoint and all ControlNet/IP-Adapter/model-family compatibility before selecting new model assets.
+- [ ] Inventory and execute the full test suite to establish runtime baseline results before source changes. GitHub source inspection alone does not verify tests.
 - **Done when:** a file-level change map and passing/failing baseline are recorded; no existing route or job behavior is changed.
 
 ### Phase 1 — Prompt intelligence and reinforcement foundation
@@ -247,3 +247,8 @@ Single user prompt + task + explicit UI settings + profile context
 5. Integrate the composer only after each component passes independent tests.
 6. Keep all work on this feature branch until the user reviews the results.
 7. Open a pull request only after tests and documentation are complete; do not merge without explicit approval.
+
+
+## 11. Phase 0 audit addendum
+
+The repository audit is recorded in `docs/PHASE_0_AUDIT.md`. It confirms that the current branch already has a structured PromptEngine, reward/evaluation and PostgreSQL feedback modules, feedback endpoints, nine angle targets, ten expression targets, a hidden shared global body LoRA, and local/cloud GPU routing. However, the PromptEngine and bandit selector are not yet connected as an active prompt-selection loop in generation. Existing identity LoRA training enumerates all image files in the profile dataset folder, so purpose-aware dataset selection is a prerequisite. The current global body feature is a shared body-type LoRA, not full 3D person-specific body reconstruction. Runtime tests and model/control compatibility checks remain open.
