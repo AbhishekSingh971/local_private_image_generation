@@ -26,7 +26,10 @@ from flask import Flask, request, jsonify, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
-from image_generation import build_generation_prompts, fit_sd15_prompt, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_generation import (
+    build_generation_prompts, fit_sd15_prompt, resolve_generation_seed,
+    resolve_image_dimensions, validate_image_preset, validate_remote_generation_prompts,
+)
 from video_generation import resolve_video_request, generate_video_segments
 from face_profiles import (
     create_profile,
@@ -642,8 +645,10 @@ def remote_generate():
             raise ValueError("Invalid generation task ID.")
     except (ValueError, TypeError, KeyError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
-    if not prompt or len(prompt) > 1200 or len(negative_prompt) > 600:
-        return jsonify(error="Prompt is required and must be within the allowed length."), 400
+    try:
+        prompt, negative_prompt = validate_remote_generation_prompts(prompt, negative_prompt)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     if not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
         return jsonify(error="Invalid step count or image strength."), 400
     if not torch.cuda.is_available():
