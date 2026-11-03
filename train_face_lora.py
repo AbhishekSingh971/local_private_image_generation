@@ -267,7 +267,11 @@ def main():
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        output = OUTPUT_ROOT / args.output_name
+        if purpose in {"expression", "angle"} and args.profile_id:
+            # Experimental component adapters must never overwrite the identity LoRA.
+            output = OUTPUT_ROOT / args.profile_id / "components" / purpose
+        else:
+            output = OUTPUT_ROOT / args.output_name
         output.mkdir(parents=True, exist_ok=True)
         manifest = {
             "version": 1,
