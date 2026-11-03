@@ -788,6 +788,11 @@ def remote_generate():
         response.headers["X-Face-Identity-Adapter"] = str(
             getattr(pipeline, "_private_identity_adapter_status", "not_selected")
         )
+        response.headers["X-Face-Identity-Reference"] = (
+            "used" if identity_reference_image is not None
+            and getattr(pipeline, "_private_face_ip_adapter_loaded", False)
+            else "not_used"
+        )
         return response
     except RemoteGenerationCancelled:
         _set_generation_progress(
