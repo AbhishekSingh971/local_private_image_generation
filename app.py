@@ -233,6 +233,27 @@ def api_generation_progress(task_id):
     return jsonify(progress)
 
 
+def _generation_component_signature(*, use_global_body_model=False,
+        use_profile_body_component=False, face_angle="", face_expression="", body_pose=False):
+    angle_codes = {"front": "aF", "three_quarter_left": "a3l",
+                   "three_quarter_right": "a3r", "left_profile": "aL",
+                   "right_profile": "aR"}
+    expression_codes = {"neutral": "eN", "smile": "eS", "laugh": "eL",
+                        "serious": "eSe", "surprised": "eSu"}
+    parts = []
+    if use_global_body_model:
+        parts.append("g")
+    if use_profile_body_component:
+        parts.append("b")
+    if body_pose:
+        parts.append("p")
+    if face_angle in angle_codes:
+        parts.append(angle_codes[face_angle])
+    if face_expression in expression_codes:
+        parts.append(expression_codes[face_expression])
+    return "".join(parts) or "none"
+
+
 def _truthy(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -850,7 +871,8 @@ def api_asset_feedback(asset_id):
                      "backend_class": backend_class,
                      "control_mode": "body_openpose" if str(mode).startswith("body_pose") else mode,
                      "profile_id": asset.get("profile_id") or "global",
-                     "strategy_version": (asset.get("generation_metadata") or {}).get("strategy_version", "v2")},
+                     "strategy_version": (asset.get("generation_metadata") or {}).get("strategy_version", "v2"),
+                     "component_signature": (asset.get("generation_metadata") or {}).get("component_signature", "none")},
             human_scores=scores,
             technical_quality=quality_report,
             requested_dimensions=list(scores),
@@ -3060,7 +3082,12 @@ def generate():
                      "face_angle": face_angle, "face_expression": face_expression,
                      "model_family": "sd15",
                      "backend_class": "cloud" if backend == "cloud_gpu" else backend,
-                     "control_mode": "body_openpose" if pose_control_image is not None else ("img2img" if init_image is not None else "txt2img")},
+                     "control_mode": "body_openpose" if pose_control_image is not None else ("img2img" if init_image is not None else "txt2img"),
+                     "component_signature": _generation_component_signature(
+                         use_global_body_model=use_global_body_model,
+                         use_profile_body_component=use_profile_body_component,
+                         face_angle=face_angle, face_expression=face_expression,
+                         body_pose=pose_control_image is not None)},
             preset=image_preset, has_reference_image=init_image is not None,
         )
     except PromptEngineError as exc:
@@ -3145,6 +3172,7 @@ def generate():
                                          "image_preset": image_preset, "face_profile_id": profile_id,
                                          "use_global_body_model": use_global_body_model,
                                          "use_profile_body_component": use_profile_body_component,
+                                         "component_signature": _generation_component_signature(use_global_body_model=use_global_body_model, use_profile_body_component=use_profile_body_component, face_angle=face_angle, face_expression=face_expression, body_pose=pose_control_image is not None),
                                          "strategy_id": prompt_plan["strategy_id"],
                                          "strategy_version": prompt_plan["strategy_version"],
                                          "prompt_provider": prompt_plan["provider"],
@@ -3251,6 +3279,7 @@ def generate():
                                      "image_preset": image_preset, "face_profile_id": profile_id,
                                      "use_global_body_model": use_global_body_model,
                                      "use_profile_body_component": use_profile_body_component,
+                                     "component_signature": _generation_component_signature(use_global_body_model=use_global_body_model, use_profile_body_component=use_profile_body_component, face_angle=face_angle, face_expression=face_expression, body_pose=pose_control_image is not None),
                                      "strategy_id": prompt_plan["strategy_id"],
                                      "strategy_version": prompt_plan["strategy_version"],
                                      "prompt_provider": prompt_plan["provider"],
@@ -3340,7 +3369,10 @@ def generate_video():
                      "backend_class": "cloud" if backend == "cloud_gpu" else backend,
                      "model_family": "animatediff_sd15", "face_angle": face_angle,
                      "face_expression": face_expression,
-                     "use_profile_body_component": use_profile_body_component},
+                     "use_profile_body_component": use_profile_body_component,
+                     "component_signature": _generation_component_signature(
+                         use_profile_body_component=use_profile_body_component,
+                         face_angle=face_angle, face_expression=face_expression)},
         )
     except PromptEngineError as exc:
         return jsonify(error=str(exc)), 502
@@ -3413,6 +3445,7 @@ def generate_video():
                                          "prompt_provider": prompt_plan["provider"],
                                          "face_angle": face_angle, "face_expression": face_expression,
                                          "use_profile_body_component": use_profile_body_component,
+                                         "component_signature": _generation_component_signature(use_profile_body_component=use_profile_body_component, face_angle=face_angle, face_expression=face_expression),
                                          "component_adapters": cloud_video_component_status},
                 )
             except RuntimeError as exc:
@@ -3550,6 +3583,7 @@ def generate_video():
                                      "prompt_provider": prompt_plan["provider"],
                                      "face_angle": face_angle, "face_expression": face_expression,
                                      "use_profile_body_component": use_profile_body_component,
+                                     "component_signature": _generation_component_signature(use_profile_body_component=use_profile_body_component, face_angle=face_angle, face_expression=face_expression),
                                      "component_adapters": getattr(video_pipe, "_private_video_component_adapter_status", {})},
             )
         except RuntimeError as exc:
