@@ -91,6 +91,71 @@ def validate_sd15_model(model_dir):
     return root
 
 
+ANIMATEDIFF_WEIGHT_OPTIONS = (
+    "diffusion_pytorch_model.safetensors",
+    "diffusion_pytorch_model.fp16.safetensors",
+)
+
+
+def missing_animatediff_adapter_files(adapter_dir):
+    """Return missing or invalid AnimateDiff MotionAdapter assets."""
+    root = Path(adapter_dir).expanduser()
+    if not root.is_dir():
+        return ["<AnimateDiff adapter directory>"]
+
+    missing = []
+    config_path = root / "config.json"
+    if not config_path.is_file() or config_path.stat().st_size == 0:
+        missing.append("config.json")
+
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        safe_open = None
+
+    valid_weight = False
+    for filename in ANIMATEDIFF_WEIGHT_OPTIONS:
+        path = root / filename
+        if not path.is_file():
+            continue
+        try:
+            if path.stat().st_size < MIN_WEIGHT_BYTES:
+                continue
+            if safe_open is not None:
+                with safe_open(str(path), framework="pt", device="cpu") as handle:
+                    if not next(iter(handle.keys()), None):
+                        continue
+            valid_weight = True
+            break
+        except Exception:
+            continue
+
+    if not valid_weight:
+        missing.append("<valid AnimateDiff safetensors weights>")
+    return missing
+
+
+def validate_animatediff_adapter(adapter_dir):
+    """Raise when the AnimateDiff adapter config or checkpoint is incomplete."""
+    root = Path(adapter_dir).expanduser()
+    missing = missing_animatediff_adapter_files(root)
+    if missing:
+        details = "\\n".join(f"  - {item}" for item in missing)
+        raise RuntimeError(
+            f"AnimateDiff MotionAdapter is incomplete or invalid at {root.resolve()}. "
+            f"Missing/invalid assets:\\n{details}\\n"
+            "Run 'python ensure_animatediff_adapter.py' on the GPU worker to resume "
+            "the adapter download. Do not delete the existing adapter directory."
+        )
+    return root
+
+
+ANIMATEDIFF_ALLOW_PATTERNS = (
+    "config.json",
+    "diffusion_pytorch_model.safetensors",
+)
+
+
 SD15_ALLOW_PATTERNS = (
     "model_index.json",
     "scheduler/scheduler_config.json",
