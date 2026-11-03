@@ -2544,6 +2544,63 @@ def api_train_face_profile(profile_id):
     return jsonify(status="running", backend="local", purpose=training_purpose, training_method=training_method, job_id=job_id, message=f"Local {training_purpose} LoRA training has started."), 202
 
 
+@app.post("/api/face-profiles/<profile_id>/sync-cloud-component/<purpose>")
+def api_sync_cloud_component_lora(profile_id, purpose):
+    """Upload one purpose-specific local adapter to GHive without replacing identity weights."""
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    purpose = (purpose or "").strip().lower()
+    if purpose not in {"angle", "expression", "body"}:
+        return jsonify(error="Component purpose must be angle, expression or body."), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile not found."), 404
+    if not cloud_worker_configured():
+        return jsonify(error="Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN."), 400
+    folder = model_path(profile_id) / "components" / purpose
+    weight_path = folder / "pytorch_lora_weights.safetensors"
+    if not weight_path.is_file():
+        return jsonify(error=f"No locally trained {purpose} safetensors adapter was found."), 409
+    if weight_path.stat().st_size <= 0 or weight_path.stat().st_size > 60 * 1024 * 1024:
+        return jsonify(error="Component LoRA must be non-empty and no larger than 60 MB."), 413
+    try:
+        from safetensors import safe_open
+        with safe_open(str(weight_path), framework="pt", device="cpu") as model_file:
+            if not model_file.keys():
+                raise ValueError("LoRA contains no tensors.")
+    except Exception:
+        return jsonify(error="The component LoRA is not a valid safetensors model."), 400
+    opened = []
+    try:
+        weight_handle = weight_path.open("rb")
+        opened.append(weight_handle)
+        files = {"lora": (weight_path.name, weight_handle, "application/octet-stream")}
+        config_path = folder / "adapter_config.json"
+        if config_path.is_file():
+            config_handle = config_path.open("rb")
+            opened.append(config_handle)
+            files["adapter_config"] = (config_path.name, config_handle, "application/json")
+        response = cloud_worker_request(
+            "POST", f"/api/remote/profiles/{profile_id}/lora",
+            data={"name": profile.get("name", ""), "token": profile.get("token", ""),
+                  "description": profile.get("description", ""), "purpose": purpose},
+            files=files, timeout=(20, 180),
+        )
+        payload = response.json()
+        if payload.get("profile_id") != profile_id or payload.get("purpose") != purpose:
+            raise RuntimeError("Cloud worker did not confirm the expected component adapter.")
+        return jsonify(status="synced", purpose=purpose, profile_id=profile_id,
+                       bytes=payload.get("bytes"),
+                       message=f"{purpose.title()} component LoRA uploaded to GHive without changing identity weights.")
+    except (RuntimeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 502
+    finally:
+        for handle in opened:
+            handle.close()
+
+
 @app.get("/api/face-profiles/<profile_id>/component-train-status/<job_id>")
 def api_component_train_status(profile_id, job_id):
     """Read a purpose-specific LoRA job without changing the identity model status."""
