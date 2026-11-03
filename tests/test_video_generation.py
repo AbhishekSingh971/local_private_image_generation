@@ -80,3 +80,12 @@ def test_segmented_video_generates_supported_windows_and_assembles_mp4(tmp_path,
     assert result["frames"] == 32
     assert result["segments"] == 2
     assert output.read_bytes() == b"assembled-mp4"
+
+
+
+@pytest.mark.parametrize(("quality", "steps"), [
+    ("fast", 8), ("balanced", 12), ("high", 16), ("maximum", 20),
+])
+def test_quality_preset_controls_denoising_steps(quality, steps):
+    result = resolve_video_request(duration_seconds=3, fps=8, seed=7, quality=quality)
+    assert result["steps"] == steps
