@@ -277,3 +277,24 @@ Still staged (not claimed as complete):
 - Video still uses AnimateDiff text-to-video. It has no reference-frame/video conditioning, no body-pose control, and no temporal identity evaluator. Seed/FPS/attention changes improve control and reliability, not motion-model capability.
 - No promise of zero distortion: identity, anatomy and pose must be measured and human-reviewed; a single reference image cannot define unseen geometry.
 
+
+## 13. Phase 2 implementation record (2026-11-03)
+
+Additional integration now committed on this feature branch:
+
+- Connected PromptEngine to the actual image and video generation routes. When no semantic prompt provider is configured, the fallback is transparent and retains the user's original prompt. Provider failures are surfaced rather than silently pretending enhancement happened.
+- Connected a bounded contextual bandit to a small set of reviewed prompt additions: identity preservation, full-body framing and video temporal stability. Selection context is scoped by task, model family, backend, control mode, profile and strategy version. The feedback configuration ID now matches the selected strategy arm.
+- Made feedback observation insertion and bandit-state update one PostgreSQL transaction. A row lock serializes concurrent updates to the same contextual state, preventing lost updates between the observation and learned state.
+- Exposed purpose-specific LoRA training in the Face Models UI for identity, angle, expression and profile-specific body adapters. The local trainer and GHive worker both pass the purpose to the dataset-filtering trainer; component jobs do not overwrite the identity-ready flag.
+- Added a component-adapter status endpoint and a Sync component to GHive action. Component weights are uploaded to isolated components/<purpose> folders and do not replace the root identity LoRA.
+- Image inference now loads selected angle/expression component adapters independently when their weights exist. Missing component weights fall back to prompt-only control and are reported in saved generation metadata. AnimateDiff now has the same optional angle/expression adapter selection on local CUDA and GHive.
+- Added optional full-body pose conditioning using an SD 1.5 OpenPose ControlNet. The UI accepts a pre-rendered OpenPose skeleton/control map, not a normal photo. Text-to-image and reference-image img2img ControlNet paths are selected separately. Configure BODY_POSE_CONTROLNET_ID and optional BODY_POSE_CONTROLNET_SUBFOLDER to select a compatible model.
+- Added advisory sampled video quality checks for blur, exposure, frame-to-frame luminance changes and optical-flow motion spikes. The report explicitly leaves face identity consistency as not_assessed and always requires human review; failed or unavailable checks never discard a generated video.
+
+Still not implemented and intentionally not represented as complete:
+
+- No true image-to-video or video-to-video reference-conditioned pipeline is integrated. AnimateDiff remains text-to-video.
+- The OpenPose upload expects a rendered skeleton/control map. Automatic extraction of a skeleton from an ordinary photo is not yet bundled; a normal photograph should not be uploaded in this field.
+- Temporal metrics are advisory. They do not compare face embeddings, verify anatomy, establish prompt adherence or guarantee identity consistency.
+- The prompt strategy bandit learns only from explicit feedback recorded for saved assets. It is not diffusion-model RL and does not update model weights.
+- Full fine-tuning remains blocked until a separately validated trainer is installed.
