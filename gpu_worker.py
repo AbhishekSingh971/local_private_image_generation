@@ -759,6 +759,9 @@ def remote_generate():
         response.headers["X-Component-Adapter-Status"] = json.dumps(
             getattr(pipeline, "_private_component_adapter_status", {})
         )
+        response.headers["X-Face-Identity-Adapter"] = str(
+            getattr(pipeline, "_private_identity_adapter_status", "not_selected")
+        )
         return response
     except RemoteGenerationCancelled:
         _set_generation_progress(
