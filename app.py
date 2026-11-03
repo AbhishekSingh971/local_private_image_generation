@@ -3461,7 +3461,7 @@ def generate_video():
                         pass
                     video_pipe.to("cuda")
                     active_video_lora = None
-                requested_video_adapters = (profile_id, face_angle, face_expression)
+                requested_video_adapters = (profile_id, use_profile_body_component, face_angle, face_expression)
                 if active_video_lora != requested_video_adapters:
                     if active_video_lora is not None:
                         video_pipe.unload_lora_weights()
