@@ -1421,6 +1421,7 @@
     const section=$("#selectedProfilePhotoSection");
     const heading=$("#selectedProfilePhotoHeading");
     const container=$("#selectedProfilePhotos");
+    const status=$("#datasetStatus");
     if(!section||!container)return;
     if(!profile){
       section.hidden=true;container.replaceChildren();return;
@@ -1441,10 +1442,10 @@
       const state=document.createElement("span");state.className="dataset-group-status";
       state.textContent=photo.group_id?"In dataset group":"Profile-level upload";
       header.append(title,state);card.appendChild(header);
-      const image=document.createElement("img");image.src=photo.content_url;image.alt=photo.angle_label||"Profile training photo";image.loading="lazy";image.className="profile-photo-preview";
+      const image=document.createElement("img");image.src=photo.content_url;image.alt=photo.angle_label||"Profile training photo";image.loading="lazy";image.className="profile-photo-preview";image.style.maxWidth="220px";image.style.maxHeight="220px";image.style.objectFit="contain";image.style.borderRadius="12px";
       image.addEventListener("error",()=>{image.alt="Preview unavailable";image.style.opacity=".35";});
       card.appendChild(image);
-      const fields=document.createElement("div");fields.className="profile-photo-edit-fields";
+      const fields=document.createElement("div");fields.className="profile-photo-edit-fields";fields.style.display="grid";fields.style.gap="10px";fields.style.maxWidth="560px";
       const labelWrap=document.createElement("label");labelWrap.textContent="Photo label";
       const labelInput=document.createElement("input");labelInput.type="text";labelInput.maxLength=80;labelInput.value=photo.angle_label||"Training photo";labelWrap.appendChild(labelInput);
       const kindWrap=document.createElement("label");kindWrap.textContent="Training type";
