@@ -135,6 +135,12 @@
     });
   }
   $("#faceProfile")?.addEventListener("change",updateFaceConditionControls);
+  $("#useGlobalBodyModel")?.addEventListener("change",()=>{
+    if($("#useGlobalBodyModel").checked&&$("#useProfileBodyComponent"))$("#useProfileBodyComponent").checked=false;
+  });
+  $("#useProfileBodyComponent")?.addEventListener("change",()=>{
+    if($("#useProfileBodyComponent").checked&&$("#useGlobalBodyModel"))$("#useGlobalBodyModel").checked=false;
+  });
   function updateVideoFaceConditionControls() {
     const selected=Boolean($("#videoProfile")?.value);
     ["videoFaceAngle","videoFaceExpression","videoUseProfileBodyComponent"].forEach(id=>{
