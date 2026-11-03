@@ -72,13 +72,20 @@ def _chunk_frame_counts(total_frames: int) -> list[int]:
     total_frames = int(total_frames)
     if total_frames < 1:
         raise ValueError("At least one output frame is required.")
-    if total_frames <= MAX_ANIMATEDIFF_CHUNK_FRAMES:
-        return [max(MIN_ANIMATEDIFF_CHUNK_FRAMES, total_frames)]
-    chunk_count = math.ceil(total_frames / MAX_ANIMATEDIFF_CHUNK_FRAMES)
-    base, remainder = divmod(total_frames, chunk_count)
-    chunks = [base + (1 if index < remainder else 0) for index in range(chunk_count)]
-    if any(size < MIN_ANIMATEDIFF_CHUNK_FRAMES or size > MAX_ANIMATEDIFF_CHUNK_FRAMES for size in chunks):
-        raise ValueError("Requested duration cannot be split into supported AnimateDiff chunks.")
+    chunks = []
+    remaining = total_frames
+    while remaining > MAX_ANIMATEDIFF_CHUNK_FRAMES:
+        chunks.append(MAX_ANIMATEDIFF_CHUNK_FRAMES)
+        remaining -= MAX_ANIMATEDIFF_CHUNK_FRAMES
+    if remaining:
+        # AnimateDiff checkpoints are commonly trained/evaluated at 8, 16 or 24 frames.
+        # Generate the next supported size and trim the assembled MP4 to exact duration.
+        supported_size = (
+            MIN_ANIMATEDIFF_CHUNK_FRAMES if remaining <= 8
+            else 16 if remaining <= 16
+            else MAX_ANIMATEDIFF_CHUNK_FRAMES
+        )
+        chunks.append(supported_size)
     return chunks
 
 
