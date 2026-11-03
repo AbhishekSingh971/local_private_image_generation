@@ -347,6 +347,49 @@ def cloud_worker_generate_image_async(*, data, files, task_id, cancelled=None):
     )
 
 
+def cloud_worker_generate_video_async(*, data, task_id):
+    """Keep long GHive video jobs off the tunnel request; poll status and fetch MP4 when ready."""
+    response = cloud_worker_request(
+        "POST", "/api/remote/generate-video-async", data=data, timeout=(20, 45)
+    )
+    payload = response.json()
+    remote_job_id = payload.get("job_id")
+    if not remote_job_id:
+        raise RuntimeError("Cloud GPU worker did not return a video job ID.")
+    deadline = time.monotonic() + max(300, int(os.environ.get("CLOUD_GPU_VIDEO_TIMEOUT_SECONDS", "3600")))
+    while time.monotonic() < deadline:
+        status_response = cloud_worker_request(
+            "GET", f"/api/remote/generation-jobs/{remote_job_id}", timeout=(8, 15)
+        )
+        status_payload = status_response.json()
+        remote_progress = status_payload.get("progress") or {}
+        if remote_progress:
+            _set_generation_progress(
+                task_id, asset_type="video", backend="cloud_gpu",
+                status=remote_progress.get("status", "running"),
+                progress=remote_progress.get("progress", 2),
+                current_step=remote_progress.get("current_step", 0),
+                total_steps=remote_progress.get("total_steps", 0),
+                stage=remote_progress.get("stage", "cloud_generation"),
+                message=remote_progress.get("message", "Generating video on GHive…"),
+            )
+        state = status_payload.get("status", "queued")
+        if state == "failed":
+            raise RuntimeError(status_payload.get("error") or "Remote GPU video generation failed.")
+        if state == "cancelled":
+            raise RuntimeError("Remote GPU video generation was cancelled.")
+        if state == "completed":
+            return cloud_worker_request(
+                "GET", f"/api/remote/generation-jobs/{remote_job_id}/result",
+                timeout=(30, 300),
+            )
+        time.sleep(2.0)
+    raise RuntimeError(
+        "Cloud GPU video generation exceeded the configured 60-minute wait limit. "
+        "The worker may still be running; check its job status before retrying."
+    )
+
+
 # Compatibility aliases keep older routes and integrations working.
 runpod_configured = cloud_worker_configured
 _runpod_url = cloud_worker_url
@@ -3414,9 +3457,7 @@ def generate_video():
                 data["face_expression"] = face_expression
             data["use_profile_body_component"] = "true" if use_profile_body_component else "false"
             try:
-                response = runpod_request(
-                    "POST", "/api/remote/generate-video", data=data, timeout=(20, 3600)
-                )
+                response = cloud_worker_generate_video_async(data=data, task_id=task_id)
             except RuntimeError as exc:
                 _set_generation_progress(
                     task_id, asset_type="video", backend="cloud_gpu", status="failed", progress=0,
