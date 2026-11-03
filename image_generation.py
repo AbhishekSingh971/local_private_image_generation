@@ -19,6 +19,42 @@ IMAGE_PRESETS = {"standard", "photorealistic", "full_body_photo"}
 MAX_GENERATION_SEED = (2 ** 31) - 1
 
 
+
+def fit_sd15_prompt(tokenizer, prompt: str, max_tokens: int = 77) -> str:
+    """Fit a prompt to Stable Diffusion 1.5's CLIP context without position errors.
+
+    SD 1.5 CLIP has a 77-token context (including special tokens). The function
+    preserves the prompt's leading instructions and trims only the tail. Callers
+    should put identity, subject, and pose constraints before optional style detail.
+    """
+    prompt = str(prompt or "").strip()
+    if not prompt:
+        return prompt
+
+    try:
+        model_limit = int(getattr(tokenizer, "model_max_length", max_tokens))
+    except (TypeError, ValueError):
+        model_limit = max_tokens
+    if model_limit <= 2 or model_limit > 1000:
+        model_limit = max_tokens
+    limit = min(int(max_tokens), model_limit)
+
+    try:
+        tokens = tokenizer.tokenize(prompt)
+        special_count = int(tokenizer.num_special_tokens_to_add(pair=False))
+        if len(tokens) + special_count <= limit:
+            return prompt
+
+        keep = max(0, limit - special_count)
+        while keep > 0:
+            candidate = tokenizer.convert_tokens_to_string(tokens[:keep]).strip()
+            if candidate and len(tokenizer.tokenize(candidate)) + special_count <= limit:
+                return candidate
+            keep -= 1
+        return ""
+    except Exception as exc:
+        raise ValueError(f"Could not fit prompt to the SD 1.5 CLIP context: {exc}") from exc
+
 def resolve_generation_seed(seed: object = None) -> int:
     """Return a safe 31-bit seed, creating one when the caller leaves it blank."""
     if seed is None or str(seed).strip() == "":
