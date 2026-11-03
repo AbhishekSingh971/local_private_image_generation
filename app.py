@@ -3299,7 +3299,7 @@ def _load_cpu_or_gpu_pipeline(
                 except Exception:
                     pass
                 loaded._private_face_ip_adapter_loaded = False
-                if use_cuda and mode in {"img2img", "pose_img2img", "body_pose_img2img"} and _truthy(os.environ.get("FACE_IDENTITY_IP_ADAPTER_ENABLED", "true")):
+                if use_cuda and (mode in {"img2img", "pose_img2img", "body_pose_img2img"} or bool(profile_id)) and _truthy(os.environ.get("FACE_IDENTITY_IP_ADAPTER_ENABLED", "true")):
                     try:
                         loaded.load_ip_adapter(
                             os.environ.get("FACE_IDENTITY_IP_ADAPTER_REPO", "h94/IP-Adapter").strip() or "h94/IP-Adapter",
