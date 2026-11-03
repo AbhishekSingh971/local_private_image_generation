@@ -3373,6 +3373,10 @@ def generate_video():
             output_path = VIDEO_OUTPUT_DIR / filename
             output_path.write_bytes(response.content)
             try:
+                cloud_video_component_status = json.loads(response.headers.get("X-Component-Adapter-Status", "{}"))
+            except (TypeError, ValueError):
+                cloud_video_component_status = {"angle": "unknown", "expression": "unknown"}
+            try:
                 _resize_video_file(output_path, output_max_edge)
             except Exception as exc:
                 output_path.unlink(missing_ok=True)
@@ -3385,7 +3389,9 @@ def generate_video():
                                          "face_profile_id": profile_id, "motion_adapter": "animatediff",
                                          "strategy_id": prompt_plan["strategy_id"],
                                          "strategy_version": prompt_plan["strategy_version"],
-                                         "prompt_provider": prompt_plan["provider"]},
+                                         "prompt_provider": prompt_plan["provider"],
+                                         "face_angle": face_angle, "face_expression": face_expression,
+                                         "component_adapters": cloud_video_component_status},
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -3440,6 +3446,7 @@ def generate_video():
                         active_video_lora = None
                     adapter_names = []
                     adapter_weights = []
+                    video_component_status = {"angle": "not_requested", "expression": "not_requested"}
                     if profile_id:
                         video_pipe.load_lora_weights(str(model_path(profile_id)), adapter_name="face_identity")
                         adapter_names.append("face_identity")
@@ -3460,8 +3467,12 @@ def generate_video():
                                 except ValueError:
                                     weight = float(default_weight)
                                 adapter_weights.append(max(0.0, min(1.0, weight)))
+                                video_component_status[component_kind] = "loaded"
+                            else:
+                                video_component_status[component_kind] = "not_trained_prompt_only"
                     if adapter_names:
                         video_pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
+                    video_pipe._private_video_component_adapter_status = video_component_status
                     active_video_lora = requested_video_adapters
             _set_generation_progress(
                 task_id, asset_type="video", backend=backend, status="running", progress=5,
