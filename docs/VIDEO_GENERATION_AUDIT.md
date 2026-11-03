@@ -24,9 +24,9 @@
 ## Remaining quality limitations
 
 - The current UI is text-to-video only: no reference image/video input, no explicit pose map, and no motion brush or region control.
-- A face LoRA can improve the learned appearance but does not guarantee the same face in every frame. There is no per-frame face-embedding comparison or temporal drift score.
-- There is no temporal flicker, optical-flow, motion-smoothness or frame-anatomy evaluation gate.
-- The video pipeline does not currently load the shared body LoRA or independent expression adapters.
+- Identity and profile-specific body/angle/expression LoRAs can improve appearance and requested controls, but they do not guarantee the same face in every frame. There is no per-frame face-embedding comparison or temporal identity-drift score.
+- Saved videos now receive advisory sampled blur, exposure, luminance-flicker and optical-flow motion checks when OpenCV is available. These are heuristics, not an identity, anatomy, or prompt-adherence gate.
+- The video pipeline can load profile-specific body, angle and expression component adapters, but it does not load the shared global body-type LoRA.
 - Increasing output dimensions through FFmpeg is resizing, not true high-resolution generation.
 - AnimateDiff is a short-clip model; changing FPS cannot create new motion detail or make a 24-frame clip equivalent to a longer, higher-frame-rate video.
 
