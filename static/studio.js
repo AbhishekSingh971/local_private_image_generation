@@ -229,7 +229,11 @@
           });
           actions.appendChild(syncButton);
         }
-        actions.append(useButton, deleteButton);
+        const manageButton=document.createElement("a");
+        manageButton.className="button-link secondary-link";
+        manageButton.href="/training-data?profile_id="+encodeURIComponent(profile.id);
+        manageButton.textContent="View data & manage photos";
+        actions.append(manageButton, useButton, deleteButton);
         card.append(top, badges, actions); profileList.appendChild(card);
       });
     }
