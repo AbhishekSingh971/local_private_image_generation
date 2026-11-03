@@ -30,6 +30,9 @@ def ensure_model(model_dir, repo_id=None):
         print(f"  - {item}")
     print("Resuming the required Diffusers checkpoint download. Existing files are kept.")
 
+    # Avoid Xet streaming failures on unstable GHive network paths and
+    # serialize large-file downloads to make resume behavior more reliable.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     from huggingface_hub import snapshot_download
 
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -38,6 +41,7 @@ def ensure_model(model_dir, repo_id=None):
         local_dir=str(model_dir),
         token=os.environ.get("HF_TOKEN") or None,
         allow_patterns=list(SD15_ALLOW_PATTERNS),
+        max_workers=1,
     )
 
     # Validate again after download; never start the worker with metadata-only weights.
