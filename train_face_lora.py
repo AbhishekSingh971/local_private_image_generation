@@ -208,15 +208,15 @@ def main():
     scheduler = DDPMScheduler.from_pretrained(str(BASE_MODEL), subfolder="scheduler", local_files_only=True)
     text_encoder = CLIPTextModel.from_pretrained(
         str(BASE_MODEL), subfolder="text_encoder", torch_dtype=dtype,
-        local_files_only=True, use_safetensors=True,
+        local_files_only=True, use_safetensors=True, variant="fp16",
     )
     vae = AutoencoderKL.from_pretrained(
         str(BASE_MODEL), subfolder="vae", torch_dtype=dtype,
-        local_files_only=True, use_safetensors=True,
+        local_files_only=True, use_safetensors=True, variant="fp16",
     )
     unet = UNet2DConditionModel.from_pretrained(
         str(BASE_MODEL), subfolder="unet", torch_dtype=dtype,
-        local_files_only=True, use_safetensors=True,
+        local_files_only=True, use_safetensors=True, variant="fp16",
     )
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
