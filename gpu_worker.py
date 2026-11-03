@@ -123,7 +123,7 @@ def _valid_profile(profile_id):
     return value if get_profile(value) else None
 
 
-def _training_job(profile_id, job_id, steps, resolution):
+def _training_job(profile_id, job_id, steps, resolution, purpose="identity"):
     profile = get_profile(profile_id)
     if not profile:
         with TASKS_LOCK:
@@ -138,10 +138,11 @@ def _training_job(profile_id, job_id, steps, resolution):
         "--steps", str(steps),
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
+        "--dataset-purpose", purpose,
     ]
     with TASKS_LOCK:
         TASKS[job_id] = {
-            "job_id": job_id, "profile_id": profile_id, "status": "running",
+            "job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "running",
             "started_at": time.time(), "logs": "",
         }
     try:
@@ -150,29 +151,33 @@ def _training_job(profile_id, job_id, steps, resolution):
             check=False,
         )
         logs = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-        if completed.returncode == 0 and (
-            (model_path(profile_id) / "pytorch_lora_weights.safetensors").is_file()
-            or (model_path(profile_id) / "pytorch_lora_weights.bin").is_file()
-        ):
-            update_profile(
-                profile_id, local_model_ready=True, local_training_state="completed",
-                local_training_error=None,
-            )
-            task = {"job_id": job_id, "profile_id": profile_id, "status": "completed", "logs": logs[-5000:]}
+        output_dir = (model_path(profile_id) if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID
+                      else model_path(profile_id) / "components" / purpose)
+        weights_exist = ((output_dir / "pytorch_lora_weights.safetensors").is_file()
+                         or (output_dir / "pytorch_lora_weights.bin").is_file())
+        if completed.returncode == 0 and weights_exist:
+            if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
+                update_profile(
+                    profile_id, local_model_ready=True, local_training_state="completed",
+                    local_training_error=None,
+                )
+            task = {"job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "completed", "logs": logs[-5000:]}
         else:
             error = logs[-3500:] or f"Training exited with code {completed.returncode}."
+            if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
+                update_profile(
+                    profile_id, local_training_state="failed", local_training_error=error,
+                    local_model_ready=False,
+                )
+            task = {"job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "failed", "error": error, "logs": logs[-5000:]}
+    except Exception as exc:
+        error = str(exc)
+        if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
             update_profile(
                 profile_id, local_training_state="failed", local_training_error=error,
                 local_model_ready=False,
             )
-            task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error, "logs": logs[-5000:]}
-    except Exception as exc:
-        error = str(exc)
-        update_profile(
-            profile_id, local_training_state="failed", local_training_error=error,
-            local_model_ready=False,
-        )
-        task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error}
+        task = {"job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "failed", "error": error}
     with TASKS_LOCK:
         task["finished_at"] = time.time()
         TASKS[job_id] = task
@@ -286,6 +291,11 @@ def remote_train_profile():
         description = request.form.get("description") or ""
         steps = int(request.form.get("steps", "800"))
         resolution = int(request.form.get("resolution", "512"))
+        purpose = (request.form.get("purpose") or ("body" if profile_id == local_engine.GLOBAL_BODY_PROFILE_ID else "identity")).strip().lower()
+        if purpose not in {"identity", "body", "expression", "angle"}:
+            raise ValueError("Training purpose must be identity, body, expression or angle.")
+        if profile_id == local_engine.GLOBAL_BODY_PROFILE_ID and purpose != "body":
+            raise ValueError("The reserved shared profile can only train the body component.")
         if not 100 <= steps <= 3000 or resolution not in (384, 512):
             raise ValueError("Training steps must be 100–3000 and resolution must be 384 or 512.")
         photo_uploads = request.files.getlist("photos")
@@ -325,18 +335,22 @@ def remote_train_profile():
                     save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
                 else:
                     save_profile_image(profile_id, image, photo_kind="manual")
+        eligible = local_engine._eligible_profile_training_images(profile_id, purpose)
+        if len(eligible) < 5:
+            raise ValueError(f"Found {len(eligible)} eligible {purpose} photos on the worker; at least 5 are required.")
         existing = get_profile(profile_id)
-        if existing and existing.get("local_training_state") == "running":
+        if existing and existing.get("local_training_state") == "running" and (purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID):
             return jsonify(error="This face profile is already training on the GPU worker."), 409
         job_id = uuid.uuid4().hex
-        update_profile(
-            profile_id, local_training_state="running", local_training_job_id=job_id,
-            local_training_error=None, local_model_ready=False,
-        )
+        if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
+            update_profile(
+                profile_id, local_training_state="running", local_training_job_id=job_id,
+                local_training_error=None, local_model_ready=False,
+            )
         with TASKS_LOCK:
-            TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "status": "queued"}
-        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution)
-        return jsonify(status="queued", job_id=job_id, profile_id=profile_id), 202
+            TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "queued"}
+        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution, purpose)
+        return jsonify(status="queued", job_id=job_id, profile_id=profile_id, purpose=purpose), 202
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     except RuntimeError as exc:
