@@ -39,3 +39,20 @@
 5. Benchmark VRAM, generation time, and quality at 8/16/24 frames on the actual GHive GPU before increasing frame count or resolution limits.
 
 **Important:** The current phase improves repeatability, observability and memory behavior. It does not turn AnimateDiff into a reference-conditioned or identity-locked video model, and it cannot guarantee distortion-free output.
+
+## Phase 2 update (2026-11-03)
+
+The following improvements are now wired into the application:
+
+- Optional angle and expression component LoRAs can be selected in the video UI and loaded separately from the identity adapter on local CUDA and GHive.
+- Video prompts pass through the shared PromptEngine and a bounded temporal-stability strategy selector. The user's requested action remains in the prompt; temporal safeguards are appended as constraints.
+- Saved video assets receive an advisory sampled technical report for blur, exposure, luminance flicker and motion spikes when OpenCV is available. The report always states identity_consistency: not_assessed and requires human review. It is not an identity metric or a video approval gate.
+- Full-body OpenPose ControlNet is available for image generation using a supplied pre-rendered skeleton map; this does not currently condition AnimateDiff video.
+
+## Remaining video limitations
+
+- AnimateDiff is still text-to-video. There is no compatible image-to-video or video-to-video reference-conditioning pipeline integrated, so a reference image cannot yet anchor the same identity across frames.
+- No per-frame face embedding comparison, identity-drift score, or frame-level anatomy check exists. The temporal report is a technical heuristic only.
+- There is no full-body pose conditioning in the video path. Image-generation OpenPose support does not transfer automatically to AnimateDiff.
+- Frame interpolation and AI super-resolution remain separate future post-processing stages. FFmpeg resizing does not create detail.
+- A successful technical report does not prove a good clip. Inspect the actual frames before using them as training data.
