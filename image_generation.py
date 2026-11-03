@@ -181,7 +181,7 @@ def build_face_identity_prompt(
         # inference so the user's scene and pose instructions survive CLIP truncation.
         description = " ".join(description_words[:10])
         if description and description.lower() not in effective.lower():
-            effective = trigger + ", " + description + ", " + source
+            effective = trigger + ", " + source + ", profile reference: " + description
         matrix.update({
             "mode": "trained_lora",
             "trigger_token": token,
