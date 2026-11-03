@@ -763,7 +763,7 @@ def remote_generate_video():
                     pass
                 VIDEO_PIPE.to("cuda")
                 VIDEO_ACTIVE_LORA = None
-            requested_adapters = (profile_id, face_angle, face_expression)
+            requested_adapters = (profile_id, use_profile_body_component, face_angle, face_expression)
             if VIDEO_ACTIVE_LORA != requested_adapters:
                 if VIDEO_ACTIVE_LORA is not None:
                     VIDEO_PIPE.unload_lora_weights()
