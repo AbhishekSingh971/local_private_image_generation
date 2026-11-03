@@ -46,3 +46,12 @@ def test_legacy_identity_photos_remain_backward_compatible():
 def test_invalid_training_purpose_is_rejected():
     with pytest.raises(ValueError):
         select_training_files([], {}, "everything")
+
+
+def test_legacy_caption_classifier_separates_pose_expression_and_body():
+    from dataset_policy import infer_photo_kind_from_caption
+
+    assert infer_photo_kind_from_caption("Left profile, yaw -90 degrees") == "angle"
+    assert infer_photo_kind_from_caption("Gentle natural closed-mouth smile") == "expression"
+    assert infer_photo_kind_from_caption("Body type: athletic proportions") == "body"
+    assert infer_photo_kind_from_caption("Original portrait in daylight") is None
