@@ -91,3 +91,75 @@ def test_executor_start_failure_marks_job_and_group_failed(monkeypatch):
     assert studio_app.FACE_DATASET_JOB_EVENTS == {}
     assert studio_app.FACE_DATASET_JOB_FUTURES == {}
     assert studio_app.FACE_DATASET_STARTING is False
+
+
+def test_profile_identity_reference_prefers_approved_front_photo(monkeypatch):
+    profile_id = "a" * 32
+    front_bytes = _png_bytes()
+    side_bytes = _png_bytes()
+    review_bytes = _png_bytes()
+    records = [
+        {
+            "id": "1" * 32, "filename": "left-profile.png",
+            "photo_kind": "angle", "angle_label": "Left profile 90",
+            "target_yaw": -90.0, "actual_yaw": -89.0,
+            "validation_status": "passed",
+        },
+        {
+            "id": "2" * 32, "filename": "front-source.png",
+            "photo_kind": "source", "angle_label": "Front view",
+            "target_yaw": 0.0, "actual_yaw": 2.0,
+            "validation_status": "passed",
+        },
+        {
+            "id": "3" * 32, "filename": "front-needs-review.png",
+            "photo_kind": "angle", "angle_label": "Front view",
+            "target_yaw": 0.0, "actual_yaw": 0.0,
+            "validation_status": "needs_review",
+        },
+    ]
+    bytes_by_id = {
+        "1" * 32: side_bytes,
+        "2" * 32: front_bytes,
+        "3" * 32: review_bytes,
+    }
+    monkeypatch.setattr(studio_app, "list_face_photo_metadata", lambda _profile: records)
+    monkeypatch.setattr(
+        studio_app, "get_face_photo_bytes",
+        lambda photo_id: ({"id": photo_id}, bytes_by_id[photo_id]),
+    )
+
+    reference, metadata = studio_app._load_profile_identity_reference(profile_id)
+
+    assert reference is not None
+    assert reference.size == (512, 512)
+    assert metadata["filename"] == "front-source.png"
+    assert metadata["source"] == "profile_front_photo"
+
+
+def test_profile_identity_reference_does_not_use_side_profile_or_needs_review(monkeypatch):
+    profile_id = "a" * 32
+    records = [
+        {
+            "id": "1" * 32, "filename": "left-profile.png",
+            "photo_kind": "angle", "angle_label": "Left profile 90",
+            "target_yaw": -90.0, "actual_yaw": -90.0,
+            "validation_status": "passed",
+        },
+        {
+            "id": "2" * 32, "filename": "front-review.png",
+            "photo_kind": "angle", "angle_label": "Front view",
+            "target_yaw": 0.0, "actual_yaw": 0.0,
+            "validation_status": "needs_review",
+        },
+    ]
+    monkeypatch.setattr(studio_app, "list_face_photo_metadata", lambda _profile: records)
+    monkeypatch.setattr(
+        studio_app, "get_face_photo_bytes",
+        lambda _photo_id: (_ for _ in ()).throw(AssertionError("unapproved reference should not be loaded")),
+    )
+
+    reference, metadata = studio_app._load_profile_identity_reference(profile_id)
+
+    assert reference is None
+    assert metadata is None
