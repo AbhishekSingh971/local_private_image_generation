@@ -2520,10 +2520,11 @@ def api_train_face_profile(profile_id):
         job_id = job.get("job_id")
         if not job_id:
             return jsonify(error="Cloud GPU worker did not return a training job ID."), 502
-        update_profile(
-            profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
-            runpod_training_error=None, runpod_model_ready=False,
-        )
+        if training_purpose == "identity" or is_global_body_profile(profile_id):
+            update_profile(
+                profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
+                runpod_training_error=None, runpod_model_ready=False,
+            )
         return jsonify(status="running", backend="runpod", purpose=training_purpose, training_method=training_method, job_id=job_id, message=f"Cloud GPU {training_purpose} LoRA training has started."), 202
 
     if not torch.cuda.is_available():
@@ -3155,7 +3156,7 @@ def generate():
             return jsonify(
                 status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
                 asset_id=asset["id"], title=asset["title"],
-                mode="img2img" if init_image is not None else "txt2img",
+                mode=mode,
                 seed=seed,
                 face_profile=profile["name"] if profile else None,
                 backend="cloud_gpu", message="Generated on the selected cloud GPU and saved to the database library.",
@@ -3232,7 +3233,7 @@ def generate():
         try:
             asset = _persist_generated_asset(
                 "image", filename, title=title, prompt=prompt, negative_prompt=effective_negative,
-                profile=profile, backend=backend, generation_mode="img2img" if init_image is not None else "txt2img",
+                profile=profile, backend=backend, generation_mode=mode,
                 generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
                                      "image_preset": image_preset, "face_profile_id": profile_id,
                                      "use_global_body_model": use_global_body_model,
