@@ -674,6 +674,7 @@ def remote_generate():
             return jsonify(error="The shared body-type LoRA is not trained on this cloud GPU worker. Train it using the global body model first."), 400
         prompt = local_engine.GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
     image = None
+    identity_reference_image = None
     pose_control_image = None
     uploaded = request.files.get("image")
     if uploaded and uploaded.filename:
@@ -684,6 +685,19 @@ def remote_generate():
             image = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
             return jsonify(error="Reference image is not a valid PNG, JPG or WEBP image."), 400
+    identity_uploaded = request.files.get("identity_reference_image")
+    if identity_uploaded and identity_uploaded.filename:
+        try:
+            with Image.open(identity_uploaded.stream) as source:
+                identity_reference_image = ImageOps.exif_transpose(source).convert("RGB")
+                identity_reference_image.load()
+            identity_reference_image = ImageOps.fit(
+                identity_reference_image, (512, 512), method=Image.Resampling.LANCZOS
+            )
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+            return jsonify(error="Profile identity reference is not a valid PNG, JPG or WEBP image."), 400
+    if identity_reference_image is None and image is not None:
+        identity_reference_image = image
     pose_uploaded = request.files.get("pose_control_image")
     if pose_uploaded and pose_uploaded.filename:
         try:
@@ -750,8 +764,10 @@ def remote_generate():
         }
         if image is not None:
             kwargs.update(image=image, strength=strength)
-            if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
-                kwargs["ip_adapter_image"] = image
+        if identity_reference_image is not None and getattr(pipeline, "_private_face_ip_adapter_loaded", False):
+            # Identity reference conditions the generated face without replacing
+            # the requested text-to-image composition with the reference crop.
+            kwargs["ip_adapter_image"] = identity_reference_image
         if pose_control_image is not None:
             kwargs["control_image"] = pose_control_image
             scale_key = "BODY_POSE_CONTROLNET_SCALE" if pose_control_type == "body_openpose" else "FACE_POSE_CONTROLNET_SCALE"
