@@ -27,7 +27,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
-from video_generation import validate_video_settings
+from video_generation import resolve_video_request, generate_video_segments
 from face_profiles import (
     create_profile,
     dataset_images,
@@ -706,10 +706,19 @@ def remote_generate_video():
     prompt = (request.form.get("prompt") or "").strip()
     negative_prompt = (request.form.get("negative_prompt") or "").strip()
     try:
-        steps = int(request.form.get("steps", "12"))
-        frames = int(request.form.get("frames", "16"))
+        duration_seconds = int(request.form.get("duration_seconds", "3"))
         fps = int(request.form.get("fps", "8"))
+        quality = (request.form.get("quality") or "balanced").strip().lower()
         seed = int(request.form.get("seed", "0"))
+        video_settings = resolve_video_request(
+            duration_seconds=duration_seconds, fps=fps, seed=seed, quality=quality,
+        )
+        duration_seconds = video_settings["duration_seconds"]
+        fps, seed, quality = video_settings["fps"], video_settings["seed"], video_settings["quality"]
+        steps, guidance_scale, frames, segment_count = (
+            video_settings["steps"], video_settings["guidance_scale"],
+            video_settings["total_frames"], video_settings["segments"],
+        )
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         face_angle = (request.form.get("face_angle") or "").strip().lower()
         face_expression = (request.form.get("face_expression") or "").strip().lower()
@@ -798,32 +807,37 @@ def remote_generate_video():
                 VIDEO_PIPE._private_video_component_adapter_status = component_status
                 VIDEO_ACTIVE_LORA = requested_adapters
         _set_generation_progress(task_id, asset_type="video", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting video denoising steps on the cloud GPU…")
-        def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
-            scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
-            current = min(step_index + 1, scheduler_steps)
-            percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
-            _set_generation_progress(
-                task_id, asset_type="video", status="running", progress=percent,
-                current_step=current, total_steps=scheduler_steps, stage="denoising",
-                message=f"Generating video on the cloud GPU · step {current} of {scheduler_steps} · {frames} frames",
-            )
-            return callback_kwargs
-        generator = torch.Generator(device="cuda").manual_seed(seed)
-        result = VIDEO_PIPE(
-            prompt=prompt, negative_prompt=negative_prompt or None,
-            num_frames=frames, num_inference_steps=steps,
-            guidance_scale=7.0, generator=generator,
-            callback_on_step_end=on_step_end,
-        )
-        _set_generation_progress(task_id, asset_type="video", status="running", progress=95, current_step=steps, total_steps=steps, stage="encoding", message="Encoding generated frames into MP4…")
         filename = f"gpu_{uuid.uuid4().hex}.mp4"
         video_path = local_engine.VIDEO_OUTPUT_DIR / filename
-        export_to_video(result.frames[0], str(video_path), fps=fps)
+
+        def on_segment_progress(segment_index, total_segments, current_step, segment_steps):
+            completed_steps = segment_index * segment_steps + current_step
+            percent = min(92, 5 + round(87 * completed_steps / max(total_segments * segment_steps, 1)))
+            _set_generation_progress(
+                task_id, asset_type="video", status="running", progress=percent,
+                current_step=current_step, total_steps=segment_steps, stage="denoising",
+                message=f"Generating segment {min(segment_index + 1, total_segments)} of {total_segments} on the cloud GPU · step {current_step}/{segment_steps}",
+            )
+
+        segment_result = generate_video_segments(
+            VIDEO_PIPE, prompt=prompt, negative_prompt=negative_prompt,
+            duration_seconds=duration_seconds, fps=fps, steps=steps,
+            guidance_scale=guidance_scale, seed=seed, output_path=video_path,
+            export_to_video=export_to_video,
+            generator_factory=lambda chunk_seed: torch.Generator(device="cuda").manual_seed(chunk_seed),
+            progress_callback=on_segment_progress,
+        )
+        _set_generation_progress(task_id, asset_type="video", status="running", progress=95,
+                                 current_step=steps, total_steps=steps, stage="encoding",
+                                 message="Assembling generated segments into the final MP4…")
         _set_generation_progress(task_id, asset_type="video", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Video generation completed on the cloud GPU.")
         response = send_file(video_path, mimetype="video/mp4", download_name="generated.mp4")
         response.headers["X-Component-Adapter-Status"] = json.dumps(
             getattr(VIDEO_PIPE, "_private_video_component_adapter_status", {})
         )
+        response.headers["X-Video-Segments"] = str(segment_result["segments"])
+        response.headers["X-Video-Duration"] = str(duration_seconds)
+        response.headers["X-Video-Quality"] = quality
         return response
     except Exception as exc:
         _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="Video generation failed on the cloud GPU.")
