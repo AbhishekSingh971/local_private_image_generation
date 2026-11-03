@@ -570,10 +570,10 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
         if asset_type == "image":
             try:
                 with Image.open(path) as generated_image:
-                    metadata["technical_quality"] = assess_image_quality(generated_image).to_dict()
+                    metadata["post_resize_technical_quality"] = assess_image_quality(generated_image).to_dict()
             except Exception as quality_exc:
                 # Quality evaluation is advisory; never discard a valid generated image.
-                metadata["technical_quality"] = {
+                metadata["post_resize_technical_quality"] = {
                     "status": "not_assessed",
                     "reason": str(quality_exc)[:300],
                 }
