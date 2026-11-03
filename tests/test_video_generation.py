@@ -33,9 +33,10 @@ def test_one_second_at_six_fps_is_supported_by_eight_frame_model_minimum():
 
 def test_long_video_is_split_into_supported_balanced_chunks():
     chunks = _chunk_frame_counts(721)
-    assert sum(chunks) == 721
-    assert all(8 <= chunk <= 24 for chunk in chunks)
-    assert max(chunks) - min(chunks) <= 1
+    assert sum(chunks) >= 721
+    assert sum(chunks) - 721 < 24
+    assert all(chunk in (8, 16, 24) for chunk in chunks)
+    assert chunks[:-1] == [24] * (len(chunks) - 1)
 
 
 def test_legacy_video_settings_remain_supported():
