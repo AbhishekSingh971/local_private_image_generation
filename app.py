@@ -3651,8 +3651,9 @@ def generate_video():
             status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
             asset_id=asset["id"], title=asset["title"],
             face_profile=profile["name"] if profile else None, backend="local_gpu",
-            seed=seed, frames=frames, fps=fps,
-            message="Generated locally on the System GPU and saved to the database library.",
+            seed=seed, frames=frames, fps=fps, duration_seconds=duration_seconds,
+            quality=quality, segments=segment_count,
+            message=f"Generated a {duration_seconds}-second video in {segment_count} AnimateDiff segment(s) on the System GPU and saved it to the library.",
         )
     finally:
         generation_lock.release()
