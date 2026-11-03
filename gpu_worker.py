@@ -554,6 +554,12 @@ def remote_generate():
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = str(request.form.get("use_global_body_model") or "").strip().lower() in {"1", "true", "yes", "on"}
+        face_angle = (request.form.get("face_angle") or "").strip().lower()
+        face_expression = (request.form.get("face_expression") or "").strip().lower()
+        if face_angle not in {"", "front", "three_quarter_left", "three_quarter_right", "left_profile", "right_profile"}:
+            raise ValueError("Unsupported face angle.")
+        if face_expression not in {"", "neutral", "smile", "laugh", "serious", "surprised"}:
+            raise ValueError("Unsupported facial expression.")
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
@@ -604,7 +610,8 @@ def remote_generate():
     try:
         mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
         pipeline = local_engine._load_cpu_or_gpu_pipeline(
-            mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model
+            mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
+            face_angle=face_angle, face_expression=face_expression,
         )
         _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the cloud GPU…")
         def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
@@ -648,7 +655,11 @@ def remote_generate():
         result.save(output, format="PNG")
         output.seek(0)
         _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on the cloud GPU.")
-        return send_file(output, mimetype="image/png", download_name="generated.png")
+        response = send_file(output, mimetype="image/png", download_name="generated.png")
+        response.headers["X-Component-Adapter-Status"] = json.dumps(
+            getattr(pipeline, "_private_component_adapter_status", {})
+        )
+        return response
     except RemoteGenerationCancelled:
         _set_generation_progress(
             task_id, asset_type="image", status="cancelled", progress=0, total_steps=steps,
