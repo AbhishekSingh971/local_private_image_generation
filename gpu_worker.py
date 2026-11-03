@@ -547,7 +547,7 @@ def remote_generation_job_result(job_id):
         result = job["result"]
         content_type = job.get("content_type") or "image/png"
         response_headers = dict(job.get("response_headers") or {})
-        download_name = job.get("download_name") or "generated.bin"
+        download_name = job.get("download_name") or ("generated.mp4" if content_type == "video/mp4" else "generated.png")
     response = send_file(io.BytesIO(result), mimetype=content_type, download_name=download_name)
     for name, value in response_headers.items():
         if name.lower().startswith("x-"):
@@ -861,19 +861,23 @@ def _run_async_remote_video(job_id, form_data):
     try:
         while local_engine.generation_lock.locked():
             time.sleep(0.5)
-        with worker.test_request_context(
-            "/api/remote/generate-video", method="POST", data=dict(form_data)
-        ):
-            response = worker.make_response(remote_generate_video())
-            response.direct_passthrough = False
-            status_code = response.status_code
-            body = response.get_data()
-            content_type = response.mimetype
-            response_headers = {
-                key: value for key, value in response.headers.items()
-                if key.lower().startswith("x-")
-            }
-            download_name = response.headers.get("Content-Disposition", "")
+        deadline = time.monotonic() + 3600
+        while True:
+            with worker.test_request_context(
+                "/api/remote/generate-video", method="POST", data=dict(form_data)
+            ):
+                response = worker.make_response(remote_generate_video())
+                response.direct_passthrough = False
+                status_code = response.status_code
+                body = response.get_data()
+                content_type = response.mimetype
+                response_headers = {
+                    key: value for key, value in response.headers.items()
+                    if key.lower().startswith("x-")
+                }
+            if status_code != 429 or time.monotonic() >= deadline:
+                break
+            time.sleep(1.0)
         if status_code < 200 or status_code >= 300:
             try:
                 error_payload = json.loads(body.decode("utf-8", errors="replace"))
