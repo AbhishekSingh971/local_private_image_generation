@@ -1072,6 +1072,26 @@
     }
     finally{progressController.abort();await progressWatcher;button.disabled=false;button.textContent="Generate photo";}
   });
+  const videoDurationSlider=$("#videoDurationSlider");
+  const videoDurationNumber=$("#videoDurationNumber");
+  const videoDurationLabel=$("#videoDurationLabel");
+  const videoFps=$("#videoFps");
+  const videoSegmentEstimate=$("#videoSegmentEstimate");
+  function updateVideoDurationControls(value){
+    const duration=Math.max(1,Math.min(60,Math.round(Number(value)||3)));
+    if(videoDurationSlider)videoDurationSlider.value=String(duration);
+    if(videoDurationNumber)videoDurationNumber.value=String(duration);
+    if(videoDurationLabel)videoDurationLabel.textContent=duration+" second"+(duration===1?"":"s");
+    const fps=Number(videoFps?.value||8);
+    const frames=duration*fps;
+    const segments=Math.max(1,Math.ceil(frames/24));
+    if(videoSegmentEstimate)videoSegmentEstimate.textContent=duration+" seconds at "+fps+" FPS · "+frames+" frames · "+segments+" AnimateDiff segment"+(segments===1?"":"s")+".";
+  }
+  videoDurationSlider?.addEventListener("input",()=>updateVideoDurationControls(videoDurationSlider.value));
+  videoDurationNumber?.addEventListener("input",()=>updateVideoDurationControls(videoDurationNumber.value));
+  videoDurationNumber?.addEventListener("change",()=>updateVideoDurationControls(videoDurationNumber.value));
+  videoFps?.addEventListener("change",()=>updateVideoDurationControls(videoDurationNumber?.value||3));
+  updateVideoDurationControls(videoDurationNumber?.value||3);
   const videoForm=$("#videoForm");
   videoForm?.addEventListener("submit",async event=>{
     event.preventDefault();
