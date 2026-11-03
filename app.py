@@ -2967,7 +2967,9 @@ def generate():
             prompt, negative_prompt, task="image",
             context={"profile_id": profile_id or "global", "full_body": image_preset == "full_body_photo",
                      "face_angle": face_angle, "face_expression": face_expression,
-                     "control_mode": "reference" if init_image is not None else "text"},
+                     "model_family": "sd15",
+                     "backend_class": "cloud" if backend == "cloud_gpu" else backend,
+                     "control_mode": "img2img" if init_image is not None else "txt2img"},
             preset=image_preset, has_reference_image=init_image is not None,
         )
     except PromptEngineError as exc:
@@ -3027,6 +3029,10 @@ def generate():
             output_path = OUTPUT_DIR / filename
             output_path.write_bytes(response.content)
             try:
+                cloud_component_status = json.loads(response.headers.get("X-Component-Adapter-Status", "{}"))
+            except (TypeError, ValueError):
+                cloud_component_status = {"angle": "unknown", "expression": "unknown"}
+            try:
                 _resize_image_file(output_path, output_max_edge)
             except Exception as exc:
                 output_path.unlink(missing_ok=True)
@@ -3041,7 +3047,7 @@ def generate():
                                          "strategy_id": prompt_plan["strategy_id"],
                                          "strategy_version": prompt_plan["strategy_version"],
                                          "prompt_provider": prompt_plan["provider"],
-                                         "component_adapters": {"angle": "cloud_worker_pending", "expression": "cloud_worker_pending"},},
+                                         "component_adapters": cloud_component_status,},
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -3203,7 +3209,8 @@ def generate_video():
     try:
         prompt_plan = prepare_generation_prompt(
             prompt, negative_prompt, task="video",
-            context={"profile_id": profile_id or "global", "control_mode": "text_to_video",
+            context={"profile_id": profile_id or "global", "control_mode": "animatediff",
+                     "backend_class": "cloud" if backend == "cloud_gpu" else backend,
                      "model_family": "animatediff_sd15"},
         )
     except PromptEngineError as exc:
