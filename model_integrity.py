@@ -157,17 +157,19 @@ ANIMATEDIFF_ALLOW_PATTERNS = (
 )
 
 
+# The worker loads the model in FP16. Download only the three FP16
+# component checkpoints; fetching the full-precision duplicates roughly
+# doubles the base-model download without benefiting this GPU pipeline.
 SD15_ALLOW_PATTERNS = (
     "model_index.json",
     "scheduler/scheduler_config.json",
-    "tokenizer/*",
+    "tokenizer/tokenizer_config.json",
+    "tokenizer/vocab.json",
+    "tokenizer/merges.txt",
     "text_encoder/config.json",
-    "text_encoder/model.safetensors",
     "text_encoder/model.fp16.safetensors",
     "unet/config.json",
-    "unet/diffusion_pytorch_model.safetensors",
     "unet/diffusion_pytorch_model.fp16.safetensors",
     "vae/config.json",
-    "vae/diffusion_pytorch_model.safetensors",
     "vae/diffusion_pytorch_model.fp16.safetensors",
 )
