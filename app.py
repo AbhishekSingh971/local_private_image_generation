@@ -3248,6 +3248,7 @@ def generate():
                 generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
                                      "image_preset": image_preset, "face_profile_id": profile_id,
                                      "use_global_body_model": use_global_body_model,
+                                     "use_profile_body_component": use_profile_body_component,
                                      "strategy_id": prompt_plan["strategy_id"],
                                      "strategy_version": prompt_plan["strategy_version"],
                                      "prompt_provider": prompt_plan["provider"],
@@ -3409,6 +3410,7 @@ def generate_video():
                                          "strategy_version": prompt_plan["strategy_version"],
                                          "prompt_provider": prompt_plan["provider"],
                                          "face_angle": face_angle, "face_expression": face_expression,
+                                         "use_profile_body_component": use_profile_body_component,
                                          "component_adapters": cloud_video_component_status},
                 )
             except RuntimeError as exc:
@@ -3545,6 +3547,7 @@ def generate_video():
                                      "strategy_version": prompt_plan["strategy_version"],
                                      "prompt_provider": prompt_plan["provider"],
                                      "face_angle": face_angle, "face_expression": face_expression,
+                                     "use_profile_body_component": use_profile_body_component,
                                      "component_adapters": getattr(video_pipe, "_private_video_component_adapter_status", {})},
             )
         except RuntimeError as exc:
