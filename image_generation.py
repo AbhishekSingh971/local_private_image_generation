@@ -196,7 +196,9 @@ def build_face_identity_prompt(
             "naturally aligned eyes, anatomically well-formed nose and lips, "
             "consistent jaw and cheek structure, realistic skin texture"
         )
-        effective = face_guard + ", " + source
+        # Keep the user's explicit facial traits first; generic matrix guidance
+        # follows so SD 1.5's short CLIP window does not truncate the request.
+        effective = source + ", " + face_guard
         matrix.update({
             "mode": "prompt_matrix",
             "trigger_token": None,
@@ -326,6 +328,11 @@ def build_generation_prompts(
             "extra hands, malformed fingers, distorted faces, text, watermark"
         )
 
-    enhanced_prompt = clean_prompt if clean_prompt.lower().startswith(prefix.rstrip(", ").lower()) else prefix + clean_prompt
+    if clean_prompt.lower().startswith(prefix.rstrip(", ").lower()):
+        enhanced_prompt = clean_prompt
+    else:
+        # Keep the user's subject, identity trigger, face traits, pose and scene
+        # ahead of generic photo/anatomy additions. SD 1.5 truncates after 77 CLIP tokens.
+        enhanced_prompt = clean_prompt.rstrip(" ,") + ", " + prefix.strip(" ,")
     enhanced_negative = ", ".join(part for part in (negative_prefix, clean_negative) if part)
     return enhanced_prompt, enhanced_negative
