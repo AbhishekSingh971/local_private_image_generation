@@ -3524,6 +3524,13 @@ def generate():
     if generation_profile == "preserve_reference" and init_image is None:
         return jsonify(error="Upload a reference image to use Preserve reference mode."), 400
 
+    identity_reference_image = init_image
+    identity_reference_metadata = (
+        {"source": "user_reference"} if init_image is not None else None
+    )
+    if profile_id and identity_reference_image is None:
+        identity_reference_image, identity_reference_metadata = _load_profile_identity_reference(profile_id)
+
     # Reference strength is deliberately internal: preserve identity/composition by
     # default and increase change only when the user's request clearly asks for it.
     if init_image is None:
@@ -3611,6 +3618,11 @@ def generate():
                 init_image.save(buffer, format="PNG")
                 buffer.seek(0)
                 files["image"] = ("reference.png", buffer, "image/png")
+            elif identity_reference_image is not None:
+                identity_buffer = io.BytesIO()
+                identity_reference_image.save(identity_buffer, format="PNG")
+                identity_buffer.seek(0)
+                files["identity_reference_image"] = ("profile-face-reference.png", identity_buffer, "image/png")
             if pose_control_image is not None:
                 pose_buffer = io.BytesIO()
                 pose_control_image.save(pose_buffer, format="PNG")
@@ -3661,6 +3673,8 @@ def generate():
                                          "face_identity_mode": face_identity_mode,
                                          "face_identity_adapter": cloud_identity_status,
                                          "face_prompt_matrix": face_prompt_matrix,
+                                     "identity_reference": identity_reference_metadata,
+                                         "identity_reference": identity_reference_metadata,
                                          "image_preset": image_preset, "face_profile_id": profile_id,
                                          "use_global_body_model": use_global_body_model,
                                          "use_profile_body_component": use_profile_body_component,
@@ -3690,6 +3704,7 @@ def generate():
                 face_identity_mode=face_identity_mode,
                 face_identity_adapter=cloud_identity_status,
                 face_prompt_matrix=face_prompt_matrix,
+                identity_reference=identity_reference_metadata,
                 backend="cloud_gpu", message="Generated on the selected cloud GPU and saved to the database library.",
             )
 
@@ -3743,8 +3758,8 @@ def generate():
             }
             if init_image is not None:
                 kwargs.update(image=init_image, strength=strength)
-                if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
-                    kwargs["ip_adapter_image"] = init_image
+            if identity_reference_image is not None and getattr(pipeline, "_private_face_ip_adapter_loaded", False):
+                kwargs["ip_adapter_image"] = identity_reference_image
             if pose_control_image is not None:
                 kwargs["control_image"] = pose_control_image
                 try:
@@ -3818,6 +3833,7 @@ def generate():
             face_identity_mode=face_identity_mode,
             face_identity_adapter=identity_adapter_status,
             face_prompt_matrix=face_prompt_matrix,
+            identity_reference=identity_reference_metadata,
             backend=backend, message=message,
         )
     finally:
