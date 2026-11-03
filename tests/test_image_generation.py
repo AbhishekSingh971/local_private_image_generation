@@ -7,6 +7,8 @@ from image_generation import (
     resolve_generation_seed,
     MAX_GENERATION_SEED,
     validate_remote_generation_prompts,
+    build_face_identity_prompt,
+    extract_face_prompt_matrix,
 )
 
 
@@ -181,3 +183,56 @@ def test_remote_prompt_validation_uses_separate_positive_and_negative_limits():
         validate_remote_generation_prompts("x" * 2401, "")
     with pytest.raises(ValueError, match="expanded negative prompt exceeds the remote limit"):
         validate_remote_generation_prompts("valid prompt", "y" * 1201)
+
+
+def test_trained_face_prompt_injects_exact_training_trigger():
+    prompt, matrix = build_face_identity_prompt(
+        "A photorealistic full-body woman standing in a garden.",
+        profile_token="mizo_7f3a",
+        profile_description="Long dark hair, oval face, brown eyes, soft eyebrows",
+    )
+    assert prompt.startswith("a photo of mizo_7f3a person")
+    assert "Long dark hair, oval face, brown eyes, soft eyebrows" in prompt
+    assert "full-body woman standing in a garden" in prompt
+    assert matrix["mode"] == "trained_lora"
+    assert matrix["trigger_token"] == "mizo_7f3a"
+    assert matrix["profile_description_used"] is True
+
+
+def test_trained_face_prompt_does_not_duplicate_trigger_when_already_present():
+    prompt, matrix = build_face_identity_prompt(
+        "a photo of mizo_7f3a person, front-facing studio portrait",
+        profile_token="mizo_7f3a",
+    )
+    assert prompt.count("mizo_7f3a") == 1
+    assert prompt.startswith("a photo of mizo_7f3a person")
+    assert matrix["mode"] == "trained_lora"
+
+
+def test_prompt_matrix_uses_only_traits_explicitly_present_in_prompt():
+    source = (
+        "Photorealistic full-body portrait of an adult woman with an oval face, "
+        "almond-shaped hazel eyes, a straight nose, full lips and long black hair."
+    )
+    prompt, matrix = build_face_identity_prompt(source)
+    assert prompt.startswith("clear, coherent natural human face")
+    assert source in prompt
+    assert matrix["mode"] == "prompt_matrix"
+    assert matrix["features"]["face_shape"] == "oval face"
+    assert matrix["features"]["nose"] == "straight nose"
+    assert "hazel eyes" in matrix["features"]["eyes"]
+    assert matrix["features"]["hair"] == "long black hair"
+    assert "skin_tone" not in matrix["features"]
+
+
+def test_prompt_without_human_subject_is_not_given_face_constraints():
+    source = "A cinematic photograph of an old wooden house beside a lake."
+    prompt, matrix = build_face_identity_prompt(source)
+    assert prompt == source
+    assert matrix["mode"] == "base_prompt"
+    assert matrix["face_requested"] is False
+
+
+def test_invalid_profile_trigger_token_is_rejected():
+    with pytest.raises(ValueError, match="invalid trigger token"):
+        build_face_identity_prompt("Portrait of a person", profile_token="bad token")
