@@ -33,6 +33,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from model_integrity import validate_sd15_model
 from face_profiles import (
     DATA_DIR,
     LORA_DIR,
@@ -2887,6 +2888,7 @@ def _load_cpu_or_gpu_pipeline(
                 pipeline_class = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
             kwargs = {
                 "torch_dtype": dtype,
+                "use_safetensors": True,
                 "safety_checker": None,
                 "requires_safety_checker": False,
             }
@@ -2897,6 +2899,8 @@ def _load_cpu_or_gpu_pipeline(
                     raise ValueError(f"SD_MODEL_PATH is not a Diffusers model folder containing model_index.json.")
                 kwargs["local_files_only"] = True
             try:
+                if isinstance(local_model, Path):
+                    validate_sd15_model(local_model)
                 loaded = pipeline_class.from_pretrained(local_model, **kwargs)
                 if controlnet is not None:
                     control_dim = getattr(controlnet.config, "cross_attention_dim", None)
@@ -3531,10 +3535,13 @@ def generate_video():
             )
             with model_lock:
                 if video_pipe is None:
+                    video_model_dir = Path(MODEL_PATH_OVERRIDE).expanduser() if MODEL_PATH_OVERRIDE else MODEL_DIR
+                    validate_sd15_model(video_model_dir)
                     adapter = MotionAdapter.from_pretrained(str(MOTION_DIR), local_files_only=True, torch_dtype=torch.float16)
                     video_pipe = AnimateDiffPipeline.from_pretrained(
-                        str(MODEL_DIR), motion_adapter=adapter, local_files_only=True,
-                        torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False,
+                        str(video_model_dir), motion_adapter=adapter, local_files_only=True,
+                        torch_dtype=torch.float16, use_safetensors=True,
+                        safety_checker=None, requires_safety_checker=False,
                     )
                     video_pipe.enable_vae_slicing()
                     try:
