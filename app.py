@@ -2894,6 +2894,9 @@ def generate():
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=effective_negative,
                     profile=profile, backend="cloud_gpu", generation_mode="img2img" if init_image is not None else "txt2img",
+                    generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
+                                         "image_preset": image_preset, "face_profile_id": profile_id,
+                                         "use_global_body_model": use_global_body_model},
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -2909,6 +2912,7 @@ def generate():
                 status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
                 asset_id=asset["id"], title=asset["title"],
                 mode="img2img" if init_image is not None else "txt2img",
+                seed=seed,
                 face_profile=profile["name"] if profile else None,
                 backend="cloud_gpu", message="Generated on the selected cloud GPU and saved to the database library.",
             )
@@ -2981,6 +2985,9 @@ def generate():
             asset = _persist_generated_asset(
                 "image", filename, title=title, prompt=prompt, negative_prompt=effective_negative,
                 profile=profile, backend=backend, generation_mode="img2img" if init_image is not None else "txt2img",
+                generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
+                                     "image_preset": image_preset, "face_profile_id": profile_id,
+                                     "use_global_body_model": use_global_body_model},
             )
         except RuntimeError as exc:
             _set_generation_progress(
@@ -3000,6 +3007,7 @@ def generate():
             status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
             asset_id=asset["id"], title=asset["title"],
             mode="img2img" if init_image is not None else "txt2img",
+            seed=seed,
             face_profile=profile["name"] if profile else None,
             backend=backend, message=message,
         )
@@ -3090,6 +3098,8 @@ def generate_video():
                 asset = _persist_generated_asset(
                     "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                     profile=profile, backend="cloud_gpu", generation_mode="animatediff",
+                    generation_metadata={"seed": seed, "steps": steps, "frames": frames, "fps": fps,
+                                         "face_profile_id": profile_id, "motion_adapter": "animatediff"},
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -3105,6 +3115,7 @@ def generate_video():
                 status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
                 asset_id=asset["id"], title=asset["title"],
                 face_profile=profile["name"] if profile else None, backend="cloud_gpu",
+                seed=seed, frames=frames, fps=fps,
                 message="Generated on the selected cloud GPU and saved to the database library.",
             )
 
@@ -3130,6 +3141,10 @@ def generate_video():
                         torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False,
                     )
                     video_pipe.enable_vae_slicing()
+                    try:
+                        video_pipe.enable_attention_slicing("max")
+                    except Exception:
+                        pass
                     video_pipe.to("cuda")
                     active_video_lora = None
                 if active_video_lora != profile_id:
@@ -3186,6 +3201,8 @@ def generate_video():
             asset = _persist_generated_asset(
                 "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                 profile=profile, backend="local_gpu", generation_mode="animatediff",
+                generation_metadata={"seed": seed, "steps": steps, "frames": frames, "fps": fps,
+                                     "face_profile_id": profile_id, "motion_adapter": "animatediff"},
             )
         except RuntimeError as exc:
             _set_generation_progress(
@@ -3201,6 +3218,7 @@ def generate_video():
             status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
             asset_id=asset["id"], title=asset["title"],
             face_profile=profile["name"] if profile else None, backend="local_gpu",
+            seed=seed, frames=frames, fps=fps,
             message="Generated locally on the System GPU and saved to the database library.",
         )
     finally:
