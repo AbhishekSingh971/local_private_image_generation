@@ -56,6 +56,7 @@ from face_profiles import (
 )
 from pose_validation import build_pose_control_image, estimate_head_pose, validate_pose_target
 from training_generation import targets_for_dataset_type
+from dataset_policy import infer_photo_kind_from_caption, select_training_files
 from video_generation import validate_video_settings
 from image_quality import assess_image_quality
 from safe_diagnostics import format_exception_detail
@@ -77,6 +78,7 @@ from studio_db import (
     get_face_profile_record,
     insert_face_profile_record,
     list_face_dataset_groups,
+    list_face_photo_training_metadata,
     list_face_profile_records,
     update_face_dataset_group,
     update_face_photo,
@@ -560,6 +562,45 @@ def _safe_profile_count():
     except Exception:
         app.logger.exception("Face profile store is unavailable")
         return 0
+
+
+def _eligible_profile_training_images(profile_id: str, purpose: str):
+    """Resolve purpose-matched local files before scheduling a LoRA job."""
+    paths = dataset_images(profile_id)
+    metadata = {}
+    if database_url_configured():
+        metadata = {
+            item["filename"]: item
+            for item in list_face_photo_training_metadata(profile_id)
+        }
+    for image_path in paths:
+        if image_path.name in metadata:
+            continue
+        sidecar = image_path.with_name(image_path.name + ".training.json")
+        if sidecar.is_file():
+            try:
+                record = json.loads(sidecar.read_text(encoding="utf-8"))
+                if isinstance(record, dict) and record.get("version") == 1:
+                    metadata[image_path.name] = record
+                    continue
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        caption_path = image_path.with_name(image_path.name + ".caption.txt")
+        try:
+            inferred = infer_photo_kind_from_caption(
+                caption_path.read_text(encoding="utf-8") if caption_path.is_file() else ""
+            )
+        except OSError:
+            inferred = None
+        if inferred:
+            metadata[image_path.name] = {
+                "photo_kind": inferred, "validation_status": "not_checked"
+            }
+    selected, _excluded = select_training_files(
+        paths, metadata, purpose,
+        include_unclassified_identity=(purpose == "identity"),
+    )
+    return selected
 
 
 def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode, generation_metadata=None):
@@ -2375,8 +2416,17 @@ def api_train_face_profile(profile_id):
     profile = get_profile(profile_id)
     if not profile:
         return jsonify(error="Face profile not found."), 404
-    if profile["image_count"] < 5:
-        return jsonify(error=f"Add at least 5 clear photos to this face profile first. Currently: {profile['image_count']}. "), 400
+    training_purpose = "body" if is_global_body_profile(profile_id) else "identity"
+    try:
+        eligible_training_images = _eligible_profile_training_images(profile_id, training_purpose)
+    except Exception:
+        app.logger.exception("Could not verify purpose-filtered training photos")
+        return jsonify(error="Could not verify the training dataset. Check database connectivity and local dataset metadata."), 503
+    if len(eligible_training_images) < 5:
+        return jsonify(error=(
+            f"Add at least 5 eligible {training_purpose} photos before training. "
+            f"Found {len(eligible_training_images)} after excluding other dataset types and photos marked Needs review."
+        )), 400
     try:
         steps = int(request.form.get("steps", "800"))
         resolution = int(request.form.get("resolution", "512"))
