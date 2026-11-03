@@ -3191,8 +3191,8 @@ def generate():
             if not files:
                 files = None
             try:
-                response = runpod_request(
-                    "POST", "/api/remote/generate", data=data, files=files, timeout=(20, 600)
+                response = cloud_worker_generate_image_async(
+                    data=data, files=files, task_id=task_id
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
