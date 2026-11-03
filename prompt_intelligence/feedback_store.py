@@ -1,21 +1,30 @@
 """PostgreSQL persistence for reward observations and contextual bandit state."""
 from __future__ import annotations
-import json, os, uuid
+
+import json
+import os
+import uuid
 from datetime import timezone
 from typing import Any, Mapping
+
 import psycopg
 from psycopg.rows import dict_row
 
+
 def _database_url() -> str:
     value = (os.getenv("DATABASE_URL") or "").strip()
-    if value.startswith("postgres://"): value = "postgresql://" + value[len("postgres://"):]
-    if value.startswith("postgresql+psycopg://"): value = "postgresql://" + value[len("postgresql+psycopg://"):]
+    if value.startswith("postgres://"):
+        value = "postgresql://" + value[len("postgres://"):]
+    if value.startswith("postgresql+psycopg://"):
+        value = "postgresql://" + value[len("postgresql+psycopg://"):]
     if not value.startswith("postgresql://"):
         raise RuntimeError("DATABASE_URL must be configured with a PostgreSQL URI.")
     return value
 
+
 def _connect():
     return psycopg.connect(_database_url(), row_factory=dict_row, connect_timeout=10)
+
 
 def ensure_feedback_schema() -> None:
     with _connect() as conn, conn.cursor() as cur:
@@ -35,22 +44,64 @@ def ensure_feedback_schema() -> None:
             context_key VARCHAR(200) PRIMARY KEY, state JSONB NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
 
-def save_feedback(*, asset_id: str | None, profile_id: str | None, source_id: str | None, source_type: str | None, task: str,
-                  configuration_id: str, context: Mapping[str, Any],
-                  report: Mapping[str, Any]) -> str:
+
+def _insert_feedback(cur, *, feedback_id, asset_id, profile_id, source_id, source_type,
+                     task, configuration_id, context, report):
+    reward = float(report["reward"])
+    if not -1.0 <= reward <= 1.0:
+        raise ValueError("Reward must be normalized to [-1, 1].")
+    cur.execute("""INSERT INTO generation_feedback(
+        id,asset_id,profile_id,source_id,source_type,task,configuration_id,context,scores,reward,
+        sources,penalties,needs_human_review)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s::jsonb,%s::jsonb,%s::jsonb)""",
+        (feedback_id, asset_id, profile_id, source_id, source_type, task[:32],
+         configuration_id[:120], json.dumps(dict(context)),
+         json.dumps(dict(report.get("scores", {}))), reward,
+         json.dumps(dict(report.get("sources", {}))),
+         json.dumps(list(report.get("penalties", []))),
+         json.dumps(list(report.get("needs_human_review", [])))))
+
+
+def save_feedback(*, asset_id: str | None, profile_id: str | None, source_id: str | None,
+                  source_type: str | None, task: str, configuration_id: str,
+                  context: Mapping[str, Any], report: Mapping[str, Any]) -> str:
     ensure_feedback_schema()
     feedback_id = uuid.uuid4().hex
-    reward = float(report["reward"])
-    if not -1.0 <= reward <= 1.0: raise ValueError("Reward must be normalized to [-1, 1].")
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute("""INSERT INTO generation_feedback(
-            id,asset_id,profile_id,source_id,source_type,task,configuration_id,context,scores,reward,sources,penalties,needs_human_review)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s::jsonb,%s::jsonb,%s::jsonb)""",
-            (feedback_id, asset_id, profile_id, source_id, source_type, task[:32], configuration_id[:120],
-             json.dumps(dict(context)), json.dumps(dict(report.get("scores", {}))), reward,
-             json.dumps(dict(report.get("sources", {}))), json.dumps(list(report.get("penalties", []))),
-             json.dumps(list(report.get("needs_human_review", [])))))
+        _insert_feedback(cur, feedback_id=feedback_id, asset_id=asset_id, profile_id=profile_id,
+                         source_id=source_id, source_type=source_type, task=task,
+                         configuration_id=configuration_id, context=context, report=report)
     return feedback_id
+
+
+def save_feedback_and_bandit_state(*, asset_id: str | None, profile_id: str | None,
+        source_id: str | None, source_type: str | None, task: str, configuration_id: str,
+        context: Mapping[str, Any], report: Mapping[str, Any], context_key: str) -> dict[str, Any]:
+    """Atomically append one feedback observation and update its locked bandit state."""
+    from .reward import PreferenceBandit
+
+    ensure_feedback_schema()
+    feedback_id = uuid.uuid4().hex
+    key = context_key[:200]
+    reward = float(report["reward"])
+    if not -1.0 <= reward <= 1.0:
+        raise ValueError("Reward must be normalized to [-1, 1].")
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO generation_bandit_state(context_key,state,updated_at)
+            VALUES (%s,%s::jsonb,now()) ON CONFLICT(context_key) DO NOTHING""",
+            (key, json.dumps({"version": 2, "contexts": {}})))
+        cur.execute("SELECT state FROM generation_bandit_state WHERE context_key=%s FOR UPDATE", (key,))
+        row = cur.fetchone()
+        bandit = PreferenceBandit.from_dict(row["state"] if row else None)
+        stats = bandit.record(configuration_id, reward, context)
+        _insert_feedback(cur, feedback_id=feedback_id, asset_id=asset_id, profile_id=profile_id,
+                         source_id=source_id, source_type=source_type, task=task,
+                         configuration_id=configuration_id, context=context, report=report)
+        cur.execute("""UPDATE generation_bandit_state SET state=%s::jsonb,updated_at=now()
+            WHERE context_key=%s""", (json.dumps(bandit.to_dict()), key))
+    return {"feedback_id": feedback_id, "configuration_trials": stats.trials,
+            "mean_reward": stats.mean_reward}
+
 
 def load_bandit_state(context_key: str) -> dict[str, Any] | None:
     ensure_feedback_schema()
@@ -59,6 +110,7 @@ def load_bandit_state(context_key: str) -> dict[str, Any] | None:
         row = cur.fetchone()
     return dict(row["state"]) if row else None
 
+
 def save_bandit_state(context_key: str, state: Mapping[str, Any]) -> None:
     ensure_feedback_schema()
     with _connect() as conn, conn.cursor() as cur:
@@ -66,6 +118,7 @@ def save_bandit_state(context_key: str, state: Mapping[str, Any]) -> None:
             VALUES (%s,%s::jsonb,now()) ON CONFLICT(context_key) DO UPDATE
             SET state=EXCLUDED.state,updated_at=now()""",
             (context_key[:200], json.dumps(dict(state))))
+
 
 def list_feedback(asset_id: str, limit: int = 50) -> list[dict[str, Any]]:
     ensure_feedback_schema()
@@ -76,6 +129,7 @@ def list_feedback(asset_id: str, limit: int = 50) -> list[dict[str, Any]]:
             (asset_id, max(1, min(int(limit), 100))))
         rows = cur.fetchall()
     return [{**dict(row), "created_at": row["created_at"].astimezone(timezone.utc).isoformat()} for row in rows]
+
 
 def list_feedback_for_source(source_id: str, limit: int = 30) -> list[dict[str, Any]]:
     ensure_feedback_schema()
