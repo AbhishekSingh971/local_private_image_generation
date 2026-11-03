@@ -20,6 +20,72 @@ def postgres_database(monkeypatch):
     yield
 
 
+def test_profile_photo_crud_and_training_data_reset(postgres_database):
+    profile_id = uuid.uuid4().hex
+    token = "photo_" + profile_id[:10]
+    try:
+        studio_db.create_face_profile_record({
+            "id": profile_id,
+            "name": "Photo CRUD " + profile_id[:8],
+            "token": token,
+            "description": "temporary photo metadata test",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "local_model_ready": True,
+            "runpod_model_ready": True,
+            "local_training_state": "completed",
+            "runpod_training_state": "completed",
+        })
+        ungrouped_id = studio_db.add_face_photo(
+            profile_id, "manual-left-45.jpg", b"manual-image",
+            angle_label="Middle-left 45", photo_kind="manual",
+            validation_status="not_checked",
+        )
+        group = studio_db.create_face_dataset_group(
+            profile_id, "Angle examples", expected_count=1, dataset_type="face_angles"
+        )
+        grouped_id = studio_db.add_face_photo(
+            profile_id, "grouped-right-90.jpg", b"grouped-image",
+            group_id=group["id"], angle_label="Right profile",
+            photo_kind="angle", validation_status="passed",
+        )
+
+        records = {item["id"]: item for item in studio_db.list_face_photo_metadata(profile_id)}
+        assert set(records) == {ungrouped_id, grouped_id}
+        assert "image_data" not in records[ungrouped_id]
+        assert records[ungrouped_id]["group_id"] is None
+        assert records[grouped_id]["group_id"] == group["id"]
+
+        updated = studio_db.update_face_photo(
+            ungrouped_id, angle_label="Middle-left 45°",
+            training_caption="three-quarter left view",
+            photo_kind="angle", validation_status="passed",
+            validation_message="Manually verified.",
+        )
+        assert updated["photo_kind"] == "angle"
+        assert updated["validation_status"] == "passed"
+        assert updated["training_caption"] == "three-quarter left view"
+
+        studio_db.save_face_model_bundle(profile_id, "local", "local-body.zip", b"local-adapter", 1)
+        studio_db.save_face_model_bundle(profile_id, "runpod", "cloud-body.zip", b"cloud-adapter", 1)
+        result = studio_db.clear_face_profile_training_data(profile_id)
+
+        assert result == {"photos_deleted": 2, "groups_deleted": 1, "artifacts_deleted": 2}
+        retained = studio_db.get_face_profile_record(profile_id)
+        assert retained is not None
+        assert retained["id"] == profile_id
+        assert retained["image_count"] == 0
+        assert retained["local_model_ready"] is False
+        assert retained["runpod_model_ready"] is False
+        assert retained["local_training_state"] == "not_trained"
+        assert retained["runpod_training_state"] == "not_trained"
+        assert studio_db.list_face_photo_metadata(profile_id) == []
+        assert studio_db.list_face_dataset_groups(profile_id) == []
+        assert studio_db.get_face_model_bundle(profile_id, "local") is None
+        assert studio_db.get_face_model_bundle(profile_id, "runpod") is None
+    finally:
+        studio_db.delete_face_profile_record(profile_id)
+
+
 def test_face_dataset_job_lifecycle_and_saved_asset_persistence(postgres_database):
     profile_id = uuid.uuid4().hex
     token = "test_" + profile_id[:10]
