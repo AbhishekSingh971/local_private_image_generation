@@ -37,6 +37,6 @@ jobs:
       - name: Test PostgreSQL job and generated-image persistence
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/studio_test
-        run: python -m pytest -q tests/test_studio_db_postgres.py
+        run: python -m pytest -q tests/test_studio_db_postgres.py tests/test_feedback_store_postgres.py
       - name: Check studio JavaScript syntax
         run: node --check static/studio.js
