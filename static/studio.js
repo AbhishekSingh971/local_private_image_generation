@@ -1129,7 +1129,10 @@
           : data.face_identity_mode==="prompt_matrix"
             ? " No face LoRA selected; generated facial structure from the prompt-derived feature matrix."
             : " No face identity adapter was selected.";
-        status.textContent=(data.message||"Image generated.")+" Saved as “"+data.title+"”."+identityMessage;
+        const referenceMessage=data.identity_reference_applied
+          ? " A saved face reference was also applied through IP-Adapter to reinforce facial likeness."
+          : "";
+        status.textContent=(data.message||"Image generated.")+" Saved as “"+data.title+"”."+identityMessage+referenceMessage;
       }
     }catch(error){
       setFinalGenerationProgress("image",false,error.message);
