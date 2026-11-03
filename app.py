@@ -566,6 +566,17 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
     folder = OUTPUT_DIR if asset_type == "image" else VIDEO_OUTPUT_DIR
     path = folder / Path(filename).name
     try:
+        metadata = dict(generation_metadata or {})
+        if asset_type == "image":
+            try:
+                with Image.open(path) as generated_image:
+                    metadata["technical_quality"] = assess_image_quality(generated_image).to_dict()
+            except Exception as quality_exc:
+                # Quality evaluation is advisory; never discard a valid generated image.
+                metadata["technical_quality"] = {
+                    "status": "not_assessed",
+                    "reason": str(quality_exc)[:300],
+                }
         return create_asset(
             asset_type=asset_type,
             title=title or prompt[:100] or ("Generated image" if asset_type == "image" else "Generated video"),
@@ -578,7 +589,7 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
             profile_name=profile["name"] if profile else None,
             backend=backend,
             generation_mode=generation_mode,
-            generation_metadata=generation_metadata,
+            generation_metadata=metadata,
         )
     except Exception as exc:
         app.logger.exception("Could not persist generated media to the database")
