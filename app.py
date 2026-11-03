@@ -561,7 +561,7 @@ def _safe_profile_count():
         return 0
 
 
-def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode):
+def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode, generation_metadata=None):
     folder = OUTPUT_DIR if asset_type == "image" else VIDEO_OUTPUT_DIR
     path = folder / Path(filename).name
     try:
@@ -577,6 +577,7 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
             profile_name=profile["name"] if profile else None,
             backend=backend,
             generation_mode=generation_mode,
+            generation_metadata=generation_metadata,
         )
     except Exception as exc:
         app.logger.exception("Could not persist generated media to the database")
