@@ -120,7 +120,7 @@ _FACE_FEATURE_PATTERNS = {
     "nose": re.compile(r"\b(?:straight|small|wide|narrow|button|upturned|rounded|defined)\s+nose\b", re.I),
     "lips": re.compile(r"\b(?:(?:full|thin|wide|soft|defined|natural)\s+)?lips?\b", re.I),
     "skin": re.compile(r"\b(?:(?:fair|light|medium|olive|tan|brown|deep|dark|warm|cool)\s+)?skin(?:\s+tone)?\b", re.I),
-    "hair": re.compile(r"\b(?:black|brown|dark|blonde|blond|red|auburn|burgundy|grey|gray|curly|wavy|straight|short|long)\s+hair\b", re.I),
+    "hair": re.compile(r"\b(?:(?:short|long|curly|wavy|straight)\s+)?(?:black|brown|dark|blonde|blond|red|auburn|burgundy|grey|gray)(?:\s+(?:curly|wavy|straight))?\s+hair\b", re.I),
     "expression": re.compile(r"\b(?:neutral expression|gentle smile|smiling|laughing|serious expression|surprised expression)\b", re.I),
     "view": re.compile(r"\b(?:front[- ]facing|three[- ]quarter|left profile|right profile|side profile|looking upward|looking down)\b", re.I),
 }
