@@ -14,7 +14,7 @@ from .reward import PreferenceBandit
 IMAGE_STRATEGIES = {
     "baseline": ("", ""),
     "identity_guard": (
-        "preserve the selected person's recognizable facial identity and distinctive facial structure",
+        "preserve the same individual, including the selected person's recognizable facial identity and distinctive facial structure",
         "identity drift, altered facial structure, changed distinctive features",
     ),
     "full_body_guard": (
