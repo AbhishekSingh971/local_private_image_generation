@@ -26,7 +26,7 @@ from flask import Flask, request, jsonify, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
-from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_generation import build_generation_prompts, fit_sd15_prompt, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from video_generation import resolve_video_request, generate_video_segments
 from face_profiles import (
     create_profile,
@@ -661,6 +661,14 @@ def remote_generate():
             effective_prompt, effective_negative_prompt = build_generation_prompts(
                 prompt, negative_prompt, image_preset, has_reference_image=image is not None
             )
+        original_prompt = effective_prompt
+        original_negative_prompt = effective_negative_prompt
+        effective_prompt = fit_sd15_prompt(pipeline.tokenizer, effective_prompt)
+        effective_negative_prompt = fit_sd15_prompt(pipeline.tokenizer, effective_negative_prompt)
+        if effective_prompt != original_prompt:
+            print("Positive prompt shortened to the SD 1.5 CLIP 77-token context.")
+        if effective_negative_prompt != original_negative_prompt:
+            print("Negative prompt shortened to the SD 1.5 CLIP 77-token context.")
         kwargs = {
             "prompt": effective_prompt,
             "negative_prompt": effective_negative_prompt or None,
