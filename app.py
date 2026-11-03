@@ -845,7 +845,7 @@ def api_asset_feedback(asset_id):
             profile_id=asset.get("profile_id"),
             source_id=asset_id, source_type="asset",
             task=task,
-            configuration_id=f"{mode}:{backend_class}:{(asset.get('generation_metadata') or {}).get('strategy_id', 'baseline')}"[:120],
+            configuration_id=str((asset.get("generation_metadata") or {}).get("strategy_id") or "baseline")[:120],
             context={"task": task, "model_family": "animatediff_sd15" if task == "video" else "sd15",
                      "backend_class": backend_class, "control_mode": mode,
                      "profile_id": asset.get("profile_id") or "global",
@@ -2440,8 +2440,6 @@ def api_train_face_profile(profile_id):
         return jsonify(error="Training purpose must be identity, body, expression or angle."), 400
     if is_global_body_profile(profile_id) and training_purpose != "body":
         return jsonify(error="The reserved shared profile can only train the body component."), 400
-    if not is_global_body_profile(profile_id) and training_purpose == "identity" and request.form.get("purpose") == "body":
-        return jsonify(error="Choose the body purpose to train a separate body component."), 400
     try:
         eligible_training_images = _eligible_profile_training_images(profile_id, training_purpose)
     except Exception:
@@ -3140,7 +3138,8 @@ def generate():
                                          "strategy_id": prompt_plan["strategy_id"],
                                          "strategy_version": prompt_plan["strategy_version"],
                                          "prompt_provider": prompt_plan["provider"],
-                                         "component_adapters": cloud_component_status,},
+                                         "component_adapters": cloud_component_status,
+                                         "body_pose_control": pose_control_image is not None},
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -3239,7 +3238,8 @@ def generate():
                                      "strategy_id": prompt_plan["strategy_id"],
                                      "strategy_version": prompt_plan["strategy_version"],
                                      "prompt_provider": prompt_plan["provider"],
-                                     "component_adapters": getattr(pipeline, "_private_component_adapter_status", {}),},
+                                     "component_adapters": getattr(pipeline, "_private_component_adapter_status", {}),
+                                         "body_pose_control": pose_control_image is not None},
             )
         except RuntimeError as exc:
             _set_generation_progress(
