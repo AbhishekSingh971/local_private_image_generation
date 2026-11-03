@@ -38,7 +38,8 @@ def test_full_body_preset_adds_framing_for_a_person_when_unspecified():
     prompt, negative = build_generation_prompts(
         "a realistic woman wearing a red dress", "", "full_body_photo"
     )
-    assert prompt.startswith("photorealistic full-body photograph")
+    assert prompt.startswith("a realistic woman wearing a red dress")
+    assert "photorealistic full-body photograph" in prompt
     assert "entire person visible from head to feet" in prompt
     assert "cropped body" in negative
     assert "clothes, clothing, dress" not in negative
@@ -57,7 +58,8 @@ def test_explicit_closeup_overrides_full_body_preset():
     prompt, negative = build_generation_prompts(
         "close-up portrait of a woman wearing a red dress", "", "full_body_photo"
     )
-    assert prompt.startswith("photorealistic photograph")
+    assert prompt.startswith("close-up portrait of a woman wearing a red dress")
+    assert "photorealistic photograph" in prompt
     assert "full-body photograph" not in prompt
     assert "cropped body" not in negative
 
@@ -66,7 +68,8 @@ def test_reference_photo_prevents_forced_full_body_reframing():
     prompt, negative = build_generation_prompts(
         "woman in a red dress", "", "full_body_photo", has_reference_image=True
     )
-    assert prompt.startswith("photorealistic photograph")
+    assert prompt.startswith("woman in a red dress")
+    assert "photorealistic photograph" in prompt
     assert "full-body photograph" not in prompt
     assert "cropped body" not in negative
 
@@ -105,7 +108,8 @@ def test_non_person_prompt_does_not_get_forced_human_composition():
     prompt, negative = build_generation_prompts(
         "a red sports car on a mountain road", "", "full_body_photo"
     )
-    assert prompt.startswith("photorealistic photograph")
+    assert prompt.startswith("a red sports car on a mountain road")
+    assert "photorealistic photograph" in prompt
     assert "full-body" not in prompt
     assert "cropped body" not in negative
 
