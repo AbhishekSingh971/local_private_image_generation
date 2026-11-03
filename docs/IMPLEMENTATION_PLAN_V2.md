@@ -256,6 +256,8 @@ The repository audit is recorded in `docs/PHASE_0_AUDIT.md`. It confirms that th
 
 ## 12. Phase 1 implementation record (2026-11-03)
 
+> Historical checkpoint. The staged items at the end of this section are superseded where Phase 2 below records completed integration.
+
 Implemented on `feature/identity-expression-body-training-v2`:
 
 - Added purpose-aware training selection. Identity training uses source/manual photos; the shared body profile uses only body-labelled photos. Expression and angle photos are excluded from identity training. Photos marked `needs_review` are excluded.
