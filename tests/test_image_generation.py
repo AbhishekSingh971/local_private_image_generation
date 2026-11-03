@@ -219,8 +219,8 @@ def test_prompt_matrix_uses_only_traits_explicitly_present_in_prompt():
         "almond-shaped hazel eyes, a straight nose, full lips and long black hair."
     )
     prompt, matrix = build_face_identity_prompt(source)
-    assert prompt.startswith("clear, coherent natural human face")
-    assert source in prompt
+    assert prompt.startswith(source)
+    assert "clear, coherent natural human face" in prompt
     assert matrix["mode"] == "prompt_matrix"
     assert matrix["features"]["face_shape"] == "oval face"
     assert matrix["features"]["nose"] == "straight nose"
