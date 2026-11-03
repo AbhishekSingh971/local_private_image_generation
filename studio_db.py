@@ -533,6 +533,24 @@ def _photo_dict(r,include_bytes=False):
     return d
 
 
+def list_face_photo_training_metadata(profile_id):
+    """Return lightweight purpose/approval metadata without loading photo BLOBs."""
+    ensure_schema()
+    rows = _all(
+        "SELECT filename,photo_kind,validation_status,group_id FROM face_photos WHERE profile_id=%s",
+        (profile_id,),
+    )
+    return [
+        {
+            "filename": row["filename"],
+            "photo_kind": row.get("photo_kind") or "manual",
+            "validation_status": row.get("validation_status") or "not_checked",
+            "group_id": row.get("group_id"),
+        }
+        for row in rows
+    ]
+
+
 def list_face_photo_records(profile_id,filenames=None):
     ensure_schema()
     if filenames is not None:
