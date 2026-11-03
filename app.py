@@ -2890,6 +2890,7 @@ def _load_cpu_or_gpu_pipeline(
             kwargs = {
                 "torch_dtype": dtype,
                 "use_safetensors": True,
+                "variant": "fp16" if use_cuda else None,
                 "safety_checker": None,
                 "requires_safety_checker": False,
             }
@@ -3545,7 +3546,7 @@ def generate_video():
                     )
                     video_pipe = AnimateDiffPipeline.from_pretrained(
                         str(video_model_dir), motion_adapter=adapter, local_files_only=True,
-                        torch_dtype=torch.float16, use_safetensors=True,
+                        torch_dtype=torch.float16, use_safetensors=True, variant="fp16",
                         safety_checker=None, requires_safety_checker=False,
                     )
                     video_pipe.enable_vae_slicing()
