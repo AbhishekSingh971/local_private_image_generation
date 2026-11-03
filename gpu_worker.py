@@ -298,20 +298,33 @@ def remote_train_profile():
                 caption_by_name[Path(caption_file.filename or "").name] = caption_file.stream.read(1200).decode("utf-8", errors="replace").strip()
             except (OSError, UnicodeError):
                 continue
-        create_profile(name, profile_id=profile_id, token=token, description=description)
-        for upload, image in zip(photo_uploads, images):
-            caption = caption_by_name.get(Path(upload.filename or "").name, "")
-            if caption:
-                lowered = caption.lower()
-                if lowered.startswith("body type:"):
-                    photo_kind = "body"
-                elif any(term in lowered for term in ("smile", "laugh", "expression", "surprised", "neutral", "serious")):
-                    photo_kind = "expression"
+        existing_profile = get_profile(profile_id)
+        if existing_profile:
+            if existing_profile.get("token") != token:
+                raise ValueError("The existing GPU-worker profile token does not match this training request.")
+            # Repeated cloud training requests commonly resend the same complete
+            # dataset. Do not duplicate an already-restored dataset on the worker.
+            existing_images = dataset_images(profile_id)
+            should_import = len(existing_images) < 5
+        else:
+            create_profile(name, profile_id=profile_id, token=token, description=description)
+            should_import = True
+        if should_import:
+            for upload, image in zip(photo_uploads, images):
+                caption = caption_by_name.get(Path(upload.filename or "").name, "")
+                if caption:
+                    lowered = caption.lower()
+                    if lowered.startswith("body type:") or lowered.startswith("body proportions:"):
+                        photo_kind = "body"
+                    elif any(term in lowered for term in ("smile", "laugh", "expression", "surprised", "neutral", "serious", "sad", "angry", "fearful", "disgusted", "confused")):
+                        photo_kind = "expression"
+                    elif any(term in lowered for term in ("yaw", "pitch", "profile", "three-quarter", "front-facing", "head pose", "head turned")):
+                        photo_kind = "angle"
+                    else:
+                        photo_kind = "manual"
+                    save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
                 else:
-                    photo_kind = "angle"
-                save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
-            else:
-                save_profile_image(profile_id, image)
+                    save_profile_image(profile_id, image, photo_kind="manual")
         existing = get_profile(profile_id)
         if existing and existing.get("local_training_state") == "running":
             return jsonify(error="This face profile is already training on the GPU worker."), 409
