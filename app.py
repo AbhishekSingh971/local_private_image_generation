@@ -234,7 +234,7 @@ def api_generation_progress(task_id):
 
 
 def _generation_component_signature(*, use_global_body_model=False,
-        use_profile_body_component=False, face_angle="", face_expression="", body_pose=False):
+        use_profile_body_component=False, face_angle="", face_expression="", body_pose=False, full_body=False):
     angle_codes = {"front": "aF", "three_quarter_left": "a3l",
                    "three_quarter_right": "a3r", "left_profile": "aL",
                    "right_profile": "aR"}
@@ -247,6 +247,8 @@ def _generation_component_signature(*, use_global_body_model=False,
         parts.append("b")
     if body_pose:
         parts.append("p")
+    if full_body:
+        parts.append("f")
     if face_angle in angle_codes:
         parts.append(angle_codes[face_angle])
     if face_expression in expression_codes:
@@ -3087,7 +3089,8 @@ def generate():
                          use_global_body_model=use_global_body_model,
                          use_profile_body_component=use_profile_body_component,
                          face_angle=face_angle, face_expression=face_expression,
-                         body_pose=pose_control_image is not None)},
+                         body_pose=pose_control_image is not None,
+                         full_body=image_preset == "full_body_photo")},
             preset=image_preset, has_reference_image=init_image is not None,
         )
     except PromptEngineError as exc:
@@ -3172,7 +3175,7 @@ def generate():
                                          "image_preset": image_preset, "face_profile_id": profile_id,
                                          "use_global_body_model": use_global_body_model,
                                          "use_profile_body_component": use_profile_body_component,
-                                         "component_signature": _generation_component_signature(use_global_body_model=use_global_body_model, use_profile_body_component=use_profile_body_component, face_angle=face_angle, face_expression=face_expression, body_pose=pose_control_image is not None),
+                                         "component_signature": _generation_component_signature(use_global_body_model=use_global_body_model, use_profile_body_component=use_profile_body_component, face_angle=face_angle, face_expression=face_expression, body_pose=pose_control_image is not None, full_body=image_preset == "full_body_photo"),
                                          "strategy_id": prompt_plan["strategy_id"],
                                          "strategy_version": prompt_plan["strategy_version"],
                                          "prompt_provider": prompt_plan["provider"],
