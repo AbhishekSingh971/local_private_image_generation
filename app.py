@@ -2992,8 +2992,10 @@ def generate():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
-    if (use_profile_body_component and not profile_id:
+    if use_profile_body_component and not profile_id:
         return jsonify(error="Select a face profile before using its body component."), 400
+    if use_profile_body_component and use_global_body_model:
+        return jsonify(error="Choose either the shared global body model or this profile’s body component, not both at once."), 400
     if (face_angle or face_expression) and not profile_id:
         return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
     if face_angle:
@@ -3320,7 +3322,7 @@ def generate_video():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
-    if (use_profile_body_component and not profile_id:
+    if use_profile_body_component and not profile_id:
         return jsonify(error="Select a face profile before using its video body component."), 400
     if (face_angle or face_expression) and not profile_id:
         return jsonify(error="Select a face profile before using video angle or expression controls."), 400
