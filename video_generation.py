@@ -68,7 +68,7 @@ def validate_video_settings(*, steps: int, frames: int, fps: int, seed: int):
 
 
 def _chunk_frame_counts(total_frames: int) -> list[int]:
-    """Split work into balanced 8–24 frame chunks supported by AnimateDiff."""
+    """Split work into supported 8, 16 or 24 frame windows for AnimateDiff."""
     total_frames = int(total_frames)
     if total_frames < 1:
         raise ValueError("At least one output frame is required.")
@@ -128,7 +128,6 @@ def generate_video_segments(
     with tempfile.TemporaryDirectory(prefix="video_segments_", dir=str(output_path.parent)) as temp_dir:
         temp_root = Path(temp_dir)
         segment_paths = []
-        total_steps = max(1, len(chunks) * int(steps))
         for index, frame_count in enumerate(chunks):
             segment_path = temp_root / f"segment_{index:03d}.mp4"
 
