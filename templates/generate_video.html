@@ -2,7 +2,7 @@
 {% block title %}Generate video · Private Face Studio{% endblock %}
 {% block page_heading %}Video generation{% endblock %}
 {% block content %}
-<div class="page-intro"><div><div class="eyebrow">CREATE · VIDEO</div><h1>Animate a scene</h1><p>Generate short motion clips with AnimateDiff. Video requires an available CUDA GPU; CPU fallback is not supported for this workflow.</p></div><a class="text-link" href="{{ url_for('library_videos_page') }}">Open saved videos →</a></div>
+<div class="page-intro"><div><div class="eyebrow">CREATE · VIDEO</div><h1>Animate a scene</h1><p>Generate 1–60 second clips with AnimateDiff. Video requires an available CUDA GPU; CPU fallback is not supported for this workflow.</p></div><a class="text-link" href="{{ url_for('library_videos_page') }}">Open saved videos →</a></div>
 <div class="work-grid">
   <section class="panel form-panel">
     <form id="videoForm">
@@ -17,15 +17,23 @@
       <p class="field-help">Use one prompt to describe the scene and motion. Internal safeguards add temporal-stability constraints without changing your requested action or identity.</p>
       <label for="videoOutputResolution">Output resolution</label><select id="videoOutputResolution" name="output_resolution"><option value="native" selected>Native · fastest, model resolution</option><option value="hd">HD · 1280 px long edge (resize)</option><option value="1080p">Full HD / 1080p equivalent · 1920 px long edge (resize)</option><option value="4k">4K equivalent · 3840 px long edge (resize)</option></select>
       <p class="field-help">HD/1080p/4K resize rendered video frames with FFmpeg. This increases pixel dimensions, not generated detail; 4K encoding can take substantially longer and create larger files.</p>
+      <label for="videoDurationSlider">Video duration <strong id="videoDurationLabel">3 seconds</strong></label>
+      <input id="videoDurationSlider" type="range" min="1" max="60" step="1" value="3" aria-label="Video duration in seconds">
       <div class="twocol">
-        <div><label for="videoFrames">Frames</label><select id="videoFrames" name="frames"><option value="8">8 · shortest</option><option value="16" selected>16 · starting point</option><option value="24">24 · longer</option></select></div>
-        <div><label for="videoSteps">Inference steps</label><select id="videoSteps" name="steps"><option value="5">5</option><option value="8">8</option><option value="12" selected>12 · start here</option><option value="16">16</option><option value="20">20 · slower</option></select></div>
+        <div><label for="videoDurationNumber">Duration in seconds</label><input id="videoDurationNumber" name="duration_seconds" type="number" min="1" max="60" step="1" value="3" required></div>
+        <div><label for="videoFps">Playback FPS</label><select id="videoFps" name="fps"><option value="6">6 · slower motion</option><option value="8" selected>8 · balanced</option><option value="12">12 · smoother playback</option></select></div>
       </div>
-      <div class="twocol">
-        <div><label for="videoFps">Playback FPS</label><select id="videoFps" name="fps"><option value="6">6 · slower motion</option><option value="8" selected>8 · AnimateDiff baseline</option><option value="12">12 · faster playback</option></select></div>
-        <div><label for="videoSeed">Seed <span class="optional">optional</span></label><input id="videoSeed" name="seed" type="number" min="0" max="2147483647" step="1" placeholder="Random seed"></div>
-      </div>
-      <p class="field-help">Save a seed to reproduce the same starting noise and compare prompt or setting changes. The same seed does not guarantee identical output across different model versions or software environments. FPS changes playback speed, not the number of generated motion frames.</p>
+      <p class="field-help" id="videoSegmentEstimate">3 seconds at 8 FPS · 24 frames · 1 AnimateDiff segment.</p>
+      <label for="videoQuality">Generation quality</label>
+      <select id="videoQuality" name="quality">
+        <option value="fast">Fast · 8 inference steps · quickest</option>
+        <option value="balanced" selected>Balanced · 12 inference steps · recommended</option>
+        <option value="high">High · 16 inference steps · slower</option>
+        <option value="maximum">Maximum · 20 inference steps · slowest</option>
+      </select>
+      <p class="field-help">Higher presets use more denoising steps for each segment and take longer. They do not change the base model's native detail. Output resolution below is a separate resize setting.</p>
+      <label for="videoSeed">Seed <span class="optional">optional</span></label><input id="videoSeed" name="seed" type="number" min="0" max="2147483647" step="1" placeholder="Random seed">
+      <p class="field-help">Long clips are generated as multiple segments of up to 24 frames, then assembled into one MP4. The same prompt and selected adapters are reused, but AnimateDiff does not carry motion state between segments, so transitions can be visible. A fixed seed makes each segment reproducible for the same settings; each segment uses a different derived seed.</p>
       <label for="videoTitle">Save as</label><input id="videoTitle" name="title" type="text" maxlength="160" placeholder="e.g. Cinematic turn 01">
       <button type="submit" id="videoButton">Generate video</button>
       <div id="videoStatus" class="status" role="status" aria-live="polite"></div>
@@ -35,7 +43,7 @@
         <p id="videoProgressDetail" class="progress-detail">Waiting for the model to start.</p>
         <p id="videoProgressStep" class="progress-step"></p>
       </div>
-      <div class="note">Facial identity can drift between frames. A selected profile must have a LoRA trained on the same backend you choose above.</div>
+      <div class="note">Face, body and expression controls are optional. Leave them unselected to generate with the base model. A selected face profile must have a LoRA trained on the same backend you choose above. Long clips may contain visible segment transitions.</div>
     </form>
   </section>
   <section class="panel result-panel">
