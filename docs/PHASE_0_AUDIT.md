@@ -44,3 +44,8 @@ The repository already contains useful building blocks. The new milestone should
 ## Verification limitations
 
 This audit used the connected GitHub repository's file-reading capability. It did not execute the test suite or run the application against a configured PostgreSQL database or GPU worker. Phase 0's source inspection is complete; runtime baseline tests remain pending in the developer's local environment or a configured CI runner.
+
+
+## Phase 1 follow-up (2026-11-03)
+
+The implementation branch now includes purpose-aware LoRA data selection, local metadata sidecars, training manifests, optional GPU reference-image IP-Adapter conditioning, technical image-quality metadata, persistent generation metadata, reproducible video seed/FPS settings, video attention slicing, and profile-scoped feedback contexts. See `docs/IMPLEMENTATION_PLAN_V2.md` for the exact implemented/pending boundary. Runtime tests are being checked through GitHub Actions; this source audit is not itself a test result.
