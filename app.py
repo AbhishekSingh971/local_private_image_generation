@@ -2486,7 +2486,7 @@ def api_train_face_profile(profile_id):
             )), 400
         opened_files = []
         try:
-            dataset_paths = dataset_images(profile_id)
+            dataset_paths = eligible_training_images
             files = []
             for path in dataset_paths:
                 handle = path.open("rb")
