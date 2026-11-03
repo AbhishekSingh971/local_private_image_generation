@@ -6,6 +6,7 @@ from image_generation import (
     validate_image_preset,
     resolve_generation_seed,
     MAX_GENERATION_SEED,
+    validate_remote_generation_prompts,
 )
 
 
@@ -162,3 +163,21 @@ def test_fit_sd15_prompt_trims_to_clip_context_and_preserves_leading_instruction
 
     assert fitted.startswith("same adult person preserve identity true right side profile")
     assert len(tokenizer.tokenize(fitted)) + tokenizer.num_special_tokens_to_add() <= 77
+
+
+def test_remote_prompt_validation_accepts_app_expanded_prompts():
+    positive = "x" * 1800
+    negative = "y" * 900
+    assert validate_remote_generation_prompts(positive, negative) == (positive, negative)
+
+
+def test_remote_prompt_validation_reports_empty_positive_prompt():
+    with pytest.raises(ValueError, match="received an empty prompt"):
+        validate_remote_generation_prompts("   ", "")
+
+
+def test_remote_prompt_validation_uses_separate_positive_and_negative_limits():
+    with pytest.raises(ValueError, match="expanded prompt exceeds the remote limit"):
+        validate_remote_generation_prompts("x" * 2401, "")
+    with pytest.raises(ValueError, match="expanded negative prompt exceeds the remote limit"):
+        validate_remote_generation_prompts("valid prompt", "y" * 1201)
