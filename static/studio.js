@@ -791,7 +791,9 @@
       if(generationBodyCheckbox){generationBodyCheckbox.disabled=!backendReady;if(!backendReady)generationBodyCheckbox.checked=false;}
       if(editBodyCheckbox){editBodyCheckbox.disabled=!backendReady;if(editBodyCheckbox.disabled)editBodyCheckbox.checked=false;}
       const trainBodyButton=$("#trainGlobalBodyButton");
-      if(trainBodyButton)trainBodyButton.disabled=Number(info.image_count||0)<5;
+      if(trainBodyButton)trainBodyButton.disabled=Number(info.image_count||0)<5 || info.local_training_state==="running" || info.runpod_training_state==="running" || Boolean(info.generation_running);
+      const clearBodyButton=$("#clearGlobalBodyButton");
+      if(clearBodyButton)clearBodyButton.disabled=info.local_training_state==="running" || info.runpod_training_state==="running" || Boolean(info.generation_running) || Boolean(generateBodyDatasetButton?.disabled);
       return info;
     } catch(error) {
       if(showError&&bodyStatus)bodyStatus.textContent="Could not read shared body-model status: "+error.message;
@@ -862,6 +864,25 @@
     } finally {
       generateBodyDatasetButton.disabled=false;
       generateBodyDatasetButton.textContent=originalText;
+      await loadGlobalBodyStatus(false);
+    }
+  });
+
+  const clearGlobalBodyButton=$("#clearGlobalBodyButton");
+  clearGlobalBodyButton?.addEventListener("click",async()=>{
+    const status=$("#bodyDatasetStatus")||$("#datasetStatus");
+    if(!window.confirm("Clear all shared body training photos, dataset groups, saved adapter artifacts and local checkpoints? The shared profile and globalbody token will remain."))return;
+    clearGlobalBodyButton.disabled=true;
+    if(status)status.textContent="Clearing shared body training data and saved adapters…";
+    try{
+      const result=await readJson(await fetch("/api/global-body/training-data",{method:"DELETE"}));
+      if(status)status.textContent="Shared body data cleared: "+result.photos_deleted+" photo(s), "+result.groups_deleted+" group(s), "+result.adapters_deleted+" saved adapter artifact(s). The shared profile was preserved.";
+      await loadDatasetGroups();
+      await refreshProfiles();
+      await loadGlobalBodyStatus();
+    }catch(error){
+      if(status)status.textContent="Could not clear shared body data: "+error.message;
+    }finally{
       await loadGlobalBodyStatus(false);
     }
   });
@@ -1281,7 +1302,7 @@
     return readJson(response);
   }
   let activeDatasetType="all";
-  let activeDatasetProfileId="";
+  let activeDatasetProfileId=new URLSearchParams(window.location.search).get("profile_id")||"";
   const datasetTypeLabels={all:"All groups",face_angles:"Face angles",expressions:"Expressions",body_type:"Body type · global"};
   $$(".dataset-category-tab").forEach(tab=>tab.addEventListener("click",()=>{
     activeDatasetType=tab.dataset.datasetFilter||"face_angles";
@@ -1376,12 +1397,115 @@
       const select=document.createElement("button");
       select.type="button";
       select.className="secondary-button";
-      select.textContent=activeDatasetProfileId===profile.id?"Showing this profile":"Show this profile's datasets";
-      select.addEventListener("click",()=>{activeDatasetProfileId=profile.id;loadDatasetGroups();});
+      select.textContent=activeDatasetProfileId===profile.id?"Hide profile data":"Show this profile's data";
+      select.addEventListener("click",()=>{
+        activeDatasetProfileId=activeDatasetProfileId===profile.id?"":profile.id;
+        const nextUrl=new URL(window.location.href);
+        if(activeDatasetProfileId)nextUrl.searchParams.set("profile_id",activeDatasetProfileId);
+        else nextUrl.searchParams.delete("profile_id");
+        history.replaceState(null,"",nextUrl.pathname+(nextUrl.search?nextUrl.search:""));
+        loadDatasetGroups();
+      });
+      const manage=document.createElement("a");
+      manage.className="button-link secondary-link";
+      manage.href="/faces?profile_id="+encodeURIComponent(profile.id);
+      manage.textContent="Open face profile";
       card.append(heading,token,training);
       if(empty.textContent)card.appendChild(empty);
-      card.appendChild(select);
+      card.append(select,manage);
       container.appendChild(card);
+    });
+  }
+
+  function renderSelectedProfilePhotos(profile, photos) {
+    const section=$("#selectedProfilePhotoSection");
+    const heading=$("#selectedProfilePhotoHeading");
+    const container=$("#selectedProfilePhotos");
+    if(!section||!container)return;
+    if(!profile){
+      section.hidden=true;container.replaceChildren();return;
+    }
+    section.hidden=false;
+    const records=photos||[];
+    if(heading)heading.textContent=profile.name+" · "+records.length+" photo(s)";
+    container.replaceChildren();
+    if(!records.length){
+      const empty=document.createElement("div");empty.className="empty-state panel";
+      empty.textContent="This profile has no saved photos yet. Add photos from the Face models page.";
+      container.appendChild(empty);return;
+    }
+    records.forEach(photo=>{
+      const card=document.createElement("article");card.className="panel dataset-group-card profile-photo-record";
+      const header=document.createElement("div");header.className="dataset-group-heading";
+      const title=document.createElement("h3");title.textContent=photo.angle_label||photo.filename||"Training photo";
+      const state=document.createElement("span");state.className="dataset-group-status";
+      state.textContent=photo.group_id?"In dataset group":"Profile-level upload";
+      header.append(title,state);card.appendChild(header);
+      const image=document.createElement("img");image.src=photo.content_url;image.alt=photo.angle_label||"Profile training photo";image.loading="lazy";image.className="profile-photo-preview";
+      image.addEventListener("error",()=>{image.alt="Preview unavailable";image.style.opacity=".35";});
+      card.appendChild(image);
+      const fields=document.createElement("div");fields.className="profile-photo-edit-fields";
+      const labelWrap=document.createElement("label");labelWrap.textContent="Photo label";
+      const labelInput=document.createElement("input");labelInput.type="text";labelInput.maxLength=80;labelInput.value=photo.angle_label||"Training photo";labelWrap.appendChild(labelInput);
+      const kindWrap=document.createElement("label");kindWrap.textContent="Training type";
+      const kindSelect=document.createElement("select");
+      [["manual","Manual / identity"],["source","Source reference"],["angle","Face angle"],["expression","Expression"],["body","Body type"]].forEach(([value,label])=>{
+        const option=document.createElement("option");option.value=value;option.textContent=label;kindSelect.appendChild(option);
+      });
+      kindSelect.value=photo.photo_kind||"manual";kindWrap.appendChild(kindSelect);
+      const reviewWrap=document.createElement("label");reviewWrap.textContent="Review status";
+      const reviewSelect=document.createElement("select");
+      [["not_checked","Not checked"],["passed","Approved"],["needs_review","Needs review"],["not_applicable","Not applicable"]].forEach(([value,label])=>{
+        const option=document.createElement("option");option.value=value;option.textContent=label;reviewSelect.appendChild(option);
+      });
+      reviewSelect.value=photo.validation_status||"not_checked";reviewWrap.appendChild(reviewSelect);
+      const captionWrap=document.createElement("label");captionWrap.textContent="Training caption";
+      const captionInput=document.createElement("textarea");captionInput.rows=2;captionInput.maxLength=1200;captionInput.value=photo.training_caption||"";captionWrap.appendChild(captionInput);
+      fields.append(labelWrap,kindWrap,reviewWrap,captionWrap);card.appendChild(fields);
+      if(photo.validation_message){
+        const note=document.createElement("p");note.className="field-help";note.textContent=photo.validation_message;card.appendChild(note);
+      }
+      const actions=document.createElement("div");actions.className="dataset-group-actions";
+      const save=document.createElement("button");save.type="button";save.className="secondary-button";save.textContent="Save photo details";
+      save.addEventListener("click",async()=>{
+        save.disabled=true;
+        try{
+          await readJson(await fetch(photo.manage_url,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+            angle_label:labelInput.value,photo_kind:kindSelect.value,validation_status:reviewSelect.value,
+            training_caption:captionInput.value,
+            validation_message:reviewSelect.value==="passed"?"Approved after manual visual review.":reviewSelect.value==="needs_review"?"Flagged for manual review.":""
+          })}));
+          if(status)status.textContent="Photo details saved. Training eligibility has been recalculated from the selected type and review status.";
+          await loadDatasetGroups();await refreshProfiles();
+        }catch(error){if(status)status.textContent="Could not save photo details: "+error.message;}
+        finally{save.disabled=false;}
+      });
+      const replaceInput=document.createElement("input");replaceInput.type="file";replaceInput.accept="image/png,image/jpeg,image/webp";replaceInput.hidden=true;
+      const replace=document.createElement("button");replace.type="button";replace.className="secondary-button";replace.textContent="Replace image";
+      replace.addEventListener("click",()=>replaceInput.click());
+      replaceInput.addEventListener("change",async()=>{
+        const file=replaceInput.files?.[0];if(!file)return;
+        if(file.size>8*1024*1024){if(status)status.textContent="Replacement image must be 8 MB or smaller.";replaceInput.value="";return;}
+        replace.disabled=true;
+        try{
+          const form=new FormData();form.append("photo",file,file.name);
+          await readJson(await fetch(photo.manage_url,{method:"PUT",body:form}));
+          if(status)status.textContent="Photo replaced. Its review status was reset to Needs review.";
+          await loadDatasetGroups();await refreshProfiles();
+        }catch(error){if(status)status.textContent="Could not replace photo: "+error.message;}
+        finally{replace.disabled=false;}
+      });
+      const remove=document.createElement("button");remove.type="button";remove.className="secondary-button danger-button";remove.textContent="Delete photo";
+      remove.addEventListener("click",async()=>{
+        if(!window.confirm("Delete this training photo from the profile? Its original in Generated images, if present, will remain."))return;
+        remove.disabled=true;
+        try{
+          await readJson(await fetch(photo.manage_url,{method:"DELETE"}));
+          if(status)status.textContent="Training photo deleted from this profile.";
+          await loadDatasetGroups();await refreshProfiles();
+        }catch(error){if(status)status.textContent="Could not delete photo: "+error.message;remove.disabled=false;}
+      });
+      actions.append(save,replace,remove);card.append(actions,replaceInput);container.appendChild(card);
     });
   }
 
@@ -1398,6 +1522,17 @@
       ]);
       const allGroups=data.groups||[];
       const profiles=profileData.profiles||[];
+      const selectedProfile=profiles.find(item=>item.id===activeDatasetProfileId)||null;
+      let selectedPhotos=[];
+      if(selectedProfile){
+        try{
+          const photoData=await readJson(await fetch("/api/face-profiles/"+encodeURIComponent(selectedProfile.id)+"/photos",{cache:"no-store"}));
+          selectedPhotos=photoData.photos||[];
+        }catch(error){
+          if(status)status.textContent="Profile loaded, but its photo list could not be read: "+error.message;
+        }
+      }
+      renderSelectedProfilePhotos(selectedProfile,selectedPhotos);
       const profileGroups=activeDatasetProfileId?allGroups.filter(group=>group.profile_id===activeDatasetProfileId):allGroups;
       const groups=activeDatasetType==="all"?profileGroups:profileGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
       renderTrainingProfileCards(profiles,allGroups);
