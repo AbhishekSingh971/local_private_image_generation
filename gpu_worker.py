@@ -27,6 +27,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from video_generation import validate_video_settings
 from face_profiles import (
     create_profile,
     dataset_images,
@@ -650,6 +651,11 @@ def remote_generate_video():
         fps = int(request.form.get("fps", "8"))
         seed = int(request.form.get("seed", "0"))
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
+        video_settings = validate_video_settings(steps=steps, frames=frames, fps=fps, seed=seed)
+        steps, frames, fps, seed = (
+            video_settings["steps"], video_settings["frames"],
+            video_settings["fps"], video_settings["seed"],
+        )
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
@@ -657,10 +663,6 @@ def remote_generate_video():
         return jsonify(error=str(exc) or "Invalid video settings."), 400
     if not prompt or len(prompt) > 1000 or len(negative_prompt) > 600:
         return jsonify(error="Video prompt is required and must be within the allowed length."), 400
-    if not 5 <= steps <= 20 or frames not in (8, 16, 24) or fps not in (6, 8, 12):
-        return jsonify(error="Choose 5–20 steps, 8/16/24 frames, and 6/8/12 FPS."), 400
-    if not 0 <= seed <= 2147483647:
-        return jsonify(error="Seed must be between 0 and 2147483647."), 400
     if not torch.cuda.is_available():
         _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
         return jsonify(error="CUDA is not available on this worker."), 503
