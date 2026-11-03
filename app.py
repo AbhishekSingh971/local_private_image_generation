@@ -33,7 +33,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
-from model_integrity import validate_sd15_model
+from model_integrity import validate_animatediff_adapter, validate_sd15_model
 from face_profiles import (
     DATA_DIR,
     LORA_DIR,
@@ -3537,7 +3537,11 @@ def generate_video():
                 if video_pipe is None:
                     video_model_dir = Path(MODEL_PATH_OVERRIDE).expanduser() if MODEL_PATH_OVERRIDE else MODEL_DIR
                     validate_sd15_model(video_model_dir)
-                    adapter = MotionAdapter.from_pretrained(str(MOTION_DIR), local_files_only=True, torch_dtype=torch.float16)
+                    validate_animatediff_adapter(MOTION_DIR)
+                    adapter = MotionAdapter.from_pretrained(
+                        str(MOTION_DIR), local_files_only=True,
+                        torch_dtype=torch.float16, use_safetensors=True,
+                    )
                     video_pipe = AnimateDiffPipeline.from_pretrained(
                         str(video_model_dir), motion_adapter=adapter, local_files_only=True,
                         torch_dtype=torch.float16, use_safetensors=True,
