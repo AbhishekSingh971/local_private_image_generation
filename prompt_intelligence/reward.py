@@ -22,10 +22,12 @@ class PreferenceBandit:
     def context_key(context: Mapping[str, Any] | None = None) -> str:
         values = context or {}
         parts = (
-            str(values.get("task", "image")).strip().lower()[:40],
-            str(values.get("model_family", "default")).strip().lower()[:60],
-            str(values.get("backend_class", "any")).strip().lower()[:30],
-            str(values.get("control_mode", "default")).strip().lower()[:40],
+            str(values.get("task", "image")).strip().lower()[:24],
+            str(values.get("model_family", "default")).strip().lower()[:40],
+            str(values.get("backend_class", "any")).strip().lower()[:16],
+            str(values.get("control_mode", "default")).strip().lower()[:24],
+            str(values.get("profile_id") or "global").strip().lower()[:32],
+            str(values.get("strategy_version") or "v1").strip().lower()[:16],
         )
         return "|".join(parts)
 
