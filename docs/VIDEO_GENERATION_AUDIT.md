@@ -56,3 +56,12 @@ The following improvements are now wired into the application:
 - There is no full-body pose conditioning in the video path. Image-generation OpenPose support does not transfer automatically to AnimateDiff.
 - Frame interpolation and AI super-resolution remain separate future post-processing stages. FFmpeg resizing does not create detail.
 - A successful technical report does not prove a good clip. Inspect the actual frames before using them as training data.
+
+## Duration and quality controls (2026-11-03)
+
+- The video form now accepts 1–60 seconds using a synchronized slider and numeric input. Playback FPS determines the target frame budget.
+- Quality presets map to 8, 12, 16 or 20 denoising steps per segment (Fast, Balanced, High, Maximum). Output resize remains a separate control and is not described as new generated detail.
+- The app and GHive worker split requests into AnimateDiff windows of 8, 16 or 24 frames, generate each segment with the same prompt and loaded adapters, then assemble and trim the MP4 to the requested duration.
+- Long GHive clips are submitted as background jobs and polled by the app; this avoids holding a Cloudflare tunnel request open throughout GPU inference.
+- Face profile, body component, angle and expression remain optional. When no profile is selected, the base SD 1.5 + AnimateDiff pipeline is used without loading a face or component LoRA.
+- Segment boundaries may be visible because the current AnimateDiff pipeline does not carry latent motion state between independent segment generations. The requested 60-second output is a stitched clip, not one continuous 60-second diffusion pass.
