@@ -3526,7 +3526,7 @@ def generate():
     identity_reference_metadata = (
         {"source": "user_reference"} if init_image is not None else None
     )
-    if profile_id and identity_reference_image is None:
+    if profile_id and identity_reference_image is None and backend in {"local_gpu", "cloud_gpu", "runpod"}:
         identity_reference_image, identity_reference_metadata = _load_profile_identity_reference(profile_id)
 
     # Reference strength is deliberately internal: preserve identity/composition by
@@ -3650,6 +3650,8 @@ def generate():
             except (TypeError, ValueError):
                 cloud_component_status = {"angle": "unknown", "expression": "unknown"}
             cloud_identity_status = response.headers.get("X-Face-Identity-Adapter", "not_reported")
+            cloud_identity_reference_status = response.headers.get("X-Face-Identity-Reference", "not_reported")
+            identity_reference_applied = cloud_identity_reference_status == "used"
             if profile_id and cloud_identity_status != "loaded":
                 output_path.unlink(missing_ok=True)
                 return jsonify(error=(
@@ -3672,7 +3674,9 @@ def generate():
                                          "face_identity_adapter": cloud_identity_status,
                                          "face_prompt_matrix": face_prompt_matrix,
                                      "identity_reference": identity_reference_metadata,
+                                     "identity_reference_applied": identity_reference_applied,
                                          "identity_reference": identity_reference_metadata,
+                                         "identity_reference_applied": identity_reference_applied,
                                          "image_preset": image_preset, "face_profile_id": profile_id,
                                          "use_global_body_model": use_global_body_model,
                                          "use_profile_body_component": use_profile_body_component,
@@ -3703,6 +3707,7 @@ def generate():
                 face_identity_adapter=cloud_identity_status,
                 face_prompt_matrix=face_prompt_matrix,
                 identity_reference=identity_reference_metadata,
+                identity_reference_applied=identity_reference_applied,
                 backend="cloud_gpu", message="Generated on the selected cloud GPU and saved to the database library.",
             )
 
@@ -3722,6 +3727,10 @@ def generate():
             identity_adapter_status = getattr(pipeline, "_private_identity_adapter_status", "not_selected")
             if profile_id and identity_adapter_status != "loaded":
                 raise RuntimeError("The selected trained face identity adapter was not loaded; generation was stopped.")
+            identity_reference_applied = bool(
+                identity_reference_image is not None
+                and getattr(pipeline, "_private_face_ip_adapter_loaded", False)
+            )
             original_effective_prompt = effective_prompt
             effective_prompt = fit_sd15_prompt(pipeline.tokenizer, effective_prompt)
             effective_negative = fit_sd15_prompt(pipeline.tokenizer, effective_negative)
@@ -3832,6 +3841,7 @@ def generate():
             face_identity_adapter=identity_adapter_status,
             face_prompt_matrix=face_prompt_matrix,
             identity_reference=identity_reference_metadata,
+            identity_reference_applied=identity_reference_applied,
             backend=backend, message=message,
         )
     finally:
