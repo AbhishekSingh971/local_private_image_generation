@@ -448,6 +448,10 @@ def _run_async_remote_generation(job_id, form_data, file_data):
                     job = REMOTE_GENERATION_JOBS.get(job_id, {})
                     job.update(status="cancelled", error="Generation cancelled before it started.")
                 return
+            with REMOTE_GENERATION_JOBS_LOCK:
+                job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                if job:
+                    job["status"] = "running"
             payload = dict(form_data)
             for field, (filename, content, content_type) in file_data.items():
                 payload[field] = (io.BytesIO(content), filename, content_type)
