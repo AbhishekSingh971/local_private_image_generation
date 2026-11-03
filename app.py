@@ -60,6 +60,7 @@ from dataset_policy import infer_photo_kind_from_caption, select_training_files
 from video_generation import validate_video_settings
 from image_quality import assess_image_quality
 from video_quality import assess_video_temporal_quality
+from body_pose import prepare_openpose_control_map
 from safe_diagnostics import format_exception_detail
 from prompt_intelligence.feedback_service import record_generation_feedback
 from prompt_intelligence.runtime import prepare_generation_prompt, PromptEngineError
@@ -2789,23 +2790,32 @@ def _load_cpu_or_gpu_pipeline(
                 local_model = MODEL_DIR if (MODEL_DIR / "model_index.json").is_file() else MODEL_ID
             dtype = torch.float16 if use_cuda else torch.float32
             controlnet = None
-            if mode == "pose_img2img":
-                from diffusers import ControlNetModel, StableDiffusionControlNetImg2ImgPipeline
-                controlnet_id = os.environ.get(
-                    "FACE_POSE_CONTROLNET_ID", "CrucibleAI/ControlNetMediaPipeFace"
-                ).strip() or "CrucibleAI/ControlNetMediaPipeFace"
-                # The default app model is Stable Diffusion 1.5 (CLIP hidden size 768).
-                # CrucibleAI/ControlNetMediaPipeFace at the repository root is SD 2.1
-                # (cross-attention size 1024); its SD 1.5 weights are in diffusion_sd15.
-                # Allow an explicit override for users intentionally pairing a different base.
-                controlnet_subfolder = os.environ.get(
-                    "FACE_POSE_CONTROLNET_SUBFOLDER", "diffusion_sd15"
-                ).strip()
+            if mode in {"pose_img2img", "body_pose_img2img", "body_pose_txt2img"}:
+                from diffusers import (
+                    ControlNetModel, StableDiffusionControlNetImg2ImgPipeline,
+                    StableDiffusionControlNetPipeline,
+                )
+                if mode.startswith("body_pose"):
+                    controlnet_id = os.environ.get(
+                        "BODY_POSE_CONTROLNET_ID", "lllyasviel/control_v11p_sd15_openpose"
+                    ).strip() or "lllyasviel/control_v11p_sd15_openpose"
+                    controlnet_subfolder = os.environ.get("BODY_POSE_CONTROLNET_SUBFOLDER", "").strip()
+                    pipeline_class = (
+                        StableDiffusionControlNetPipeline if mode == "body_pose_txt2img"
+                        else StableDiffusionControlNetImg2ImgPipeline
+                    )
+                else:
+                    controlnet_id = os.environ.get(
+                        "FACE_POSE_CONTROLNET_ID", "CrucibleAI/ControlNetMediaPipeFace"
+                    ).strip() or "CrucibleAI/ControlNetMediaPipeFace"
+                    controlnet_subfolder = os.environ.get(
+                        "FACE_POSE_CONTROLNET_SUBFOLDER", "diffusion_sd15"
+                    ).strip()
+                    pipeline_class = StableDiffusionControlNetImg2ImgPipeline
                 controlnet_kwargs = {"torch_dtype": dtype}
                 if controlnet_subfolder and controlnet_subfolder.lower() not in {"none", "root", "/"}:
                     controlnet_kwargs["subfolder"] = controlnet_subfolder
                 controlnet = ControlNetModel.from_pretrained(controlnet_id, **controlnet_kwargs)
-                pipeline_class = StableDiffusionControlNetImg2ImgPipeline
             else:
                 pipeline_class = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
             kwargs = {
@@ -3004,6 +3014,8 @@ def generate():
         return jsonify(error="The prompt plus face/body controls exceeds 1200 characters. Shorten the text prompt."), 400
 
     image_file = request.files.get("image")
+    pose_file = request.files.get("pose_control_image")
+    pose_control_image = None
     try:
         init_image = None
         if image_file and image_file.filename:
@@ -3011,8 +3023,13 @@ def generate():
                 init_image = ImageOps.exif_transpose(source).convert("RGB")
                 init_image.load()
             init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
+        if pose_file and pose_file.filename:
+            with Image.open(pose_file.stream) as source:
+                raw_pose_map = ImageOps.exif_transpose(source).convert("RGB")
+                raw_pose_map.load()
+            pose_control_image = prepare_openpose_control_map(raw_pose_map, width, height)
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
-        return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
+        return jsonify(error="Use a valid PNG, JPG or WEBP reference or OpenPose control map."), 400
     if generation_profile == "preserve_reference" and init_image is None:
         return jsonify(error="Upload a reference image to use Preserve reference mode."), 400
 
@@ -3029,6 +3046,7 @@ def generate():
     else:
         strength = 0.38 if profile_id else 0.46
 
+    mode = ("body_pose_img2img" if init_image is not None else "body_pose_txt2img") if pose_control_image is not None else ("img2img" if init_image is not None else "txt2img")
     try:
         prompt_plan = prepare_generation_prompt(
             prompt, negative_prompt, task="image",
@@ -3036,7 +3054,7 @@ def generate():
                      "face_angle": face_angle, "face_expression": face_expression,
                      "model_family": "sd15",
                      "backend_class": "cloud" if backend == "cloud_gpu" else backend,
-                     "control_mode": "img2img" if init_image is not None else "txt2img"},
+                     "control_mode": "body_openpose" if pose_control_image is not None else ("img2img" if init_image is not None else "txt2img")},
             preset=image_preset, has_reference_image=init_image is not None,
         )
     except PromptEngineError as exc:
@@ -3068,16 +3086,24 @@ def generate():
                 "use_global_body_model": "true" if use_global_body_model else "false",
                 "task_id": task_id, "aspect_ratio": aspect_ratio, "image_preset": image_preset,
                 "face_angle": face_angle, "face_expression": face_expression,
+                "pose_control_type": "body_openpose" if pose_control_image is not None else "",
                 "prompt_is_final": "true",
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
-            files = None
+            files = {}
             if init_image is not None:
                 buffer = io.BytesIO()
                 init_image.save(buffer, format="PNG")
                 buffer.seek(0)
-                files = {"image": ("reference.png", buffer, "image/png")}
+                files["image"] = ("reference.png", buffer, "image/png")
+            if pose_control_image is not None:
+                pose_buffer = io.BytesIO()
+                pose_control_image.save(pose_buffer, format="PNG")
+                pose_buffer.seek(0)
+                files["pose_control_image"] = ("openpose-map.png", pose_buffer, "image/png")
+            if not files:
+                files = None
             try:
                 response = runpod_request(
                     "POST", "/api/remote/generate", data=data, files=files, timeout=(20, 600)
@@ -3107,7 +3133,7 @@ def generate():
             try:
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=effective_negative,
-                    profile=profile, backend="cloud_gpu", generation_mode="img2img" if init_image is not None else "txt2img",
+                    profile=profile, backend="cloud_gpu", generation_mode=mode,
                     generation_metadata={"seed": seed, "steps": steps, "width": width, "height": height,
                                          "image_preset": image_preset, "face_profile_id": profile_id,
                                          "use_global_body_model": use_global_body_model,
@@ -3138,7 +3164,7 @@ def generate():
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
             return jsonify(error="This face profile has no locally trained LoRA. Train it using the System GPU or select the cloud GPU."), 400
         try:
-            mode = "img2img" if init_image is not None else "txt2img"
+            mode = ("body_pose_img2img" if init_image is not None else "body_pose_txt2img") if pose_control_image is not None else ("img2img" if init_image is not None else "txt2img")
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=3,
                 total_steps=steps, stage="loading_model", message="Loading the image model and selected face…",
@@ -3176,6 +3202,9 @@ def generate():
                 kwargs.update(image=init_image, strength=strength)
                 if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
                     kwargs["ip_adapter_image"] = init_image
+            if pose_control_image is not None:
+                kwargs["control_image"] = pose_control_image
+                kwargs["controlnet_conditioning_scale"] = float(os.environ.get("BODY_POSE_CONTROLNET_SCALE", "1.0"))
             result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=95,
