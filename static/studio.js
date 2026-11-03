@@ -1088,7 +1088,7 @@
     if(videoSegmentEstimate)videoSegmentEstimate.textContent=duration+" seconds at "+fps+" FPS · "+frames+" frames · "+segments+" AnimateDiff segment"+(segments===1?"":"s")+".";
   }
   videoDurationSlider?.addEventListener("input",()=>updateVideoDurationControls(videoDurationSlider.value));
-  videoDurationNumber?.addEventListener("input",()=>updateVideoDurationControls(videoDurationNumber.value));
+  videoDurationNumber?.addEventListener("input",()=>{if(videoDurationNumber.value!=="")updateVideoDurationControls(videoDurationNumber.value);});
   videoDurationNumber?.addEventListener("change",()=>updateVideoDurationControls(videoDurationNumber.value));
   videoFps?.addEventListener("change",()=>updateVideoDurationControls(videoDurationNumber?.value||3));
   updateVideoDurationControls(videoDurationNumber?.value||3);
