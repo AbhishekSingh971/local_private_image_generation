@@ -127,7 +127,7 @@
   }
   function updateFaceConditionControls() {
     const profileSelected=Boolean($("#faceProfile")?.value);
-    ["faceAngle","faceExpression"].forEach(id=>{
+    ["faceAngle","faceExpression","useProfileBodyComponent"].forEach(id=>{
       const control=$("#"+id);
       if(!control)return;
       control.disabled=!profileSelected;
@@ -137,7 +137,7 @@
   $("#faceProfile")?.addEventListener("change",updateFaceConditionControls);
   function updateVideoFaceConditionControls() {
     const selected=Boolean($("#videoProfile")?.value);
-    ["videoFaceAngle","videoFaceExpression"].forEach(id=>{
+    ["videoFaceAngle","videoFaceExpression","videoUseProfileBodyComponent"].forEach(id=>{
       const control=$("#"+id);
       if(!control)return;
       control.disabled=!selected;
