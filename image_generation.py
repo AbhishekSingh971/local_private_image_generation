@@ -112,6 +112,108 @@ _HUMAN_SUBJECT = re.compile(
     re.IGNORECASE,
 )
 
+_FACE_FEATURE_PATTERNS = {
+    "age": re.compile(r"\b(?:young adult|adult|middle[- ]aged|mature|elderly|older)\b", re.I),
+    "face_shape": re.compile(r"\b(?:oval|round|heart[- ]shaped|square|diamond[- ]shaped|long|angular)\s+face\b", re.I),
+    "eyes": re.compile(r"\b(?:(?:almond[- ]shaped|round|hooded|monolid|wide[- ]set|close[- ]set|large|small)\s+)?(?:brown|hazel|blue|green|grey|gray|dark|light)?\s*eyes?\b", re.I),
+    "eyebrows": re.compile(r"\b(?:thick|thin|arched|straight|soft|defined)\s+eyebrows?\b", re.I),
+    "nose": re.compile(r"\b(?:straight|small|wide|narrow|button|upturned|rounded|defined)\s+nose\b", re.I),
+    "lips": re.compile(r"\b(?:(?:full|thin|wide|soft|defined|natural)\s+)?lips?\b", re.I),
+    "skin": re.compile(r"\b(?:(?:fair|light|medium|olive|tan|brown|deep|dark|warm|cool)\s+)?skin(?:\s+tone)?\b", re.I),
+    "hair": re.compile(r"\b(?:black|brown|dark|blonde|blond|red|auburn|burgundy|grey|gray|curly|wavy|straight|short|long)\s+hair\b", re.I),
+    "expression": re.compile(r"\b(?:neutral expression|gentle smile|smiling|laughing|serious expression|surprised expression)\b", re.I),
+    "view": re.compile(r"\b(?:front[- ]facing|three[- ]quarter|left profile|right profile|side profile|looking upward|looking down)\b", re.I),
+}
+
+
+def extract_face_prompt_matrix(prompt: str) -> dict:
+    """Extract only facial traits explicitly present in a user's natural-language prompt."""
+    source = str(prompt or "").strip()
+    features = {}
+    for key, pattern in _FACE_FEATURE_PATTERNS.items():
+        match = pattern.search(source)
+        if match:
+            features[key] = match.group(0).strip()
+    subject_detected = bool(_HUMAN_SUBJECT.search(source))
+    face_requested = subject_detected and not bool(re.search(
+        r"\b(?:back view|view from behind|face hidden|face covered|covered face|helmet covering the face)\b",
+        source, re.I,
+    ))
+    return {
+        "subject_detected": subject_detected,
+        "face_requested": face_requested,
+        "features": features,
+        "feature_count": len(features),
+    }
+
+
+def build_face_identity_prompt(
+    prompt: str,
+    *,
+    profile_token: str | None = None,
+    profile_description: str = "",
+) -> tuple[str, dict]:
+    """Prepare a trained-identity trigger or a prompt-derived facial-feature matrix.
+
+    A trained profile is activated with the exact trigger phrase used by FaceDataset.
+    Without a trained profile, only neutral anatomy/rendering guidance is added; no
+    ethnicity, age, eye colour, face shape or other identity traits are invented.
+    """
+    source = str(prompt or "").strip()
+    if not source:
+        raise ValueError("Enter a prompt describing the image you want.")
+    matrix = extract_face_prompt_matrix(source)
+
+    token = str(profile_token or "").strip()
+    if token:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", token):
+            raise ValueError("The selected face profile has an invalid trigger token.")
+        # Match the training dataset's exact trigger phrase: a photo of {token} person.
+        trigger = f"a photo of {token} person"
+        if re.search(rf"(?<![A-Za-z0-9_-]){re.escape(token)}(?![A-Za-z0-9_-])", source):
+            effective = source
+            if not effective.lower().startswith(trigger.lower()):
+                effective = trigger + ", " + effective
+        else:
+            effective = trigger + ", " + source
+        description_words = re.findall(r"\S+", str(profile_description or "").strip())
+        # Training rotates 18-word description chunks. Use a short first chunk at
+        # inference so the user's scene and pose instructions survive CLIP truncation.
+        description = " ".join(description_words[:10])
+        if description and description.lower() not in effective.lower():
+            effective = trigger + ", " + description + ", " + source
+        matrix.update({
+            "mode": "trained_lora",
+            "trigger_token": token,
+            "profile_description_used": bool(description),
+            "identity_constraints": ["trained profile trigger", "preserve trained facial identity"],
+        })
+        return effective, matrix
+
+    if matrix["face_requested"]:
+        face_guard = (
+            "clear, coherent natural human face, balanced facial proportions, "
+            "naturally aligned eyes, anatomically well-formed nose and lips, "
+            "consistent jaw and cheek structure, realistic skin texture"
+        )
+        effective = face_guard + ", " + source
+        matrix.update({
+            "mode": "prompt_matrix",
+            "trigger_token": None,
+            "profile_description_used": False,
+            "identity_constraints": ["use only facial traits stated in the prompt", "natural coherent facial anatomy"],
+        })
+        return effective, matrix
+
+    matrix.update({
+        "mode": "base_prompt",
+        "trigger_token": None,
+        "profile_description_used": False,
+        "identity_constraints": [],
+    })
+    return source, matrix
+
+
 _PHOTO_PREFIX = (
     "photorealistic photograph, natural skin and material texture, lifelike details, "
     "realistic lighting and shadows, natural colors, "
