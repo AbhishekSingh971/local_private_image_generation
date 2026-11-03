@@ -115,9 +115,23 @@ def _public_record(record: dict) -> dict:
     return result
 
 
+def _write_training_metadata_sidecar(image_path: Path, *, photo_kind: str, validation_status: str, group_id: str | None) -> None:
+    """Mirror non-sensitive dataset classification beside the local image cache."""
+    payload = {
+        "version": 1,
+        "photo_kind": photo_kind if photo_kind in {"source", "angle", "expression", "body", "manual"} else "manual",
+        "validation_status": validation_status if validation_status in {"not_checked", "passed", "needs_review", "not_applicable"} else "not_checked",
+        "group_id": group_id,
+    }
+    sidecar = image_path.with_name(image_path.name + ".training.json")
+    temporary = sidecar.with_suffix(sidecar.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(sidecar)
+
+
 def _restore_database_photos() -> None:
     """Recreate missing local training-cache files from PostgreSQL photo blobs."""
-    from studio_db import list_face_photo_names, list_face_photo_records, list_face_profile_records
+    from studio_db import list_face_photo_names, list_face_photo_records, list_face_photo_training_metadata, list_face_profile_records
 
     for profile in list_face_profile_records():
         folder = dataset_dir(profile["id"])
@@ -139,9 +153,27 @@ def _restore_database_photos() -> None:
                     destination.with_name(destination.name + ".caption.txt").write_text(
                         caption[:1200], encoding="utf-8"
                     )
+                _write_training_metadata_sidecar(
+                    destination,
+                    photo_kind=photo.get("photo_kind") or "manual",
+                    validation_status=photo.get("validation_status") or "not_checked",
+                    group_id=photo.get("group_id"),
+                )
             finally:
                 if temporary.exists():
                     temporary.unlink()
+        # Existing local cache files also receive a metadata sidecar. This keeps
+        # GHive/local training selection safe when the worker later runs offline.
+        for item in list_face_photo_training_metadata(profile["id"]):
+            filename = Path(item["filename"]).name
+            image_path = folder / filename
+            if filename == item["filename"] and image_path.is_file():
+                _write_training_metadata_sidecar(
+                    image_path,
+                    photo_kind=item.get("photo_kind") or "manual",
+                    validation_status=item.get("validation_status") or "not_checked",
+                    group_id=item.get("group_id"),
+                )
 
 
 def _ensure_database_migrated() -> None:
@@ -364,6 +396,9 @@ def save_profile_image(
             target_yaw=target_yaw, target_pitch=target_pitch,
             actual_yaw=actual_yaw, actual_pitch=actual_pitch,
         )
+    _write_training_metadata_sidecar(
+        destination, photo_kind=photo_kind, validation_status=validation_status, group_id=group_id
+    )
     # Training captions let the LoRA associate a pose/expression/body description
     # with the shared trigger token instead of treating every image as identical.
     caption_path = destination.with_name(destination.name + ".caption.txt")

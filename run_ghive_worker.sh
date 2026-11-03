@@ -24,20 +24,10 @@ if not torch.cuda.is_available():
 print("CUDA verified:", torch.cuda.get_device_name(0))
 PY
 
-if [[ ! -f models/stable-diffusion-v1-5/model_index.json ]]; then
-python - <<'PY'
-import os
-from huggingface_hub import snapshot_download
-snapshot_download("stable-diffusion-v1-5/stable-diffusion-v1-5", local_dir="models/stable-diffusion-v1-5", token=os.getenv("HF_TOKEN") or None)
-PY
-fi
-if [[ ! -f models/animatediff-motion-adapter-v1-5-2/config.json ]]; then
-python - <<'PY'
-import os
-from huggingface_hub import snapshot_download
-snapshot_download("guoyww/animatediff-motion-adapter-v1-5-2", local_dir="models/animatediff-motion-adapter-v1-5-2", token=os.getenv("HF_TOKEN") or None)
-PY
-fi
+MODEL_DIR="${SD_MODEL_PATH:-models/stable-diffusion-v1-5}"
+python ensure_sd15_model.py --model-dir "$MODEL_DIR"
+ANIMATEDIFF_DIR="${ANIMATEDIFF_MODEL_PATH:-models/animatediff-motion-adapter-v1-5-2}"
+python ensure_animatediff_adapter.py --adapter-dir "$ANIMATEDIFF_DIR"
 
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"

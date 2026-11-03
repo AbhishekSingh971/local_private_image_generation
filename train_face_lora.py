@@ -1,5 +1,7 @@
 """Train a local Stable Diffusion 1.5 face-identity LoRA on a CUDA-enabled NVIDIA GPU."""
 import argparse
+import json
+import os
 import random
 import re
 from pathlib import Path
@@ -19,10 +21,15 @@ from peft import LoraConfig
 from peft.utils import get_peft_model_state_dict
 from transformers import CLIPTextModel, CLIPTokenizer
 
-from face_profiles import get_profile
+from face_profiles import GLOBAL_BODY_PROFILE_ID, get_profile
+from dataset_policy import infer_photo_kind_from_caption, select_training_files
+from model_integrity import validate_sd15_model
 
 ROOT = Path(__file__).resolve().parent
-BASE_MODEL = ROOT / "models" / "stable-diffusion-v1-5"
+MODEL_PATH_OVERRIDE = os.environ.get("SD_MODEL_PATH", "").strip()
+BASE_MODEL = Path(MODEL_PATH_OVERRIDE).expanduser() if MODEL_PATH_OVERRIDE else ROOT / "models" / "stable-diffusion-v1-5"
+if not BASE_MODEL.is_absolute():
+    BASE_MODEL = (ROOT / BASE_MODEL).resolve()
 LEGACY_DATASET_DIR = ROOT / "data" / "face_dataset"
 PROFILE_DATASET_ROOT = ROOT / "data" / "face_profiles"
 OUTPUT_ROOT = ROOT / "models" / "face_loras"
@@ -95,6 +102,8 @@ def parse_args():
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--mixed-precision", choices=("no", "fp16", "bf16"), default="fp16")
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--dataset-purpose", choices=("identity", "body", "expression", "angle"), default=None,
+                        help="Training data purpose; defaults to body for the reserved shared-body profile, identity otherwise.")
     args = parser.parse_args()
     if args.profile_id is not None and not re.fullmatch(r"[a-f0-9]{32}", args.profile_id):
         parser.error("--profile-id must be a 32-character face profile ID.")
@@ -120,21 +129,70 @@ def main():
             "CUDA was not detected. Face LoRA training is not practical on this CPU-only setup. "
             "Use an NVIDIA GPU and a CUDA-enabled PyTorch installation."
         )
-    if not (BASE_MODEL / "model_index.json").is_file():
-        raise SystemExit("Local SD 1.5 model missing. Run download_model.bat first.")
+    try:
+        validate_sd15_model(BASE_MODEL)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     dataset_dir = (
         PROFILE_DATASET_ROOT / args.profile_id / "dataset"
         if args.profile_id else LEGACY_DATASET_DIR
     )
-    files = sorted(
+    candidate_files = sorted(
         p for p in dataset_dir.glob("*")
         if p.is_file() and p.suffix.lower() in EXTENSIONS
     ) if dataset_dir.is_dir() else []
+    purpose = args.dataset_purpose or (
+        "body" if args.profile_id == GLOBAL_BODY_PROFILE_ID else "identity"
+    )
+    metadata_by_filename = {}
+    if args.profile_id and os.environ.get("DATABASE_URL", "").strip():
+        try:
+            from studio_db import list_face_photo_training_metadata
+            metadata_by_filename = {
+                item["filename"]: item
+                for item in list_face_photo_training_metadata(args.profile_id)
+            }
+        except Exception as exc:
+            raise SystemExit(
+                "Could not load dataset-purpose metadata from PostgreSQL; refusing to train on an unfiltered dataset. "
+                f"Check DATABASE_URL and database connectivity. Details: {exc}"
+            ) from exc
+    # Read local sidecars as a portable fallback when the GHive worker is offline
+    # from PostgreSQL. Database records take precedence over their local mirrors.
+    if args.profile_id:
+        for image_path in candidate_files:
+            if image_path.name in metadata_by_filename:
+                continue
+            sidecar = image_path.with_name(image_path.name + ".training.json")
+            if sidecar.is_file():
+                try:
+                    record = json.loads(sidecar.read_text(encoding="utf-8"))
+                    if isinstance(record, dict) and record.get("version") == 1:
+                        metadata_by_filename[image_path.name] = record
+                        continue
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
+            caption_path = image_path.with_name(image_path.name + ".caption.txt")
+            try:
+                inferred_kind = infer_photo_kind_from_caption(
+                    caption_path.read_text(encoding="utf-8") if caption_path.is_file() else ""
+                )
+            except OSError:
+                inferred_kind = None
+            if inferred_kind:
+                metadata_by_filename[image_path.name] = {
+                    "photo_kind": inferred_kind, "validation_status": "not_checked"
+                }
+    files, excluded_files = select_training_files(
+        candidate_files, metadata_by_filename, purpose,
+        include_unclassified_identity=(purpose == "identity"),
+    )
     if len(files) < 5:
         raise SystemExit(
-            f"Found {len(files)} face photos in {dataset_dir}. Add at least 5 good photos; 15–30 varied photos "
-            "usually provide a better starting point."
+            f"Found {len(files)} eligible {purpose} photos (excluded {len(excluded_files)}) in {dataset_dir}. "
+            "Add at least 5 correctly labelled, reviewed photos; 15–30 varied real references are a better starting point."
         )
+    print(f"Dataset purpose: {purpose}; selected {len(files)} photos; excluded {len(excluded_files)}.")
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -149,13 +207,16 @@ def main():
     tokenizer = CLIPTokenizer.from_pretrained(str(BASE_MODEL), subfolder="tokenizer", local_files_only=True)
     scheduler = DDPMScheduler.from_pretrained(str(BASE_MODEL), subfolder="scheduler", local_files_only=True)
     text_encoder = CLIPTextModel.from_pretrained(
-        str(BASE_MODEL), subfolder="text_encoder", torch_dtype=dtype, local_files_only=True
+        str(BASE_MODEL), subfolder="text_encoder", torch_dtype=dtype,
+        local_files_only=True, use_safetensors=True, variant="fp16",
     )
     vae = AutoencoderKL.from_pretrained(
-        str(BASE_MODEL), subfolder="vae", torch_dtype=dtype, local_files_only=True
+        str(BASE_MODEL), subfolder="vae", torch_dtype=dtype,
+        local_files_only=True, use_safetensors=True, variant="fp16",
     )
     unet = UNet2DConditionModel.from_pretrained(
-        str(BASE_MODEL), subfolder="unet", torch_dtype=dtype, local_files_only=True
+        str(BASE_MODEL), subfolder="unet", torch_dtype=dtype,
+        local_files_only=True, use_safetensors=True, variant="fp16",
     )
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
@@ -227,8 +288,29 @@ def main():
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        output = OUTPUT_ROOT / args.output_name
+        component_output = (
+            args.profile_id
+            and (
+                purpose in {"expression", "angle"}
+                or (purpose == "body" and args.profile_id != GLOBAL_BODY_PROFILE_ID)
+            )
+        )
+        if component_output:
+            # Non-identity components must never overwrite the identity LoRA.
+            output = OUTPUT_ROOT / args.profile_id / "components" / purpose
+        else:
+            output = OUTPUT_ROOT / args.output_name
         output.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "version": 1,
+            "profile_id": args.profile_id,
+            "purpose": purpose,
+            "selected_files": [path.name for path in files],
+            "excluded_files": excluded_files,
+        }
+        (output / "training_manifest.json").write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
         unet = accelerator.unwrap_model(unet)
         state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
         StableDiffusionPipeline.save_lora_weights(

@@ -127,3 +127,38 @@ def test_generation_seed_generates_a_valid_seed_when_missing():
 def test_invalid_generation_seed_is_rejected(seed):
     with pytest.raises(ValueError, match="Seed must be an integer"):
         resolve_generation_seed(seed)
+
+
+class _FakeClipTokenizer:
+    model_max_length = 77
+
+    def tokenize(self, text):
+        import re
+        return re.findall(r"[A-Za-z0-9]+|[^A-Za-z0-9 ]", text)
+
+    def num_special_tokens_to_add(self, pair=False):
+        return 2
+
+    def convert_tokens_to_string(self, tokens):
+        return " ".join(tokens)
+
+
+def test_fit_sd15_prompt_keeps_short_prompt_unchanged():
+    from image_generation import fit_sd15_prompt
+
+    tokenizer = _FakeClipTokenizer()
+    prompt = "Photorealistic portrait of the same person."
+    assert fit_sd15_prompt(tokenizer, prompt) == prompt
+
+
+def test_fit_sd15_prompt_trims_to_clip_context_and_preserves_leading_instructions():
+    from image_generation import fit_sd15_prompt
+
+    tokenizer = _FakeClipTokenizer()
+    prompt = "same adult person preserve identity true right side profile " + " ".join(
+        f"optional_detail_{index}" for index in range(100)
+    )
+    fitted = fit_sd15_prompt(tokenizer, prompt)
+
+    assert fitted.startswith("same adult person preserve identity true right side profile")
+    assert len(tokenizer.tokenize(fitted)) + tokenizer.num_special_tokens_to_add() <= 77

@@ -3,9 +3,10 @@
   const $ = (selector, root=document) => root.querySelector(selector);
   const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
   const page = document.body.dataset.page || "dashboard";
-  const useGpuAcceleration = $("#useGpuAcceleration");
-  const computeBackendWrap = $("#computeBackendWrap");
   const computeBackend = $("#computeBackend");
+  const trainingMethodSelect = $("#trainingMethod");
+  const globalSettingsStatus = $("#globalSettingsStatus");
+  const useGpuAcceleration = { get checked() { return Boolean(computeBackend && computeBackend.value !== "cpu"); } };
   const gpuStatus = $("#gpuStatus");
   const gpuModePill = $("#gpuModePill");
   let computeAvailability = null;
@@ -27,116 +28,85 @@
     return data;
   }
   function addComputeData(formData) {
-    if (useGpuAcceleration) {
-      formData.set("use_gpu", useGpuAcceleration.checked ? "true" : "false");
-      formData.set("compute_backend", useGpuAcceleration.checked ? (computeBackend?.value || "auto") : "cpu");
-    }
+    const selected = computeBackend?.value || "auto";
+    formData.set("use_gpu", selected === "cpu" ? "false" : "true");
+    formData.set("compute_backend", selected);
     formData.delete("use_runpod");
     return formData;
   }
-  function backendLabel(key, options) {
-    if (key === "auto") return "Auto · use available GPU";
-    if (key === "local_gpu") {
-      const gpu = options.local_gpu || {};
-      return "System GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
-    }
-    if (key === "cloud_gpu" || key === "runpod") {
-      const gpu = options.cloud_gpu || {};
-      return "GHive / Colab GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
-    }
-    return "Local CPU (fallback)";
-  }
   function applyComputeStatus() {
-    if (!useGpuAcceleration || !gpuStatus || !gpuModePill) return;
-    const requested = useGpuAcceleration.checked ? (computeBackend?.value || "auto") : "cpu";
-    if (!useGpuAcceleration.checked) {
-      gpuModePill.textContent = "LOCAL · CPU";
-      gpuStatus.textContent = "GPU acceleration is off. Requests use the local CPU; no cloud request is made.";
-      return;
-    }
+    if (!gpuStatus || !gpuModePill) return;
+    const requested = computeBackend?.value || "auto";
     const selected = requested === "auto" ? (computeAvailability?.auto_backend || "auto") : requested;
-    const labels = {cpu:"CPU FALLBACK", local_gpu:"SYSTEM GPU", cloud_gpu:"REMOTE GPU", runpod:"REMOTE GPU", auto:"GPU UNAVAILABLE"};
-    gpuModePill.textContent = requested === "auto" ? "AUTO · " + (labels[selected] || "CHECKING GPU") : (labels[selected] || "GPU ENABLED");
-    if (selected === "local_gpu") {
-      gpuStatus.textContent = "GPU acceleration is ON. Image generation will run on the detected System GPU: " + (computeAvailability?.local_gpu?.name || "CUDA GPU") + ".";
-    } else if (selected === "cloud_gpu" || selected === "runpod") {
-      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected remote GPU: " + (computeAvailability?.cloud_gpu?.name || "GHive / Colab GPU") + ". Requests are sent securely from the app to your configured worker.";
-    } else if (requested === "auto") {
-      gpuStatus.textContent = "GPU acceleration is ON, but no usable GPU is available. Auto mode is falling back to local CPU; image generation may be very slow. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
-    } else {
-      gpuStatus.textContent = "CPU fallback selected explicitly. Generation will run on the local CPU, not a GPU.";
-    }
-    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " GHive / Colab GPU unavailable: " + computeAvailability.cloud_error;
+    const labels = {cpu:"LOCAL · CPU",local_gpu:"SYSTEM GPU",cloud_gpu:"GHIVE GPU",runpod:"GHIVE GPU",auto:"AUTO · CHECKING"};
+    gpuModePill.textContent = requested === "auto" ? (labels[selected] || "AUTO · CHECKING") : (labels[selected] || "DEVICE SELECTED");
+    if (selected === "local_gpu") gpuStatus.textContent = "System GPU selected. " + (computeAvailability?.local_gpu?.name || "CUDA GPU") + " will be used for supported tasks.";
+    else if (selected === "cloud_gpu" || selected === "runpod") gpuStatus.textContent = "GHive remote GPU selected. Jobs will be sent to the configured authenticated worker.";
+    else if (requested === "auto") gpuStatus.textContent = selected === "cpu" ? "Auto found no usable GPU and will use the local CPU. CPU inference may be slow." : "Auto prefers System GPU, then GHive GPU, then local CPU.";
+    else gpuStatus.textContent = "Local CPU selected. No GPU worker will be used.";
+    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " GHive unavailable: " + computeAvailability.cloud_error;
   }
   function renderComputeOptions(options) {
     computeAvailability = options;
-    if (!computeBackend) return;
-    const previous = computeBackend.value;
-    computeBackend.replaceChildren();
-    const autoOption = document.createElement("option");
-    autoOption.value = "auto";
-    autoOption.textContent = backendLabel("auto", options);
-    computeBackend.appendChild(autoOption);
-    (options.available_backends || ["cpu"]).forEach(key => {
-      const option = document.createElement("option");
-      option.value = key;
-      option.textContent = backendLabel(key, options);
-      computeBackend.appendChild(option);
-    });
-    const choices = ["auto", ...(options.available_backends || ["cpu"])];
-    computeBackend.value = choices.includes(previous) ? previous : "auto";
+    if (computeBackend) {
+      const available = new Set(options.available_backends || ["cpu"]);
+      const localName = options.local_gpu?.name || "System CUDA GPU";
+      const cloudName = options.cloud_gpu?.name || "GHive CUDA GPU";
+      [...computeBackend.options].forEach(option => {
+        option.disabled = !["auto","cpu"].includes(option.value) && !available.has(option.value);
+        if (option.value === "local_gpu") {
+          option.textContent = available.has("local_gpu") ? localName + " · System GPU" : "System GPU · unavailable";
+        } else if (option.value === "cloud_gpu" || option.value === "runpod") {
+          option.textContent = available.has("cloud_gpu") ? cloudName + " · GHive" : "GHive GPU · unavailable";
+        } else if (option.value === "cpu") {
+          option.textContent = "Local CPU";
+        } else if (option.value === "auto") {
+          option.textContent = "Auto · best available device";
+        }
+      });
+    }
     applyComputeStatus();
+  }
+  async function saveGlobalSettings(fields) {
+    const data = await readJson(await fetch("/api/settings",{method:"PUT",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify(fields)}));
+    if (globalSettingsStatus) globalSettingsStatus.textContent = "Global settings saved.";
+    return data.settings;
+  }
+  async function loadGlobalSettings() {
+    try {
+      const data = await readJson(await fetch("/api/settings",{cache:"no-store"}));
+      if (computeBackend && data.settings?.compute_backend) computeBackend.value = data.settings.compute_backend;
+      if (trainingMethodSelect && data.settings?.training_method) trainingMethodSelect.value = data.settings.training_method;
+      if (globalSettingsStatus) globalSettingsStatus.textContent = "Saved globally · applies across all pages and training jobs.";
+    } catch(error) { if(globalSettingsStatus)globalSettingsStatus.textContent="Could not load saved settings: "+error.message; }
   }
   async function probeCloudGpu() {
-    if (!useGpuAcceleration || !computeBackendWrap) return;
-    computeBackendWrap.hidden = !useGpuAcceleration.checked;
-    if (!useGpuAcceleration.checked) {
-      computeAvailability = null;
-      renderComputeOptions({available_backends:["cpu"], auto_backend:"cpu", local_gpu:{}, cloud_gpu:{}, cloud_error:null});
-      return;
-    }
-    if (gpuModePill) gpuModePill.textContent = "CHECKING GPUS…";
-    if (gpuStatus) gpuStatus.textContent = "Checking local CUDA support and testing the configured remote GPU worker…";
+    if (gpuModePill) gpuModePill.textContent = "CHECKING DEVICE…";
+    if (gpuStatus) gpuStatus.textContent = "Checking local CUDA support and the configured remote GPU worker…";
     if (computeBackend) computeBackend.disabled = true;
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+    const timeoutId = window.setTimeout(() => controller.abort(),25000);
     try {
-      const response = await fetch("/api/gpu-status?probe=1", {
-        cache: "no-store",
-        signal: controller.signal,
-        headers: { "Accept": "application/json" }
-      });
-      const data = await readJson(response);
-      renderComputeOptions(data);
-    } catch (error) {
-      const message = error.name === "AbortError"
-        ? "GPU check timed out after 25 seconds. Verify the Flask app, GPU_WORKER_URL, and worker token, then retry."
-        : error.message || "Could not check GPU availability.";
-      renderComputeOptions({
-        available_backends: ["cpu"],
-        auto_backend: "cpu",
-        local_gpu: {available:false},
-        cloud_gpu: {available:false},
-        cloud_error: message
-      });
-    } finally {
-      window.clearTimeout(timeoutId);
-      if (computeBackend) computeBackend.disabled = false;
-    }
+      const response = await fetch("/api/gpu-status?probe=1",{cache:"no-store",signal:controller.signal,headers:{"Accept":"application/json"}});
+      renderComputeOptions(await readJson(response));
+    } catch(error) {
+      const message = error.name==="AbortError" ? "GPU check timed out. Verify GPU_WORKER_URL and the worker token." : error.message || "Could not check GPU availability.";
+      renderComputeOptions({available_backends:["cpu"],auto_backend:"cpu",local_gpu:{available:false},cloud_gpu:{available:false},cloud_error:message});
+    } finally { window.clearTimeout(timeoutId); if(computeBackend)computeBackend.disabled=false; }
   }
-  if (useGpuAcceleration) {
-    useGpuAcceleration.addEventListener("change", () => {
-      computeBackendWrap.hidden = !useGpuAcceleration.checked;
-      if (useGpuAcceleration.checked && computeBackend) computeBackend.value = "auto";
-      else if (computeBackend) computeBackend.value = "cpu";
-      applyComputeStatus();
-      probeCloudGpu();
-    });
-    computeBackend?.addEventListener("change", applyComputeStatus);
-    computeBackendWrap.hidden = !useGpuAcceleration.checked;
+  computeBackend?.addEventListener("change",async()=>{
     applyComputeStatus();
-    if (useGpuAcceleration.checked) probeCloudGpu();
-  }
+    try { await saveGlobalSettings({compute_backend:computeBackend.value}); }
+    catch(error) { if(globalSettingsStatus)globalSettingsStatus.textContent="Could not save compute setting: "+error.message; }
+    await loadGlobalBodyStatus(false);
+  });
+  trainingMethodSelect?.addEventListener("change",async()=>{
+    try {
+      await saveGlobalSettings({training_method:trainingMethodSelect.value});
+      if(trainingMethodSelect.value==="full_finetune" && $("#trainStatus")) $("#trainStatus").textContent="Full fine-tuning is selected globally. Training is blocked until its dedicated trainer is installed; LoRA will not be substituted.";
+    } catch(error) { if(globalSettingsStatus)globalSettingsStatus.textContent="Could not save training method: "+error.message; }
+  });
+  (async()=>{await loadGlobalSettings();await probeCloudGpu();})();
 
   function buildProfileOptions(select, firstLabel, selected) {
     if (!select) return;
@@ -157,7 +127,7 @@
   }
   function updateFaceConditionControls() {
     const profileSelected=Boolean($("#faceProfile")?.value);
-    ["faceAngle","faceExpression"].forEach(id=>{
+    ["faceAngle","faceExpression","useProfileBodyComponent"].forEach(id=>{
       const control=$("#"+id);
       if(!control)return;
       control.disabled=!profileSelected;
@@ -165,6 +135,23 @@
     });
   }
   $("#faceProfile")?.addEventListener("change",updateFaceConditionControls);
+  $("#useGlobalBodyModel")?.addEventListener("change",()=>{
+    if($("#useGlobalBodyModel").checked&&$("#useProfileBodyComponent"))$("#useProfileBodyComponent").checked=false;
+  });
+  $("#useProfileBodyComponent")?.addEventListener("change",()=>{
+    if($("#useProfileBodyComponent").checked&&$("#useGlobalBodyModel"))$("#useGlobalBodyModel").checked=false;
+  });
+  function updateVideoFaceConditionControls() {
+    const selected=Boolean($("#videoProfile")?.value);
+    ["videoFaceAngle","videoFaceExpression","videoUseProfileBodyComponent"].forEach(id=>{
+      const control=$("#"+id);
+      if(!control)return;
+      control.disabled=!selected;
+      if(!selected)control.value="";
+    });
+  }
+  $("#videoProfile")?.addEventListener("change",updateVideoFaceConditionControls);
+  updateVideoFaceConditionControls();
 
   function makeTag(text, state) {
     const node = document.createElement("span");
@@ -221,7 +208,32 @@
           } catch (error) { alert(error.message); }
           finally { deleteButton.disabled = false; }
         });
-        actions.append(useButton, deleteButton);
+        if (profile.local_model_ready) {
+          const syncButton = document.createElement("button");
+          syncButton.type = "button";
+          syncButton.className = "secondary-button";
+          syncButton.textContent = profile.runpod_model_ready ? "Resync LoRA to GHive" : "Sync LoRA to GHive";
+          syncButton.addEventListener("click", async () => {
+            syncButton.disabled = true;
+            const previousLabel = syncButton.textContent;
+            syncButton.textContent = "Uploading LoRA…";
+            try {
+              const result = await readJson(await fetch("/api/face-profiles/" + encodeURIComponent(profile.id) + "/sync-cloud-lora", {method:"POST", headers:{"Accept":"application/json","X-Requested-With":"XMLHttpRequest"}}));
+              alert(result.message || "LoRA synchronized to GHive.");
+              await refreshProfiles();
+            } catch (error) {
+              alert("GHive LoRA sync failed: " + error.message);
+              syncButton.disabled = false;
+              syncButton.textContent = previousLabel;
+            }
+          });
+          actions.appendChild(syncButton);
+        }
+        const manageButton=document.createElement("a");
+        manageButton.className="button-link secondary-link";
+        manageButton.href="/training-data?profile_id="+encodeURIComponent(profile.id);
+        manageButton.textContent="View data & manage photos";
+        actions.append(manageButton, useButton, deleteButton);
         card.append(top, badges, actions); profileList.appendChild(card);
       });
     }
@@ -776,14 +788,16 @@
       const info=globalBodyStatusCache;
       if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · GHive / Colab GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
       if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", remote GPU: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
-      const requestedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
+      const requestedBackend=computeBackend?.value||"auto";
       const selectedBackend=requestedBackend==="auto"?(computeAvailability?.auto_backend||"auto"):requestedBackend;
       const backendReady=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?info.runpod_model_ready:(selectedBackend==="auto"?false:info.local_model_ready);
       const generationBodyCheckbox=$("#useGlobalBodyModel");
       if(generationBodyCheckbox){generationBodyCheckbox.disabled=!backendReady;if(!backendReady)generationBodyCheckbox.checked=false;}
       if(editBodyCheckbox){editBodyCheckbox.disabled=!backendReady;if(editBodyCheckbox.disabled)editBodyCheckbox.checked=false;}
       const trainBodyButton=$("#trainGlobalBodyButton");
-      if(trainBodyButton)trainBodyButton.disabled=Number(info.image_count||0)<5;
+      if(trainBodyButton)trainBodyButton.disabled=Number(info.image_count||0)<5 || info.local_training_state==="running" || info.runpod_training_state==="running" || Boolean(info.generation_running);
+      const clearBodyButton=$("#clearGlobalBodyButton");
+      if(clearBodyButton)clearBodyButton.disabled=info.local_training_state==="running" || info.runpod_training_state==="running" || Boolean(info.generation_running) || Boolean(generateBodyDatasetButton?.disabled);
       return info;
     } catch(error) {
       if(showError&&bodyStatus)bodyStatus.textContent="Could not read shared body-model status: "+error.message;
@@ -792,8 +806,8 @@
     }
   }
   $("#trainingPhotoUseBodyModel")?.addEventListener("change",event=>{event.target.dataset.userTouched="1";});
-  useGpuAcceleration?.addEventListener("change",()=>loadGlobalBodyStatus(false));
   computeBackend?.addEventListener("change",()=>loadGlobalBodyStatus(false));
+  
 
   const generateBodyDatasetButton=$("#generateBodyDatasetButton");
   generateBodyDatasetButton?.addEventListener("click",async()=>{
@@ -858,6 +872,30 @@
     }
   });
 
+  const clearGlobalBodyButton=$("#clearGlobalBodyButton");
+  clearGlobalBodyButton?.addEventListener("click",async()=>{
+    const status=$("#bodyDatasetStatus")||$("#datasetStatus");
+    if(!window.confirm("Clear all shared body training photos, dataset groups, saved adapter artifacts and local checkpoints? The shared profile and globalbody token will remain."))return;
+    clearGlobalBodyButton.disabled=true;
+    if(status)status.textContent="Clearing shared body training data and saved adapters…";
+    try{
+      const result=await readJson(await fetch("/api/global-body/training-data",{method:"DELETE"}));
+      if(status){
+        status.textContent="Shared body data cleared: "+result.photos_deleted+" photo(s), "+result.groups_deleted+" group(s), "+result.adapters_deleted+" saved adapter artifact(s). The shared profile was preserved.";
+        if(result.remote_cleanup==="deleted")status.textContent+=" GHive worker photos and adapter were also removed.";
+        else if(result.remote_cleanup==="unavailable")status.textContent+=" GHive cleanup is pending: "+(result.remote_cleanup_error||"the worker could not be reached")+". Reconnect/update the worker and run Clear again to remove its cached copy.";
+        else if(result.remote_cleanup==="not_configured")status.textContent+=" No GHive worker is configured, so only local/database copies were cleared.";
+      }
+      await loadDatasetGroups();
+      await refreshProfiles();
+      await loadGlobalBodyStatus();
+    }catch(error){
+      if(status)status.textContent="Could not clear shared body data: "+error.message;
+    }finally{
+      await loadGlobalBodyStatus(false);
+    }
+  });
+
   const trainGlobalBodyButton=$("#trainGlobalBodyButton");
   trainGlobalBodyButton?.addEventListener("click",async()=>{
     const status=$("#bodyDatasetStatus")||$("#globalBodyModelStatus");
@@ -905,20 +943,57 @@
     }
     if($("#trainStatus"))$("#trainStatus").textContent="Stopped polling after 8 hours. Check the worker logs and profile state.";
   }
+  async function pollComponentTraining(profileId, jobId, backend, purpose) {
+    const started=Date.now();
+    while(Date.now()-started<8*60*60*1000){
+      await new Promise(resolve=>setTimeout(resolve,4000));
+      const url="/api/face-profiles/"+profileId+"/component-train-status/"+jobId+"?backend="+backend;
+      const data=await readJson(await fetch(url,{cache:"no-store"}));
+      const job=data.job||{};
+      if(job.status==="completed"){
+        const status=$("#trainStatus");
+        if(status)status.textContent=purpose+" component training completed. It is stored separately from the identity LoRA.";
+        return;
+      }
+      if(job.status==="failed")throw new Error(job.error||purpose+" component training failed.");
+      const status=$("#trainStatus");
+      if(status)status.textContent=purpose+" component training is "+(job.status||"running")+"…";
+    }
+    throw new Error("Stopped polling after 8 hours. Check the GPU worker logs.");
+  }
+  $("#syncComponentButton")?.addEventListener("click",async()=>{
+    const id=$("#trainProfile")?.value;
+    const purpose=$("#trainingPurpose")?.value||"identity";
+    const status=$("#trainStatus");
+    const button=$("#syncComponentButton");
+    if(!id){if(status)status.textContent="Select a face profile first.";return;}
+    if(purpose==="identity"){if(status)status.textContent="Use the existing Sync cloud LoRA action for the identity adapter.";return;}
+    button.disabled=true;
+    try{
+      const data=await readJson(await fetch("/api/face-profiles/"+id+"/sync-cloud-component/"+purpose,{method:"POST"}));
+      if(status)status.textContent=data.message||"Component adapter synced to GHive.";
+    }catch(error){if(status)status.textContent=error.message;}
+    finally{button.disabled=false;}
+  });
   trainForm?.addEventListener("submit",async event=>{
     event.preventDefault();const id=$("#trainProfile")?.value;
     const status=$("#trainStatus");const button=$("#trainButton");
     const profile=profiles.find(item=>item.id===id);
-    if(!id){if(status)status.textContent="Create or select a face profile first.";return;}
-    if(!profile||profile.image_count<5){if(status)status.textContent="Add at least 5 good photos to this profile before training.";return;}
-    button.disabled=true;if(status)status.textContent="Checking selected compute backend and submitting the face training job…";
-    const backend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
+    const purpose=$("#trainingPurpose")?.value||"identity";
+    if(!id||!profile){if(status)status.textContent="Create or select a face profile first.";return;}
+    button.disabled=true;if(status)status.textContent="Checking eligible "+purpose+" photos and submitting the training job…";
+    const backend=computeBackend?.value||"auto";
     try{
       const data=await readJson(await fetch("/api/face-profiles/"+id+"/train",{method:"POST",body:addComputeData(new FormData(trainForm))}));
       if(status)status.textContent=data.message||"Training started.";
       await refreshProfiles();
       const resolvedBackend=data.backend||backend;
-      await pollTraining(id,(resolvedBackend==="runpod"||resolvedBackend==="cloud_gpu")?"runpod":"local");
+      const selectedBackend=(resolvedBackend==="runpod"||resolvedBackend==="cloud_gpu")?"runpod":"local";
+      if(purpose==="identity"||profile.id===globalBodyStatusCache?.profile_id){
+        await pollTraining(id,selectedBackend);
+      }else{
+        await pollComponentTraining(id,data.job_id,selectedBackend,purpose);
+      }
     }catch(error){if(status)status.textContent=error.message;}
     finally{button.disabled=false;await refreshProfiles().catch(()=>{});}
   });
@@ -929,23 +1004,6 @@
     if(!file){preview.hidden=true;preview.removeAttribute("src");placeholder.hidden=false;return;}
     preview.src=URL.createObjectURL(file);preview.hidden=false;placeholder.hidden=true;
   });
-  const strengthSlider = $("#strength");
-  const strengthNumber = $("#strengthNumber");
-  function syncStrength(source, target) {
-    if (!source || !target) return;
-    const parsed = Number(source.value);
-    if (!Number.isFinite(parsed)) return;
-    const value = Math.min(0.95, Math.max(0.20, Math.round(parsed * 100) / 100));
-    target.value = value.toFixed(2);
-    if (source !== strengthSlider && strengthSlider) strengthSlider.value = String(value);
-    if (source !== strengthNumber && strengthNumber) strengthNumber.value = value.toFixed(2);
-  }
-  strengthSlider?.addEventListener("input", () => syncStrength(strengthSlider, strengthNumber));
-  strengthNumber?.addEventListener("input", () => {
-    if (strengthNumber.value !== "") syncStrength(strengthNumber, strengthSlider);
-  });
-  strengthNumber?.addEventListener("change", () => syncStrength(strengthNumber, strengthSlider));
-
   function newGenerationTaskId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return window.crypto.randomUUID().replace(/-/g, "").toLowerCase();
@@ -1007,54 +1065,17 @@
   }
 
   const generationProfile = $("#generationProfile");
-  const strengthControl = $("#strength");
   const stepsControl = $("#steps");
   generationProfile?.addEventListener("change", () => {
     if (generationProfile.value === "preserve_reference") {
-      if (strengthControl) strengthControl.value = "0.30";
-      if (strengthNumber) strengthNumber.value = "0.30";
       if (stepsControl) stepsControl.value = "25";
     } else if (generationProfile.value === "photorealistic") {
-      if (strengthControl) strengthControl.value = "0.45";
-      if (strengthNumber) strengthNumber.value = "0.45";
       if (stepsControl) stepsControl.value = "25";
       const preset = $("#imagePreset");
       if (preset) preset.value = "photorealistic";
     }
   });
   const generationForm = $("#generationForm");
-  const finalPromptInput = $("#finalPrompt");
-  let promptPreviewRequest = 0;
-  async function refreshFinalPromptPreview() {
-    if (!generationForm || !finalPromptInput) return;
-    const requestId = ++promptPreviewRequest;
-    const prompt = $("#prompt")?.value || "";
-    if (!prompt.trim()) { finalPromptInput.value = ""; return; }
-    try {
-      const response = await fetch("/api/generation-prompt-preview", {
-        method: "POST", headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({
-          prompt,
-          negative_prompt: $("#negativePrompt")?.value || "",
-          image_preset: $("#imagePreset")?.value || "standard",
-          has_reference_image: Boolean($("#referenceImage")?.files?.length)
-        })
-      });
-      const data = await readJson(response);
-      if (requestId === promptPreviewRequest) {
-        finalPromptInput.value = data.prompt || prompt;
-        const negative = $("#negativePrompt");
-        if (negative && data.negative_prompt !== undefined) negative.value = data.negative_prompt;
-      }
-    } catch (error) {
-      if (requestId === promptPreviewRequest) finalPromptInput.value = prompt;
-    }
-  }
-  ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage"].forEach(selector => {
-    $(selector)?.addEventListener("input", refreshFinalPromptPreview);
-    $(selector)?.addEventListener("change", refreshFinalPromptPreview);
-  });
-  refreshFinalPromptPreview();
   generationForm?.addEventListener("submit",async event=>{
     event.preventDefault();
     const button=$("#generateButton");const status=$("#generationStatus");
@@ -1063,12 +1084,10 @@
     button.disabled=true;button.textContent="Generating image…";
     const progress=$("#imageProgress");if(progress)progress.hidden=false;
     updateGenerationProgress("image",{status:"starting",progress:0,stage:"starting",message:"Submitting image generation request…"});
-    if(status)status.textContent=useGpuAcceleration?.checked?"Sending this image task to the selected GPU worker…":"Loading the model and generating locally. CPU inference may be slow.";
+    if(status)status.textContent=useGpuAcceleration?.checked?"Sending this image task to the selected compute device…":"Loading the model and generating locally. CPU inference may be slow.";
     const preview=$("#resultPreview");const placeholder=$("#resultPlaceholder");const download=$("#downloadImage");const pill=$("#imageSavedPill");
     preview.hidden=true;placeholder.hidden=false;download.hidden=true;
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
-    formData.set("prompt", finalPromptInput?.value || $("#prompt")?.value || "");
-    formData.set("prompt_is_final", "true");
     const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
       const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
@@ -1083,6 +1102,26 @@
     }
     finally{progressController.abort();await progressWatcher;button.disabled=false;button.textContent="Generate photo";}
   });
+  const videoDurationSlider=$("#videoDurationSlider");
+  const videoDurationNumber=$("#videoDurationNumber");
+  const videoDurationLabel=$("#videoDurationLabel");
+  const videoFps=$("#videoFps");
+  const videoSegmentEstimate=$("#videoSegmentEstimate");
+  function updateVideoDurationControls(value){
+    const duration=Math.max(1,Math.min(60,Math.round(Number(value)||3)));
+    if(videoDurationSlider)videoDurationSlider.value=String(duration);
+    if(videoDurationNumber)videoDurationNumber.value=String(duration);
+    if(videoDurationLabel)videoDurationLabel.textContent=duration+" second"+(duration===1?"":"s");
+    const fps=Number(videoFps?.value||8);
+    const frames=duration*fps;
+    const segments=Math.max(1,Math.ceil(frames/24));
+    if(videoSegmentEstimate)videoSegmentEstimate.textContent=duration+" seconds at "+fps+" FPS · "+frames+" frames · "+segments+" AnimateDiff segment"+(segments===1?"":"s")+".";
+  }
+  videoDurationSlider?.addEventListener("input",()=>updateVideoDurationControls(videoDurationSlider.value));
+  videoDurationNumber?.addEventListener("input",()=>{if(videoDurationNumber.value!=="")updateVideoDurationControls(videoDurationNumber.value);});
+  videoDurationNumber?.addEventListener("change",()=>updateVideoDurationControls(videoDurationNumber.value));
+  videoFps?.addEventListener("change",()=>updateVideoDurationControls(videoDurationNumber?.value||3));
+  updateVideoDurationControls(videoDurationNumber?.value||3);
   const videoForm=$("#videoForm");
   videoForm?.addEventListener("submit",async event=>{
     event.preventDefault();
@@ -1092,7 +1131,7 @@
     button.disabled=true;button.textContent="Generating video…";
     const progress=$("#videoProgress");if(progress)progress.hidden=false;
     updateGenerationProgress("video",{status:"starting",progress:0,stage:"starting",message:"Submitting video generation request…"});
-    if(status)status.textContent=useGpuAcceleration?.checked?"Sending this video task to the selected GPU worker…":"Checking local CUDA and video model files…";
+    if(status)status.textContent=useGpuAcceleration?.checked?"Sending this video task to the selected compute device…":"Checking local CUDA and video model files…";
     const preview=$("#videoPreview");const placeholder=$("#videoPlaceholder");const download=$("#downloadVideo");const pill=$("#videoSavedPill");
     preview.hidden=true;preview.removeAttribute("src");placeholder.hidden=false;download.hidden=true;
     const formData=addComputeData(new FormData(videoForm));formData.set("task_id",taskId);
@@ -1159,6 +1198,44 @@
       const meta=document.createElement("div");meta.className="asset-meta";
       [asset.backend||"unknown backend",asset.profile_name||"Base model",asset.created_at?new Date(asset.created_at).toLocaleString(): "Saved",formatBytes(asset.media_size||0)].forEach(text=>{const tag=document.createElement("span");tag.textContent=text;meta.appendChild(tag);});
       card.appendChild(meta);
+      const feedbackPanel=document.createElement("section");feedbackPanel.className="asset-feedback";
+      const feedbackHeading=document.createElement("strong");feedbackHeading.textContent="Rate this result";feedbackPanel.appendChild(feedbackHeading);
+      const feedbackFields=document.createElement("div");feedbackFields.className="feedback-fields";
+      const feedbackDimensions=[
+        ["identity","Face identity"],["angle","Face angle"],["expression","Expression"],
+        ["body_proportions","Body proportions"],["image_quality","Image quality"],["prompt_adherence","Prompt adherence"]
+      ];
+      feedbackDimensions.forEach(([key,label])=>{
+        const wrap=document.createElement("label");wrap.className="feedback-field";
+        const caption=document.createElement("span");caption.textContent=label;
+        const select=document.createElement("select");select.name=key;select.setAttribute("aria-label",label+" rating");
+        const empty=document.createElement("option");empty.value="";empty.textContent="Not rated";select.appendChild(empty);
+        ["1 · Poor","2 · Below average","3 · Acceptable","4 · Good","5 · Excellent"].forEach((text,index)=>{
+          const option=document.createElement("option");option.value=String(index+1);option.textContent=text;select.appendChild(option);
+        });
+        wrap.append(caption,select);feedbackFields.appendChild(wrap);
+      });
+      feedbackPanel.appendChild(feedbackFields);
+      const feedbackActions=document.createElement("div");feedbackActions.className="asset-feedback-actions";
+      const submitFeedback=document.createElement("button");submitFeedback.type="button";submitFeedback.className="secondary-button";submitFeedback.textContent="Submit feedback";
+      const feedbackStatus=document.createElement("span");feedbackStatus.className="asset-feedback-status";feedbackStatus.setAttribute("aria-live","polite");
+      submitFeedback.addEventListener("click",async()=>{
+        const scores={};
+        feedbackFields.querySelectorAll("select").forEach(select=>{if(select.value)scores[select.name]=Number(select.value);});
+        if(!Object.keys(scores).length){feedbackStatus.textContent="Rate at least one dimension.";return;}
+        submitFeedback.disabled=true;feedbackStatus.textContent="Saving feedback…";
+        try{
+          const response=await fetch("/api/assets/"+asset.id+"/feedback",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({scores})
+          });
+          const data=await readJson(response);
+          feedbackStatus.textContent="Feedback saved · reward "+Number(data.result.evaluation.reward).toFixed(2);
+        }catch(error){feedbackStatus.textContent="Could not save: "+error.message;}
+        finally{submitFeedback.disabled=false;}
+      });
+      feedbackActions.append(submitFeedback,feedbackStatus);feedbackPanel.appendChild(feedbackActions);
+      card.appendChild(feedbackPanel);
       const actions=document.createElement("div");actions.className="asset-actions";
       const download=document.createElement("a");download.className="button-link";download.textContent="Download ↓";download.href="/assets/"+asset.id+"/content?download=1";
       const edit=document.createElement("button");edit.type="button";edit.className="secondary-button";edit.textContent="Edit details";edit.addEventListener("click",()=>openEditAsset(asset));
@@ -1234,7 +1311,7 @@
     return readJson(response);
   }
   let activeDatasetType="all";
-  let activeDatasetProfileId="";
+  let activeDatasetProfileId=new URLSearchParams(window.location.search).get("profile_id")||"";
   const datasetTypeLabels={all:"All groups",face_angles:"Face angles",expressions:"Expressions",body_type:"Body type · global"};
   $$(".dataset-category-tab").forEach(tab=>tab.addEventListener("click",()=>{
     activeDatasetType=tab.dataset.datasetFilter||"face_angles";
@@ -1329,12 +1406,116 @@
       const select=document.createElement("button");
       select.type="button";
       select.className="secondary-button";
-      select.textContent=activeDatasetProfileId===profile.id?"Showing this profile":"Show this profile's datasets";
-      select.addEventListener("click",()=>{activeDatasetProfileId=profile.id;loadDatasetGroups();});
+      select.textContent=activeDatasetProfileId===profile.id?"Hide profile data":"Show this profile's data";
+      select.addEventListener("click",()=>{
+        activeDatasetProfileId=activeDatasetProfileId===profile.id?"":profile.id;
+        const nextUrl=new URL(window.location.href);
+        if(activeDatasetProfileId)nextUrl.searchParams.set("profile_id",activeDatasetProfileId);
+        else nextUrl.searchParams.delete("profile_id");
+        history.replaceState(null,"",nextUrl.pathname+(nextUrl.search?nextUrl.search:""));
+        loadDatasetGroups();
+      });
+      const manage=document.createElement("a");
+      manage.className="button-link secondary-link";
+      manage.href="/faces?profile_id="+encodeURIComponent(profile.id);
+      manage.textContent="Open face profile";
       card.append(heading,token,training);
       if(empty.textContent)card.appendChild(empty);
-      card.appendChild(select);
+      card.append(select,manage);
       container.appendChild(card);
+    });
+  }
+
+  function renderSelectedProfilePhotos(profile, photos) {
+    const section=$("#selectedProfilePhotoSection");
+    const heading=$("#selectedProfilePhotoHeading");
+    const container=$("#selectedProfilePhotos");
+    const status=$("#datasetStatus");
+    if(!section||!container)return;
+    if(!profile){
+      section.hidden=true;container.replaceChildren();return;
+    }
+    section.hidden=false;
+    const records=photos||[];
+    if(heading)heading.textContent=profile.name+" · "+records.length+" photo(s)";
+    container.replaceChildren();
+    if(!records.length){
+      const empty=document.createElement("div");empty.className="empty-state panel";
+      empty.textContent="This profile has no saved photos yet. Add photos from the Face models page.";
+      container.appendChild(empty);return;
+    }
+    records.forEach(photo=>{
+      const card=document.createElement("article");card.className="panel dataset-group-card profile-photo-record";
+      const header=document.createElement("div");header.className="dataset-group-heading";
+      const title=document.createElement("h3");title.textContent=photo.angle_label||photo.filename||"Training photo";
+      const state=document.createElement("span");state.className="dataset-group-status";
+      state.textContent=photo.group_id?"In dataset group":"Profile-level upload";
+      header.append(title,state);card.appendChild(header);
+      const image=document.createElement("img");image.src=photo.content_url;image.alt=photo.angle_label||"Profile training photo";image.loading="lazy";image.className="profile-photo-preview";image.style.maxWidth="220px";image.style.maxHeight="220px";image.style.objectFit="contain";image.style.borderRadius="12px";
+      image.addEventListener("error",()=>{image.alt="Preview unavailable";image.style.opacity=".35";});
+      card.appendChild(image);
+      const fields=document.createElement("div");fields.className="profile-photo-edit-fields";fields.style.display="grid";fields.style.gap="10px";fields.style.maxWidth="560px";
+      const labelWrap=document.createElement("label");labelWrap.textContent="Photo label";
+      const labelInput=document.createElement("input");labelInput.type="text";labelInput.maxLength=80;labelInput.value=photo.angle_label||"Training photo";labelWrap.appendChild(labelInput);
+      const kindWrap=document.createElement("label");kindWrap.textContent="Training type";
+      const kindSelect=document.createElement("select");
+      [["manual","Manual / identity"],["source","Source reference"],["angle","Face angle"],["expression","Expression"],["body","Body type"]].forEach(([value,label])=>{
+        const option=document.createElement("option");option.value=value;option.textContent=label;kindSelect.appendChild(option);
+      });
+      kindSelect.value=photo.photo_kind||"manual";kindWrap.appendChild(kindSelect);
+      const reviewWrap=document.createElement("label");reviewWrap.textContent="Review status";
+      const reviewSelect=document.createElement("select");
+      [["not_checked","Not checked"],["passed","Approved"],["needs_review","Needs review"],["not_applicable","Not applicable"]].forEach(([value,label])=>{
+        const option=document.createElement("option");option.value=value;option.textContent=label;reviewSelect.appendChild(option);
+      });
+      reviewSelect.value=photo.validation_status||"not_checked";reviewWrap.appendChild(reviewSelect);
+      const captionWrap=document.createElement("label");captionWrap.textContent="Training caption";
+      const captionInput=document.createElement("textarea");captionInput.rows=2;captionInput.maxLength=1200;captionInput.value=photo.training_caption||"";captionWrap.appendChild(captionInput);
+      fields.append(labelWrap,kindWrap,reviewWrap,captionWrap);card.appendChild(fields);
+      if(photo.validation_message){
+        const note=document.createElement("p");note.className="field-help";note.textContent=photo.validation_message;card.appendChild(note);
+      }
+      const actions=document.createElement("div");actions.className="dataset-group-actions";
+      const save=document.createElement("button");save.type="button";save.className="secondary-button";save.textContent="Save photo details";
+      save.addEventListener("click",async()=>{
+        save.disabled=true;
+        try{
+          await readJson(await fetch(photo.manage_url,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+            angle_label:labelInput.value,photo_kind:kindSelect.value,validation_status:reviewSelect.value,
+            training_caption:captionInput.value,
+            validation_message:reviewSelect.value==="passed"?"Approved after manual visual review.":reviewSelect.value==="needs_review"?"Flagged for manual review.":""
+          })}));
+          if(status)status.textContent="Photo details saved. Training eligibility has been recalculated from the selected type and review status.";
+          await loadDatasetGroups();await refreshProfiles();
+        }catch(error){if(status)status.textContent="Could not save photo details: "+error.message;}
+        finally{save.disabled=false;}
+      });
+      const replaceInput=document.createElement("input");replaceInput.type="file";replaceInput.accept="image/png,image/jpeg,image/webp";replaceInput.hidden=true;
+      const replace=document.createElement("button");replace.type="button";replace.className="secondary-button";replace.textContent="Replace image";
+      replace.addEventListener("click",()=>replaceInput.click());
+      replaceInput.addEventListener("change",async()=>{
+        const file=replaceInput.files?.[0];if(!file)return;
+        if(file.size>8*1024*1024){if(status)status.textContent="Replacement image must be 8 MB or smaller.";replaceInput.value="";return;}
+        replace.disabled=true;
+        try{
+          const form=new FormData();form.append("photo",file,file.name);
+          await readJson(await fetch(photo.manage_url,{method:"PUT",body:form}));
+          if(status)status.textContent="Photo replaced. Its review status was reset to Needs review.";
+          await loadDatasetGroups();await refreshProfiles();
+        }catch(error){if(status)status.textContent="Could not replace photo: "+error.message;}
+        finally{replace.disabled=false;}
+      });
+      const remove=document.createElement("button");remove.type="button";remove.className="secondary-button danger-button";remove.textContent="Delete photo";
+      remove.addEventListener("click",async()=>{
+        if(!window.confirm("Delete this training photo from the profile? Its original in Generated images, if present, will remain."))return;
+        remove.disabled=true;
+        try{
+          await readJson(await fetch(photo.manage_url,{method:"DELETE"}));
+          if(status)status.textContent="Training photo deleted from this profile.";
+          await loadDatasetGroups();await refreshProfiles();
+        }catch(error){if(status)status.textContent="Could not delete photo: "+error.message;remove.disabled=false;}
+      });
+      actions.append(save,replace,remove);card.append(actions,replaceInput);container.appendChild(card);
     });
   }
 
@@ -1351,6 +1532,17 @@
       ]);
       const allGroups=data.groups||[];
       const profiles=profileData.profiles||[];
+      const selectedProfile=profiles.find(item=>item.id===activeDatasetProfileId)||null;
+      let selectedPhotos=[];
+      if(selectedProfile){
+        try{
+          const photoData=await readJson(await fetch("/api/face-profiles/"+encodeURIComponent(selectedProfile.id)+"/photos",{cache:"no-store"}));
+          selectedPhotos=photoData.photos||[];
+        }catch(error){
+          if(status)status.textContent="Profile loaded, but its photo list could not be read: "+error.message;
+        }
+      }
+      renderSelectedProfilePhotos(selectedProfile,selectedPhotos);
       const profileGroups=activeDatasetProfileId?allGroups.filter(group=>group.profile_id===activeDatasetProfileId):allGroups;
       const groups=activeDatasetType==="all"?profileGroups:profileGroups.filter(group=>(group.dataset_type||"face_angles")===activeDatasetType);
       renderTrainingProfileCards(profiles,allGroups);
@@ -1403,7 +1595,37 @@
           const validationDetail=document.createElement("span");validationDetail.className="photo-validation-details";
           if(photo.validation_message)validationDetail.textContent=photo.validation_message;
           else if(Number.isFinite(Number(photo.actual_yaw)))validationDetail.textContent="Estimated yaw "+Number(photo.actual_yaw).toFixed(0)+"°, pitch "+Number(photo.actual_pitch||0).toFixed(0)+"°.";
+          const feedbackDetails=document.createElement("details");feedbackDetails.className="dataset-feedback";
+          const feedbackSummary=document.createElement("summary");feedbackSummary.textContent="Rate this training sample";feedbackDetails.appendChild(feedbackSummary);
+          const feedbackFields=document.createElement("div");feedbackFields.className="feedback-fields dataset-feedback-fields";
+          const feedbackDimensions=[["identity","Identity"],["angle","Angle"],["expression","Expression"],["body_proportions","Body proportions"],["image_quality","Image quality"],["prompt_adherence","Prompt adherence"]];
+          feedbackDimensions.forEach(([key,labelText])=>{
+            const wrap=document.createElement("label");wrap.className="feedback-field";
+            const caption=document.createElement("span");caption.textContent=labelText;
+            const select=document.createElement("select");select.name=key;select.setAttribute("aria-label",labelText+" rating");
+            const empty=document.createElement("option");empty.value="";empty.textContent="Not rated";select.appendChild(empty);
+            ["1 · Poor","2 · Below average","3 · Acceptable","4 · Good","5 · Excellent"].forEach((text,index)=>{
+              const option=document.createElement("option");option.value=String(index+1);option.textContent=text;select.appendChild(option);
+            });
+            wrap.append(caption,select);feedbackFields.appendChild(wrap);
+          });
+          feedbackDetails.appendChild(feedbackFields);
+          const submitSampleFeedback=document.createElement("button");submitSampleFeedback.type="button";submitSampleFeedback.className="secondary-button";submitSampleFeedback.textContent="Save sample feedback";submitSampleFeedback.disabled=busy;
+          const sampleFeedbackStatus=document.createElement("span");sampleFeedbackStatus.className="asset-feedback-status";sampleFeedbackStatus.setAttribute("aria-live","polite");
+          submitSampleFeedback.addEventListener("click",async()=>{
+            const scores={};feedbackFields.querySelectorAll("select").forEach(select=>{if(select.value)scores[select.name]=Number(select.value);});
+            if(!Object.keys(scores).length){sampleFeedbackStatus.textContent="Rate at least one dimension.";return;}
+            submitSampleFeedback.disabled=true;sampleFeedbackStatus.textContent="Saving…";
+            try{
+              const response=await fetch("/api/face-photos/"+encodeURIComponent(photo.id)+"/feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scores})});
+              const result=await readJson(response);
+              sampleFeedbackStatus.textContent="Saved · reward "+Number(result.result.evaluation.reward).toFixed(2);
+            }catch(error){sampleFeedbackStatus.textContent="Could not save: "+error.message;}
+            finally{submitSampleFeedback.disabled=false;}
+          });
+          feedbackDetails.append(submitSampleFeedback,sampleFeedbackStatus);
           const photoActions=document.createElement("div");photoActions.className="dataset-photo-actions";
+
           const renamePhoto=document.createElement("button");renamePhoto.type="button";renamePhoto.className="secondary-button";renamePhoto.textContent="Edit label";renamePhoto.disabled=busy;
           renamePhoto.addEventListener("click",async()=>{
             const next=window.prompt("Photo label",photo.angle_label||"Training photo");
@@ -1444,7 +1666,7 @@
           photoActions.append(editWithPrompt,renamePhoto,replacePhoto,deletePhoto);
           figure.append(image,label,validation);
           if(validationDetail.textContent)figure.append(validationDetail);
-          figure.append(photoActions,replaceInput);photos.appendChild(figure);
+          figure.append(feedbackDetails,photoActions,replaceInput);photos.appendChild(figure);
         });
         if(!(group.photos||[]).length){
           const emptyPhotos=document.createElement("div");
@@ -1499,12 +1721,12 @@
     try{
       const data=await readJson(await fetch("/health"));
       const gpu=data.local_gpu||{};
-      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"GHive / Colab GPU worker is configured; enable GPU acceleration to check availability.":"GHive / Colab GPU worker is not configured; local CPU remains available.");
+      if(gpuStatus && computeBackend?.value==="cpu")gpuStatus.textContent="Local CPU is selected. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"GHive GPU worker is configured; select it in Global settings to use it.":"GHive GPU worker is not configured; local CPU remains available.");
     }catch(error){if(gpuStatus)gpuStatus.textContent=error.message;}
   }
   loadStatus();
   if($("#globalBodyModelStatus")||$("#globalBodyGenerationStatus")||$("#useGlobalBodyModel")||$("#datasetGroups"))loadGlobalBodyStatus().catch(()=>{});
-  if($("#profileList")||$("#trainProfile")||$("#faceProfile")||$("#videoProfile"))refreshProfiles().catch(error=>{
+  if($("#profileList")||$("#trainProfile")||$("#faceProfile")||$("#videoProfile")||$("#addPhotosProfile"))refreshProfiles().catch(error=>{
     const profileList=$("#profileList");if(profileList)profileList.textContent="Could not load profiles: "+error.message;
   });
   loadAssets();

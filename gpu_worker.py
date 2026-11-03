@@ -26,7 +26,8 @@ from flask import Flask, request, jsonify, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
-from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_generation import build_generation_prompts, fit_sd15_prompt, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from video_generation import resolve_video_request, generate_video_segments
 from face_profiles import (
     create_profile,
     dataset_images,
@@ -122,7 +123,7 @@ def _valid_profile(profile_id):
     return value if get_profile(value) else None
 
 
-def _training_job(profile_id, job_id, steps, resolution):
+def _training_job(profile_id, job_id, steps, resolution, purpose="identity"):
     profile = get_profile(profile_id)
     if not profile:
         with TASKS_LOCK:
@@ -137,10 +138,11 @@ def _training_job(profile_id, job_id, steps, resolution):
         "--steps", str(steps),
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
+        "--dataset-purpose", purpose,
     ]
     with TASKS_LOCK:
         TASKS[job_id] = {
-            "job_id": job_id, "profile_id": profile_id, "status": "running",
+            "job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "running",
             "started_at": time.time(), "logs": "",
         }
     try:
@@ -149,29 +151,33 @@ def _training_job(profile_id, job_id, steps, resolution):
             check=False,
         )
         logs = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-        if completed.returncode == 0 and (
-            (model_path(profile_id) / "pytorch_lora_weights.safetensors").is_file()
-            or (model_path(profile_id) / "pytorch_lora_weights.bin").is_file()
-        ):
-            update_profile(
-                profile_id, local_model_ready=True, local_training_state="completed",
-                local_training_error=None,
-            )
-            task = {"job_id": job_id, "profile_id": profile_id, "status": "completed", "logs": logs[-5000:]}
+        output_dir = (model_path(profile_id) if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID
+                      else model_path(profile_id) / "components" / purpose)
+        weights_exist = ((output_dir / "pytorch_lora_weights.safetensors").is_file()
+                         or (output_dir / "pytorch_lora_weights.bin").is_file())
+        if completed.returncode == 0 and weights_exist:
+            if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
+                update_profile(
+                    profile_id, local_model_ready=True, local_training_state="completed",
+                    local_training_error=None,
+                )
+            task = {"job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "completed", "logs": logs[-5000:]}
         else:
             error = logs[-3500:] or f"Training exited with code {completed.returncode}."
+            if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
+                update_profile(
+                    profile_id, local_training_state="failed", local_training_error=error,
+                    local_model_ready=False,
+                )
+            task = {"job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "failed", "error": error, "logs": logs[-5000:]}
+    except Exception as exc:
+        error = str(exc)
+        if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
             update_profile(
                 profile_id, local_training_state="failed", local_training_error=error,
                 local_model_ready=False,
             )
-            task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error, "logs": logs[-5000:]}
-    except Exception as exc:
-        error = str(exc)
-        update_profile(
-            profile_id, local_training_state="failed", local_training_error=error,
-            local_model_ready=False,
-        )
-        task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error}
+        task = {"job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "failed", "error": error}
     with TASKS_LOCK:
         task["finished_at"] = time.time()
         TASKS[job_id] = task
@@ -193,6 +199,150 @@ def remote_health():
     )
 
 
+@worker.post("/api/remote/profiles/<profile_id>/lora")
+def remote_upload_profile_lora(profile_id):
+    """Install a validated local safetensors LoRA under its existing profile ID."""
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    uploaded = request.files.get("lora")
+    if not uploaded or Path(uploaded.filename or "").name != "pytorch_lora_weights.safetensors":
+        return jsonify(error="Upload pytorch_lora_weights.safetensors as the lora file."), 400
+    raw = uploaded.stream.read(60 * 1024 * 1024 + 1)
+    if not raw or len(raw) > 60 * 1024 * 1024:
+        return jsonify(error="LoRA file must be non-empty and no larger than 60 MB."), 413
+
+    # Parse the safetensors header without unpickling arbitrary Python objects.
+    try:
+        from safetensors import safe_open
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".safetensors") as temp_file:
+            temp_file.write(raw)
+            temp_file.flush()
+            with safe_open(temp_file.name, framework="pt", device="cpu") as model_file:
+                if not model_file.keys():
+                    raise ValueError("No tensors found.")
+    except Exception:
+        return jsonify(error="Uploaded LoRA is not a valid safetensors model."), 400
+
+    config_upload = request.files.get("adapter_config")
+    config_bytes = None
+    if config_upload and config_upload.filename:
+        if Path(config_upload.filename).name != "adapter_config.json":
+            return jsonify(error="Only adapter_config.json is accepted as optional metadata."), 400
+        config_bytes = config_upload.stream.read(256 * 1024 + 1)
+        if len(config_bytes) > 256 * 1024:
+            return jsonify(error="Adapter config exceeds the 256 KB limit."), 413
+        try:
+            config = json.loads(config_bytes.decode("utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("Expected a JSON object.")
+        except (UnicodeError, ValueError):
+            return jsonify(error="adapter_config.json is invalid JSON."), 400
+
+    purpose = (request.form.get("purpose") or "identity").strip().lower()
+    if purpose not in {"identity", "body", "angle", "expression"}:
+        return jsonify(error="Adapter purpose must be identity, body, angle or expression."), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        try:
+            create_profile(
+                (request.form.get("name") or "Synced face profile").strip()[:80],
+                profile_id=profile_id,
+                token=(request.form.get("token") or "").strip() or None,
+                description=request.form.get("description") or "",
+            )
+        except (ValueError, RuntimeError) as exc:
+            return jsonify(error=str(exc)), 400
+
+    destination = (
+        model_path(profile_id)
+        if purpose == "identity" or (purpose == "body" and profile_id == local_engine.GLOBAL_BODY_PROFILE_ID)
+        else model_path(profile_id) / "components" / purpose
+    )
+    destination.mkdir(parents=True, exist_ok=True)
+    weight_path = destination / "pytorch_lora_weights.safetensors"
+    config_path = destination / "adapter_config.json"
+    temp_weight = destination / ".pytorch_lora_weights.safetensors.uploading"
+    temp_config = destination / ".adapter_config.json.uploading"
+    try:
+        temp_weight.write_bytes(raw)
+        if config_bytes is not None:
+            temp_config.write_bytes(config_bytes)
+        os.replace(temp_weight, weight_path)
+        if config_bytes is not None:
+            os.replace(temp_config, config_path)
+        if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
+            update_profile(
+                profile_id, local_model_ready=True, local_training_state="completed",
+                local_training_error=None,
+            )
+    except Exception as exc:
+        temp_weight.unlink(missing_ok=True)
+        temp_config.unlink(missing_ok=True)
+        weight_path.unlink(missing_ok=True)
+        return jsonify(error=f"Could not install LoRA on worker: {str(exc)[:500]}"), 500
+
+    return jsonify(status="installed", ready=True, profile_id=profile_id, purpose=purpose, bytes=len(raw))
+
+
+@worker.delete("/api/remote/global-body-model")
+def remote_clear_global_body_model():
+    """Remove shared-body samples and adapter files but retain the reserved profile/token."""
+    profile_id = local_engine.GLOBAL_BODY_PROFILE_ID
+    profile = local_engine.get_profile(profile_id) or local_engine.ensure_global_body_profile()
+    if profile.get("local_training_state") == "running":
+        return jsonify(error="The shared body model is still training on this worker."), 409
+    with TASKS_LOCK:
+        active = any(
+            task.get("profile_id") == profile_id
+            and task.get("purpose") == "body"
+            and task.get("status") in {"queued", "running"}
+            for task in TASKS.values()
+        )
+    if active:
+        return jsonify(error="A shared body training job is still active on this worker."), 409
+
+    photos = dataset_images(profile_id)
+    database_counts = {"photos_deleted": 0, "groups_deleted": 0, "artifacts_deleted": 0}
+    if local_engine.database_url_configured():
+        database_counts = local_engine.clear_face_profile_training_data(profile_id)
+    for image_path in photos:
+        for path_to_remove in (
+            image_path,
+            image_path.with_name(image_path.name + ".caption.txt"),
+            image_path.with_name(image_path.name + ".training.json"),
+        ):
+            try:
+                path_to_remove.unlink(missing_ok=True)
+            except OSError:
+                return jsonify(error="Could not remove all shared body training photos from the worker."), 500
+
+    from shutil import rmtree
+    rmtree(model_path(profile_id), ignore_errors=True)
+    update_profile(
+        profile_id,
+        local_model_ready=False,
+        runpod_model_ready=False,
+        local_training_state="not_trained",
+        runpod_training_state="not_trained",
+        local_training_error=None,
+        local_training_job_id=None,
+        runpod_training_error=None,
+        runpod_training_job_id=None,
+    )
+    return jsonify(
+        status="cleared",
+        photos_deleted=max(len(photos), int(database_counts.get("photos_deleted", 0))),
+        groups_deleted=int(database_counts.get("groups_deleted", 0)),
+        adapters_deleted=int(database_counts.get("artifacts_deleted", 0)),
+        model_directory_removed=True,
+        profile_preserved=True,
+    )
+
+
 @worker.post("/api/remote/train-profile")
 def remote_train_profile():
     if not torch.cuda.is_available():
@@ -204,6 +354,11 @@ def remote_train_profile():
         description = request.form.get("description") or ""
         steps = int(request.form.get("steps", "800"))
         resolution = int(request.form.get("resolution", "512"))
+        purpose = (request.form.get("purpose") or ("body" if profile_id == local_engine.GLOBAL_BODY_PROFILE_ID else "identity")).strip().lower()
+        if purpose not in {"identity", "body", "expression", "angle"}:
+            raise ValueError("Training purpose must be identity, body, expression or angle.")
+        if profile_id == local_engine.GLOBAL_BODY_PROFILE_ID and purpose != "body":
+            raise ValueError("The reserved shared profile can only train the body component.")
         if not 100 <= steps <= 3000 or resolution not in (384, 512):
             raise ValueError("Training steps must be 100–3000 and resolution must be 384 or 512.")
         photo_uploads = request.files.getlist("photos")
@@ -216,32 +371,49 @@ def remote_train_profile():
                 caption_by_name[Path(caption_file.filename or "").name] = caption_file.stream.read(1200).decode("utf-8", errors="replace").strip()
             except (OSError, UnicodeError):
                 continue
-        create_profile(name, profile_id=profile_id, token=token, description=description)
-        for upload, image in zip(photo_uploads, images):
-            caption = caption_by_name.get(Path(upload.filename or "").name, "")
-            if caption:
-                lowered = caption.lower()
-                if lowered.startswith("body type:"):
-                    photo_kind = "body"
-                elif any(term in lowered for term in ("smile", "laugh", "expression", "surprised", "neutral", "serious")):
-                    photo_kind = "expression"
+        existing_profile = get_profile(profile_id)
+        if existing_profile:
+            if existing_profile.get("token") != token:
+                raise ValueError("The existing GPU-worker profile token does not match this training request.")
+            # Repeated cloud training requests commonly resend the same complete
+            # dataset. Do not duplicate an already-restored dataset on the worker.
+            existing_eligible = local_engine._eligible_profile_training_images(profile_id, purpose)
+            should_import = len(existing_eligible) < 5
+        else:
+            create_profile(name, profile_id=profile_id, token=token, description=description)
+            should_import = True
+        if should_import:
+            for upload, image in zip(photo_uploads, images):
+                caption = caption_by_name.get(Path(upload.filename or "").name, "")
+                if caption:
+                    lowered = caption.lower()
+                    if lowered.startswith("body type:") or lowered.startswith("body proportions:"):
+                        photo_kind = "body"
+                    elif any(term in lowered for term in ("smile", "laugh", "expression", "surprised", "neutral", "serious", "sad", "angry", "fearful", "disgusted", "confused")):
+                        photo_kind = "expression"
+                    elif any(term in lowered for term in ("yaw", "pitch", "profile", "three-quarter", "front-facing", "head pose", "head turned")):
+                        photo_kind = "angle"
+                    else:
+                        photo_kind = "manual"
+                    save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
                 else:
-                    photo_kind = "angle"
-                save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
-            else:
-                save_profile_image(profile_id, image)
+                    save_profile_image(profile_id, image, photo_kind="manual")
+        eligible = local_engine._eligible_profile_training_images(profile_id, purpose)
+        if len(eligible) < 5:
+            raise ValueError(f"Found {len(eligible)} eligible {purpose} photos on the worker; at least 5 are required.")
         existing = get_profile(profile_id)
-        if existing and existing.get("local_training_state") == "running":
+        if existing and existing.get("local_training_state") == "running" and (purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID):
             return jsonify(error="This face profile is already training on the GPU worker."), 409
         job_id = uuid.uuid4().hex
-        update_profile(
-            profile_id, local_training_state="running", local_training_job_id=job_id,
-            local_training_error=None, local_model_ready=False,
-        )
+        if purpose == "identity" or profile_id == local_engine.GLOBAL_BODY_PROFILE_ID:
+            update_profile(
+                profile_id, local_training_state="running", local_training_job_id=job_id,
+                local_training_error=None, local_model_ready=False,
+            )
         with TASKS_LOCK:
-            TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "status": "queued"}
-        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution)
-        return jsonify(status="queued", job_id=job_id, profile_id=profile_id), 202
+            TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "purpose": purpose, "status": "queued"}
+        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution, purpose)
+        return jsonify(status="queued", job_id=job_id, profile_id=profile_id, purpose=purpose), 202
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     except RuntimeError as exc:
@@ -331,6 +503,10 @@ def _run_async_remote_generation(job_id, form_data, file_data):
                     job = REMOTE_GENERATION_JOBS.get(job_id, {})
                     job.update(status="cancelled", error="Generation cancelled before it started.")
                 return
+            with REMOTE_GENERATION_JOBS_LOCK:
+                job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                if job:
+                    job["status"] = "running"
             payload = dict(form_data)
             for field, (filename, content, content_type) in file_data.items():
                 payload[field] = (io.BytesIO(content), filename, content_type)
@@ -429,7 +605,13 @@ def remote_generation_job_result(job_id):
             return jsonify(error="Generation result is not ready."), 409
         result = job["result"]
         content_type = job.get("content_type") or "image/png"
-    return send_file(io.BytesIO(result), mimetype=content_type, download_name="generated.png")
+        response_headers = dict(job.get("response_headers") or {})
+        download_name = job.get("download_name") or ("generated.mp4" if content_type == "video/mp4" else "generated.png")
+    response = send_file(io.BytesIO(result), mimetype=content_type, download_name=download_name)
+    for name, value in response_headers.items():
+        if name.lower().startswith("x-"):
+            response.headers[name] = str(value)
+    return response
 
 
 @worker.post("/api/remote/generate")
@@ -445,6 +627,16 @@ def remote_generate():
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = str(request.form.get("use_global_body_model") or "").strip().lower() in {"1", "true", "yes", "on"}
+        use_profile_body_component = str(request.form.get("use_profile_body_component") or "").strip().lower() in {"1", "true", "yes", "on"}
+        face_angle = (request.form.get("face_angle") or "").strip().lower()
+        face_expression = (request.form.get("face_expression") or "").strip().lower()
+        pose_control_type = (request.form.get("pose_control_type") or "face_mesh").strip().lower()
+        if pose_control_type not in {"face_mesh", "body_openpose"}:
+            raise ValueError("Unsupported pose control type.")
+        if face_angle not in {"", "front", "three_quarter_left", "three_quarter_right", "left_profile", "right_profile"}:
+            raise ValueError("Unsupported face angle.")
+        if face_expression not in {"", "neutral", "smile", "laugh", "serious", "surprised"}:
+            raise ValueError("Unsupported facial expression.")
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
@@ -486,16 +678,23 @@ def remote_generate():
             pose_control_image = ImageOps.fit(pose_control_image, (width, height), method=Image.Resampling.LANCZOS)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
             return jsonify(error="Face-pose control image is not a valid image."), 400
-        if image is None:
-            return jsonify(error="Pose control requires a source reference image."), 400
+        if image is None and pose_control_type != "body_openpose":
+            return jsonify(error="Face-mesh pose control requires a source reference image."), 400
     _set_generation_progress(task_id, asset_type="image", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the image model and selected face on the cloud GPU…")
     if not local_engine.generation_lock.acquire(blocking=False):
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="busy", message="Another GPU generation is already running.")
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
-        mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
+        mode = (
+            ("body_pose_img2img" if image is not None else "body_pose_txt2img")
+            if pose_control_image is not None and pose_control_type == "body_openpose"
+            else "pose_img2img" if pose_control_image is not None
+            else ("img2img" if image is not None else "txt2img")
+        )
         pipeline = local_engine._load_cpu_or_gpu_pipeline(
-            mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model
+            mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
+            face_angle=face_angle, face_expression=face_expression,
+            use_profile_body_component=use_profile_body_component,
         )
         _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the cloud GPU…")
         def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
@@ -517,6 +716,14 @@ def remote_generate():
             effective_prompt, effective_negative_prompt = build_generation_prompts(
                 prompt, negative_prompt, image_preset, has_reference_image=image is not None
             )
+        original_prompt = effective_prompt
+        original_negative_prompt = effective_negative_prompt
+        effective_prompt = fit_sd15_prompt(pipeline.tokenizer, effective_prompt)
+        effective_negative_prompt = fit_sd15_prompt(pipeline.tokenizer, effective_negative_prompt)
+        if effective_prompt != original_prompt:
+            print("Positive prompt shortened to the SD 1.5 CLIP 77-token context.")
+        if effective_negative_prompt != original_negative_prompt:
+            print("Negative prompt shortened to the SD 1.5 CLIP 77-token context.")
         kwargs = {
             "prompt": effective_prompt,
             "negative_prompt": effective_negative_prompt or None,
@@ -528,18 +735,26 @@ def remote_generate():
         }
         if image is not None:
             kwargs.update(image=image, strength=strength)
-        if pose_control_image is not None:
-            kwargs["control_image"] = pose_control_image
-            kwargs["controlnet_conditioning_scale"] = 1.0
             if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
                 kwargs["ip_adapter_image"] = image
+        if pose_control_image is not None:
+            kwargs["control_image"] = pose_control_image
+            scale_key = "BODY_POSE_CONTROLNET_SCALE" if pose_control_type == "body_openpose" else "FACE_POSE_CONTROLNET_SCALE"
+            try:
+                kwargs["controlnet_conditioning_scale"] = float(os.environ.get(scale_key, "1.0"))
+            except ValueError:
+                kwargs["controlnet_conditioning_scale"] = 1.0
         result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
         result.save(output, format="PNG")
         output.seek(0)
         _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on the cloud GPU.")
-        return send_file(output, mimetype="image/png", download_name="generated.png")
+        response = send_file(output, mimetype="image/png", download_name="generated.png")
+        response.headers["X-Component-Adapter-Status"] = json.dumps(
+            getattr(pipeline, "_private_component_adapter_status", {})
+        )
+        return response
     except RemoteGenerationCancelled:
         _set_generation_progress(
             task_id, asset_type="image", status="cancelled", progress=0, total_steps=steps,
@@ -564,9 +779,27 @@ def remote_generate_video():
     prompt = (request.form.get("prompt") or "").strip()
     negative_prompt = (request.form.get("negative_prompt") or "").strip()
     try:
-        steps = int(request.form.get("steps", "12"))
-        frames = int(request.form.get("frames", "16"))
+        duration_seconds = int(request.form.get("duration_seconds", "3"))
+        fps = int(request.form.get("fps", "8"))
+        quality = (request.form.get("quality") or "balanced").strip().lower()
+        seed = int(request.form.get("seed", "0"))
+        video_settings = resolve_video_request(
+            duration_seconds=duration_seconds, fps=fps, seed=seed, quality=quality,
+        )
+        duration_seconds = video_settings["duration_seconds"]
+        fps, seed, quality = video_settings["fps"], video_settings["seed"], video_settings["quality"]
+        steps, guidance_scale, frames, segment_count = (
+            video_settings["steps"], video_settings["guidance_scale"],
+            video_settings["total_frames"], video_settings["segments"],
+        )
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
+        face_angle = (request.form.get("face_angle") or "").strip().lower()
+        face_expression = (request.form.get("face_expression") or "").strip().lower()
+        use_profile_body_component = str(request.form.get("use_profile_body_component") or "").strip().lower() in {"1", "true", "yes", "on"}
+        if face_angle not in {"", "front", "three_quarter_left", "three_quarter_right", "left_profile", "right_profile"}:
+            raise ValueError("Unsupported video face angle.")
+        if face_expression not in {"", "neutral", "smile", "laugh", "serious", "surprised"}:
+            raise ValueError("Unsupported video expression.")
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
@@ -574,8 +807,6 @@ def remote_generate_video():
         return jsonify(error=str(exc) or "Invalid video settings."), 400
     if not prompt or len(prompt) > 1000 or len(negative_prompt) > 600:
         return jsonify(error="Video prompt is required and must be within the allowed length."), 400
-    if not 5 <= steps <= 20 or frames not in (8, 16, 24):
-        return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
     if not torch.cuda.is_available():
         _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
         return jsonify(error="CUDA is not available on this worker."), 503
@@ -603,39 +834,79 @@ def remote_generate_video():
                     torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False,
                 )
                 VIDEO_PIPE.enable_vae_slicing()
+                try:
+                    VIDEO_PIPE.enable_attention_slicing("max")
+                except Exception:
+                    pass
                 VIDEO_PIPE.to("cuda")
                 VIDEO_ACTIVE_LORA = None
-            if VIDEO_ACTIVE_LORA != profile_id:
+            requested_adapters = (profile_id, use_profile_body_component, face_angle, face_expression)
+            if VIDEO_ACTIVE_LORA != requested_adapters:
                 if VIDEO_ACTIVE_LORA is not None:
                     VIDEO_PIPE.unload_lora_weights()
-                    VIDEO_ACTIVE_LORA = None
+                adapter_names = []
+                adapter_weights = []
+                component_status = {"body": "not_requested", "angle": "not_requested", "expression": "not_requested"}
                 if profile_id:
-                    VIDEO_PIPE.load_lora_weights(str(model_path(profile_id)))
-                    VIDEO_ACTIVE_LORA = profile_id
+                    VIDEO_PIPE.load_lora_weights(str(model_path(profile_id)), adapter_name="face_identity")
+                    adapter_names.append("face_identity")
+                    adapter_weights.append(1.0)
+                    for component_kind, selected_value in (("body", use_profile_body_component), ("angle", face_angle), ("expression", face_expression)):
+                        if not selected_value:
+                            continue
+                        component_path = model_path(profile_id) / "components" / component_kind
+                        component_weights = (component_path / "pytorch_lora_weights.safetensors", component_path / "pytorch_lora_weights.bin")
+                        if any(path.is_file() for path in component_weights):
+                            adapter_name = "face_" + component_kind
+                            VIDEO_PIPE.load_lora_weights(str(component_path), adapter_name=adapter_name)
+                            adapter_names.append(adapter_name)
+                            env_key = {"body": "FACE_BODY_LORA_SCALE", "angle": "FACE_ANGLE_LORA_SCALE", "expression": "FACE_EXPRESSION_LORA_SCALE"}[component_kind]
+                            default_weight = {"body": "0.55", "angle": "0.45", "expression": "0.55"}[component_kind]
+                            try:
+                                weight = float(os.environ.get(env_key, default_weight))
+                            except ValueError:
+                                weight = float(default_weight)
+                            adapter_weights.append(max(0.0, min(1.0, weight)))
+                            component_status[component_kind] = "loaded"
+                        else:
+                            component_status[component_kind] = "not_trained_prompt_only"
+                if adapter_names:
+                    VIDEO_PIPE.set_adapters(adapter_names, adapter_weights=adapter_weights)
+                VIDEO_PIPE._private_video_component_adapter_status = component_status
+                VIDEO_ACTIVE_LORA = requested_adapters
         _set_generation_progress(task_id, asset_type="video", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting video denoising steps on the cloud GPU…")
-        def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
-            scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
-            current = min(step_index + 1, scheduler_steps)
-            percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
-            _set_generation_progress(
-                task_id, asset_type="video", status="running", progress=percent,
-                current_step=current, total_steps=scheduler_steps, stage="denoising",
-                message=f"Generating video on the cloud GPU · step {current} of {scheduler_steps} · {frames} frames",
-            )
-            return callback_kwargs
-        generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
-        result = VIDEO_PIPE(
-            prompt=prompt, negative_prompt=negative_prompt or None,
-            num_frames=frames, num_inference_steps=steps,
-            guidance_scale=7.0, generator=generator,
-            callback_on_step_end=on_step_end,
-        )
-        _set_generation_progress(task_id, asset_type="video", status="running", progress=95, current_step=steps, total_steps=steps, stage="encoding", message="Encoding generated frames into MP4…")
         filename = f"gpu_{uuid.uuid4().hex}.mp4"
         video_path = local_engine.VIDEO_OUTPUT_DIR / filename
-        export_to_video(result.frames[0], str(video_path), fps=8)
+
+        def on_segment_progress(segment_index, total_segments, current_step, segment_steps):
+            completed_steps = segment_index * segment_steps + current_step
+            percent = min(92, 5 + round(87 * completed_steps / max(total_segments * segment_steps, 1)))
+            _set_generation_progress(
+                task_id, asset_type="video", status="running", progress=percent,
+                current_step=current_step, total_steps=segment_steps, stage="denoising",
+                message=f"Generating segment {min(segment_index + 1, total_segments)} of {total_segments} on the cloud GPU · step {current_step}/{segment_steps}",
+            )
+
+        segment_result = generate_video_segments(
+            VIDEO_PIPE, prompt=prompt, negative_prompt=negative_prompt,
+            duration_seconds=duration_seconds, fps=fps, steps=steps,
+            guidance_scale=guidance_scale, seed=seed, output_path=video_path,
+            export_to_video=export_to_video,
+            generator_factory=lambda chunk_seed: torch.Generator(device="cuda").manual_seed(chunk_seed),
+            progress_callback=on_segment_progress,
+        )
+        _set_generation_progress(task_id, asset_type="video", status="running", progress=95,
+                                 current_step=steps, total_steps=steps, stage="encoding",
+                                 message="Assembling generated segments into the final MP4…")
         _set_generation_progress(task_id, asset_type="video", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Video generation completed on the cloud GPU.")
-        return send_file(video_path, mimetype="video/mp4", download_name="generated.mp4")
+        response = send_file(video_path, mimetype="video/mp4", download_name="generated.mp4")
+        response.headers["X-Component-Adapter-Status"] = json.dumps(
+            getattr(VIDEO_PIPE, "_private_video_component_adapter_status", {})
+        )
+        response.headers["X-Video-Segments"] = str(segment_result["segments"])
+        response.headers["X-Video-Duration"] = str(duration_seconds)
+        response.headers["X-Video-Quality"] = quality
+        return response
     except Exception as exc:
         _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="Video generation failed on the cloud GPU.")
         message = str(exc)
@@ -644,6 +915,84 @@ def remote_generate_video():
         return jsonify(error=f"GPU video generation failed: {message}"), 500
     finally:
         local_engine.generation_lock.release()
+
+
+
+def _run_async_remote_video(job_id, form_data):
+    """Run the long video route in the background and retain its MP4 bytes and metadata headers."""
+    with REMOTE_GENERATION_JOBS_LOCK:
+        job = REMOTE_GENERATION_JOBS.get(job_id)
+        if not job:
+            return
+        job["status"] = "queued"
+    try:
+        while local_engine.generation_lock.locked():
+            time.sleep(0.5)
+        deadline = time.monotonic() + 3600
+        while True:
+            with worker.test_request_context(
+                "/api/remote/generate-video", method="POST", data=dict(form_data)
+            ):
+                response = worker.make_response(remote_generate_video())
+                response.direct_passthrough = False
+                status_code = response.status_code
+                body = response.get_data()
+                content_type = response.mimetype
+                response_headers = {
+                    key: value for key, value in response.headers.items()
+                    if key.lower().startswith("x-")
+                }
+            if status_code != 429 or time.monotonic() >= deadline:
+                break
+            time.sleep(1.0)
+        if status_code < 200 or status_code >= 300:
+            try:
+                error_payload = json.loads(body.decode("utf-8", errors="replace"))
+                error = error_payload.get("error") or error_payload.get("message") or body[:2000].decode("utf-8", errors="replace")
+            except (ValueError, AttributeError):
+                error = body[:2000].decode("utf-8", errors="replace")
+            with REMOTE_GENERATION_JOBS_LOCK:
+                job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                job.update(status="failed", error=str(error)[:2500], finished_at=time.time())
+            return
+        with REMOTE_GENERATION_JOBS_LOCK:
+            job = REMOTE_GENERATION_JOBS.get(job_id, {})
+            job.update(
+                status="completed", result=body, content_type=content_type,
+                response_headers=response_headers, download_name="generated.mp4",
+                finished_at=time.time(),
+            )
+    except Exception as exc:
+        with REMOTE_GENERATION_JOBS_LOCK:
+            job = REMOTE_GENERATION_JOBS.get(job_id, {})
+            job.update(status="failed", error=str(exc)[:2500], finished_at=time.time())
+
+
+@worker.post("/api/remote/generate-video-async")
+def remote_generate_video_async():
+    if not torch.cuda.is_available():
+        return jsonify(error="This cloud GPU worker has no CUDA GPU attached."), 503
+    task_id = (request.form.get("task_id") or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+        return jsonify(error="Invalid generation task ID."), 400
+    with REMOTE_GENERATION_JOBS_LOCK:
+        existing = REMOTE_GENERATION_JOBS.get(task_id)
+        if existing:
+            return jsonify(job_id=task_id, status=existing.get("status", "queued")), 202
+        if len(REMOTE_GENERATION_JOBS) >= 40:
+            completed = [
+                key for key, value in REMOTE_GENERATION_JOBS.items()
+                if value.get("status") in {"completed", "failed", "cancelled"}
+            ]
+            for key in completed[:20]:
+                REMOTE_GENERATION_JOBS.pop(key, None)
+        REMOTE_GENERATION_JOBS[task_id] = {
+            "job_id": task_id, "task_id": task_id, "status": "queued",
+            "created_at": time.time(), "error": None,
+        }
+        form_data = request.form.to_dict(flat=True)
+    REMOTE_GENERATION_POOL.submit(_run_async_remote_video, task_id, form_data)
+    return jsonify(job_id=task_id, status="queued"), 202
 
 
 if __name__ == "__main__":

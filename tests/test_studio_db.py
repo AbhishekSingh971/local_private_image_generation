@@ -112,6 +112,85 @@ def test_dataset_group_and_photo_crud(tmp_path, monkeypatch):
     assert studio_db.list_face_dataset_groups(profile_id) == []
 
 
+def test_profile_photo_metadata_and_manual_training_classification(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "profile-photo-metadata.sqlite").as_posix())
+    studio_db.ensure_schema()
+    profile_id = uuid.uuid4().hex
+    studio_db.create_face_profile_record({
+        "id": profile_id,
+        "name": "Manual Angle Photos",
+        "token": "manual_" + profile_id[:6],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    photo_id = studio_db.add_face_photo(
+        profile_id, "left-45.jpg", b"left-45-bytes", angle_label="Left 45 degrees",
+        photo_kind="manual", validation_status="not_checked",
+    )
+
+    listed = studio_db.list_face_photo_metadata(profile_id)
+    assert len(listed) == 1
+    assert listed[0]["id"] == photo_id
+    assert listed[0]["group_id"] is None
+    assert listed[0]["photo_kind"] == "manual"
+    assert listed[0]["validation_status"] == "not_checked"
+
+    updated = studio_db.update_face_photo(
+        photo_id,
+        angle_label="Middle-left 45",
+        training_caption="three-quarter left view",
+        photo_kind="angle",
+        validation_status="passed",
+        validation_message="Verified after visual review.",
+    )
+    assert updated["photo_kind"] == "angle"
+    assert updated["validation_status"] == "passed"
+    assert updated["training_caption"] == "three-quarter left view"
+    metadata = studio_db.list_face_photo_training_metadata(profile_id)
+    assert metadata[0]["photo_kind"] == "angle"
+    assert metadata[0]["validation_status"] == "passed"
+
+
+def test_clear_shared_body_training_data_preserves_reserved_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "shared-body-reset.sqlite").as_posix())
+    studio_db.ensure_schema()
+    profile_id = face_profiles.GLOBAL_BODY_PROFILE_ID
+    profile = {
+        "id": profile_id,
+        "name": face_profiles.GLOBAL_BODY_PROFILE_NAME,
+        "token": face_profiles.GLOBAL_BODY_PROFILE_TOKEN,
+        "description": "Reusable global body conditioning.",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "local_model_ready": True,
+        "runpod_model_ready": True,
+        "local_training_state": "completed",
+        "runpod_training_state": "completed",
+    }
+    studio_db.create_face_profile_record(profile)
+    group = studio_db.create_face_dataset_group(
+        profile_id, "Shared body samples", expected_count=5, dataset_type="body_type"
+    )
+    studio_db.add_face_photo(
+        profile_id, "body-sample.jpg", b"body-bytes", group_id=group["id"],
+        angle_label="Adult athletic body type", photo_kind="body",
+    )
+    studio_db.save_face_model_bundle(profile_id, "local", "body-model.zip", b"body-adapter", 1)
+    studio_db.save_face_model_bundle(profile_id, "runpod", "body-model-cloud.zip", b"cloud-adapter", 1)
+
+    result = studio_db.clear_face_profile_training_data(profile_id)
+
+    assert result == {"photos_deleted": 1, "groups_deleted": 1, "artifacts_deleted": 2}
+    retained = studio_db.get_face_profile_record(profile_id)
+    assert retained is not None
+    assert retained["name"] == face_profiles.GLOBAL_BODY_PROFILE_NAME
+    assert retained["token"] == face_profiles.GLOBAL_BODY_PROFILE_TOKEN
+    assert retained["image_count"] == 0
+    assert retained["local_model_ready"] is False
+    assert retained["runpod_model_ready"] is False
+    assert studio_db.list_face_dataset_groups(profile_id) == []
+    assert studio_db.get_face_model_bundle(profile_id, "local") is None
+    assert studio_db.get_face_model_bundle(profile_id, "runpod") is None
+
+
 def test_database_status_does_not_disclose_database_path(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "status.sqlite").as_posix())
     status = studio_db.database_status()

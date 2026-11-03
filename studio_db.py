@@ -119,12 +119,14 @@ def ensure_schema() -> None:
                 backend VARCHAR(16) NOT NULL, filename VARCHAR(255) NOT NULL, file_count INTEGER NOT NULL,
                 bundle_size INTEGER NOT NULL, bundle_data BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 CONSTRAINT uq_face_model_profile_backend UNIQUE(profile_id, backend))""",
+            """CREATE TABLE IF NOT EXISTS app_settings (setting_key VARCHAR(80) PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
             """CREATE TABLE IF NOT EXISTS generated_assets (
                 id VARCHAR(32) PRIMARY KEY, asset_type VARCHAR(12) NOT NULL, title VARCHAR(160) NOT NULL,
                 filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL, prompt TEXT NOT NULL DEFAULT '',
                 negative_prompt TEXT NOT NULL DEFAULT '', profile_id VARCHAR(32), profile_name VARCHAR(80),
                 backend VARCHAR(32) NOT NULL DEFAULT 'cpu', generation_mode VARCHAR(32) NOT NULL DEFAULT '',
                 media_size INTEGER NOT NULL, media_data BYTEA NOT NULL,
+                generation_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
         ]
         with psycopg.connect(url, row_factory=dict_row, connect_timeout=10) as conn:
@@ -132,6 +134,7 @@ def ensure_schema() -> None:
                 for statement in statements:
                     cur.execute(statement)
             _ensure_column(conn, "face_profiles", "description", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "generated_assets", "generation_metadata", "JSONB NOT NULL DEFAULT '{}'::jsonb")
             for name, definition in (("dataset_type", "VARCHAR(24) NOT NULL DEFAULT 'face_angles'"), ("prompt", "TEXT NOT NULL DEFAULT ''"), ("generated_count", "INTEGER NOT NULL DEFAULT 0")):
                 _ensure_column(conn, "face_dataset_groups", name, definition)
             # Older installations may already have generated_count but no database
@@ -532,6 +535,49 @@ def _photo_dict(r,include_bytes=False):
     return d
 
 
+def list_face_photo_training_metadata(profile_id):
+    """Return lightweight purpose/approval metadata without loading photo BLOBs."""
+    ensure_schema()
+    rows = _all(
+        "SELECT filename,photo_kind,validation_status,group_id FROM face_photos WHERE profile_id=%s",
+        (profile_id,),
+    )
+    return [
+        {
+            "filename": row["filename"],
+            "photo_kind": row.get("photo_kind") or "manual",
+            "validation_status": row.get("validation_status") or "not_checked",
+            "group_id": row.get("group_id"),
+        }
+        for row in rows
+    ]
+
+
+def list_face_photo_metadata(profile_id):
+    """Return profile photo records for the library without transferring image BLOBs."""
+    ensure_schema()
+    rows = _all(
+        """SELECT id,profile_id,filename,mime_type,byte_size,group_id,angle_label,photo_kind,
+            validation_status,validation_message,training_caption,target_yaw,target_pitch,
+            actual_yaw,actual_pitch,created_at
+            FROM face_photos WHERE profile_id=%s ORDER BY created_at,id""",
+        (profile_id,),
+    )
+    return [
+        {
+            **{key: row.get(key) for key in (
+                "id", "profile_id", "filename", "mime_type", "byte_size", "group_id",
+                "angle_label", "target_yaw", "target_pitch", "actual_yaw", "actual_pitch",
+                "validation_message", "training_caption",
+            )},
+            "photo_kind": row.get("photo_kind") or "manual",
+            "validation_status": row.get("validation_status") or "not_checked",
+            "created_at": _iso(row.get("created_at")),
+        }
+        for row in rows
+    ]
+
+
 def list_face_photo_records(profile_id,filenames=None):
     ensure_schema()
     if filenames is not None:
@@ -546,14 +592,21 @@ def get_face_photo_bytes(photo_id):
     return (_photo_dict(r),bytes(r["image_data"])) if r else None
 
 
-def update_face_photo(photo_id,*,angle_label=None,training_caption=None,image_data=None,mime_type=None):
+def update_face_photo(photo_id,*,angle_label=None,training_caption=None,photo_kind=None,validation_status=None,validation_message=None,image_data=None,mime_type=None):
     if image_data is not None and (not image_data or len(image_data)>8*1024*1024): raise ValueError("Replacement photos must be non-empty and 8 MB or smaller.")
     if angle_label is not None:
         angle_label=str(angle_label).strip()
         if not angle_label or len(angle_label)>80: raise ValueError("Photo label must contain 1–80 characters.")
+    if photo_kind is not None and photo_kind not in {"source","angle","expression","body","manual"}:
+        raise ValueError("Photo type must be source, angle, expression, body or manual.")
+    if validation_status is not None and validation_status not in {"not_checked","passed","needs_review","not_applicable"}:
+        raise ValueError("Invalid photo review status.")
     updates={}
     if angle_label is not None: updates["angle_label"]=angle_label
     if training_caption is not None: updates["training_caption"]=str(training_caption or "").strip()[:1200]
+    if photo_kind is not None: updates["photo_kind"]=photo_kind
+    if validation_status is not None: updates["validation_status"]=validation_status
+    if validation_message is not None: updates["validation_message"]=str(validation_message or "").strip()[:1200] or None
     if image_data is not None:
         updates.update(image_data=image_data,byte_size=len(image_data),mime_type=(mime_type or "image/jpeg")[:100],
             validation_status="needs_review",validation_message="The image was replaced; review its identity, pose and expression before training.",
@@ -570,6 +623,38 @@ def delete_face_photo(photo_id):
     ensure_schema(); r=_one("SELECT id,profile_id,filename,group_id,angle_label,photo_kind,validation_status FROM face_photos WHERE id=%s",(photo_id,))
     if r:_run("DELETE FROM face_photos WHERE id=%s",(photo_id,))
     return r
+
+
+def clear_face_profile_training_data(profile_id):
+    """Delete training photos, groups, and saved adapter bundles while retaining the profile."""
+    ensure_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM face_profiles WHERE id=%s", (profile_id,))
+        if not cur.fetchone():
+            return {"photos_deleted": 0, "groups_deleted": 0, "artifacts_deleted": 0}
+        cur.execute("SELECT count(*) AS count FROM face_photos WHERE profile_id=%s", (profile_id,))
+        photos_deleted = int(cur.fetchone()["count"])
+        cur.execute("SELECT count(*) AS count FROM face_dataset_groups WHERE profile_id=%s", (profile_id,))
+        groups_deleted = int(cur.fetchone()["count"])
+        cur.execute("SELECT count(*) AS count FROM face_model_artifacts WHERE profile_id=%s", (profile_id,))
+        artifacts_deleted = int(cur.fetchone()["count"])
+        cur.execute("DELETE FROM face_photos WHERE profile_id=%s", (profile_id,))
+        cur.execute("DELETE FROM face_dataset_groups WHERE profile_id=%s", (profile_id,))
+        cur.execute("DELETE FROM face_model_artifacts WHERE profile_id=%s", (profile_id,))
+        cur.execute(
+            """UPDATE face_profiles SET
+                local_model_ready=FALSE,runpod_model_ready=FALSE,
+                local_training_state='not_trained',runpod_training_state='not_trained',
+                local_training_error=NULL,local_training_job_id=NULL,
+                runpod_training_error=NULL,runpod_training_job_id=NULL
+                WHERE id=%s""",
+            (profile_id,),
+        )
+    return {
+        "photos_deleted": photos_deleted,
+        "groups_deleted": groups_deleted,
+        "artifacts_deleted": artifacts_deleted,
+    }
 
 
 def save_face_model_bundle(profile_id,backend,filename,bundle_data,file_count):
@@ -592,13 +677,13 @@ def get_face_model_bundle(profile_id,backend):
 
 def _asset_dict(r,include_content=False):
     if not r:return None
-    d={k:r.get(k) for k in ("id","asset_type","title","filename","mime_type","prompt","negative_prompt","profile_id","profile_name","backend","generation_mode","media_size")}
+    d={k:r.get(k) for k in ("id","asset_type","title","filename","mime_type","prompt","negative_prompt","profile_id","profile_name","backend","generation_mode","media_size","generation_metadata")}
     d.update(created_at=_iso(r.get("created_at")),updated_at=_iso(r.get("updated_at")))
     if include_content:d["media_data"]=bytes(r["media_data"])
     return d
 
 
-def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",negative_prompt="",profile_id=None,profile_name=None,backend="cpu",generation_mode=""):
+def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",negative_prompt="",profile_id=None,profile_name=None,backend="cpu",generation_mode="",generation_metadata=None):
     if asset_type not in {"image","video"}: raise ValueError("Asset type must be image or video.")
     if not media_data: raise ValueError("Cannot save an empty media file.")
     if len(media_data)>512*1024*1024: raise ValueError("Media files must be 512 MB or smaller to store in the database.")
@@ -606,11 +691,12 @@ def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",nega
     title=(title or "").strip()[:160] or ("Generated image" if asset_type=="image" else "Generated video")
     # Explicitly set timestamps instead of relying on defaults that may be
     # absent on an existing Supabase table created by an older schema version.
+    metadata = generation_metadata if isinstance(generation_metadata, dict) else {}
     r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,profile_id,profile_name,
-        backend,generation_mode,media_size,media_data,created_at,updated_at)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now()) RETURNING *""",
+        backend,generation_mode,media_size,media_data,generation_metadata,created_at,updated_at)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,now(),now()) RETURNING *""",
         (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,prompt[:1200],negative_prompt[:600],profile_id,profile_name,
-         backend[:32],generation_mode[:32],len(media_data),media_data))
+         backend[:32],generation_mode[:32],len(media_data),media_data,json.dumps(metadata)))
     return _asset_dict(r)
 
 
@@ -663,3 +749,44 @@ def delete_asset(asset_id):
     ensure_schema(); r=_one("SELECT * FROM generated_assets WHERE id=%s",(asset_id,))
     if r:_run("DELETE FROM generated_assets WHERE id=%s",(asset_id,))
     return _asset_dict(r)
+
+APP_SETTINGS_DEFAULTS = {"training_method": "lora", "compute_backend": "auto"}
+APP_SETTINGS_ALLOWED = {
+    "training_method": {"lora", "full_finetune"},
+    "compute_backend": {"cpu", "local_gpu", "cloud_gpu", "auto"},
+}
+
+
+def get_app_settings() -> dict:
+    ensure_schema()
+    settings = dict(APP_SETTINGS_DEFAULTS)
+    for row in _all("SELECT setting_key, setting_value FROM app_settings"):
+        key, value = row["setting_key"], row["setting_value"]
+        if key in APP_SETTINGS_ALLOWED and value in APP_SETTINGS_ALLOWED[key]:
+            settings[key] = value
+    return settings
+
+
+def update_app_settings(fields: dict) -> dict:
+    if not isinstance(fields, dict) or not fields:
+        raise ValueError("Provide at least one application setting to update.")
+    unknown = set(fields) - set(APP_SETTINGS_ALLOWED)
+    if unknown:
+        raise ValueError("Unsupported application setting(s): " + ", ".join(sorted(unknown)))
+    normalized = {}
+    for key, value in fields.items():
+        value = str(value or "").strip().lower()
+        if value not in APP_SETTINGS_ALLOWED[key]:
+            raise ValueError("Invalid value for " + key + ".")
+        normalized[key] = value
+    ensure_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        for key, value in normalized.items():
+            cur.execute(
+                """INSERT INTO app_settings(setting_key, setting_value, updated_at)
+                   VALUES(%s, %s, now())
+                   ON CONFLICT(setting_key) DO UPDATE
+                   SET setting_value=EXCLUDED.setting_value, updated_at=now()""",
+                (key, value),
+            )
+    return get_app_settings()
