@@ -562,6 +562,7 @@ def remote_generate():
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = str(request.form.get("use_global_body_model") or "").strip().lower() in {"1", "true", "yes", "on"}
+        use_profile_body_component = str(request.form.get("use_profile_body_component") or "").strip().lower() in {"1", "true", "yes", "on"}
         face_angle = (request.form.get("face_angle") or "").strip().lower()
         face_expression = (request.form.get("face_expression") or "").strip().lower()
         pose_control_type = (request.form.get("pose_control_type") or "face_mesh").strip().lower()
@@ -628,6 +629,7 @@ def remote_generate():
         pipeline = local_engine._load_cpu_or_gpu_pipeline(
             mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
             face_angle=face_angle, face_expression=face_expression,
+            use_profile_body_component=use_profile_body_component,
         )
         _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the cloud GPU…")
         def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
@@ -711,6 +713,7 @@ def remote_generate_video():
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         face_angle = (request.form.get("face_angle") or "").strip().lower()
         face_expression = (request.form.get("face_expression") or "").strip().lower()
+        use_profile_body_component = str(request.form.get("use_profile_body_component") or "").strip().lower() in {"1", "true", "yes", "on"}
         if face_angle not in {"", "front", "three_quarter_left", "three_quarter_right", "left_profile", "right_profile"}:
             raise ValueError("Unsupported video face angle.")
         if face_expression not in {"", "neutral", "smile", "laugh", "serious", "surprised"}:
@@ -766,12 +769,12 @@ def remote_generate_video():
                     VIDEO_PIPE.unload_lora_weights()
                 adapter_names = []
                 adapter_weights = []
-                component_status = {"angle": "not_requested", "expression": "not_requested"}
+                component_status = {"body": "not_requested", "angle": "not_requested", "expression": "not_requested"}
                 if profile_id:
                     VIDEO_PIPE.load_lora_weights(str(model_path(profile_id)), adapter_name="face_identity")
                     adapter_names.append("face_identity")
                     adapter_weights.append(1.0)
-                    for component_kind, selected_value in (("angle", face_angle), ("expression", face_expression)):
+                    for component_kind, selected_value in (("body", use_profile_body_component), ("angle", face_angle), ("expression", face_expression)):
                         if not selected_value:
                             continue
                         component_path = model_path(profile_id) / "components" / component_kind
@@ -780,8 +783,8 @@ def remote_generate_video():
                             adapter_name = "face_" + component_kind
                             VIDEO_PIPE.load_lora_weights(str(component_path), adapter_name=adapter_name)
                             adapter_names.append(adapter_name)
-                            env_key = "FACE_ANGLE_LORA_SCALE" if component_kind == "angle" else "FACE_EXPRESSION_LORA_SCALE"
-                            default_weight = "0.45" if component_kind == "angle" else "0.55"
+                            env_key = {"body": "FACE_BODY_LORA_SCALE", "angle": "FACE_ANGLE_LORA_SCALE", "expression": "FACE_EXPRESSION_LORA_SCALE"}[component_kind]
+                            default_weight = {"body": "0.55", "angle": "0.45", "expression": "0.55"}[component_kind]
                             try:
                                 weight = float(os.environ.get(env_key, default_weight))
                             except ValueError:
