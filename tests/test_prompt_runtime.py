@@ -63,3 +63,20 @@ def test_contextual_bandit_selects_an_untried_reviewed_strategy(monkeypatch):
         lambda context_key: state,
     )
     assert _strategy_for("image", context) == "identity_guard"
+
+
+def test_reinforcement_cannot_drop_required_face_or_full_body_guards(monkeypatch):
+    # Even if the bandit chooses baseline, required identity and framing controls
+    # remain in the final prompt for a selected face and full-body composition.
+    monkeypatch.setattr("prompt_intelligence.runtime._strategy_for", lambda task, context: "baseline")
+    result = prepare_generation_prompt(
+        "a photo of mizo_token person standing outdoors, full-body head to toe",
+        task="image",
+        context={"profile_id": "profile-123", "full_body": True},
+        preset="standard",
+    )
+    assert "same individual" in result["prompt"]
+    assert "complete requested figure" in result["prompt"]
+    assert "identity drift" in result["negative_prompt"]
+    assert "cropped head" in result["negative_prompt"]
+    assert result["applied_strategies"] == ["identity_guard", "full_body_guard"]
