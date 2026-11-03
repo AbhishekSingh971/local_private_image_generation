@@ -3597,6 +3597,13 @@ def generate():
             identity_adapter_status = getattr(pipeline, "_private_identity_adapter_status", "not_selected")
             if profile_id and identity_adapter_status != "loaded":
                 raise RuntimeError("The selected trained face identity adapter was not loaded; generation was stopped.")
+            original_effective_prompt = effective_prompt
+            effective_prompt = fit_sd15_prompt(pipeline.tokenizer, effective_prompt)
+            effective_negative = fit_sd15_prompt(pipeline.tokenizer, effective_negative)
+            if not effective_prompt:
+                raise RuntimeError("The prompt became empty after fitting the Stable Diffusion 1.5 text context.")
+            if effective_prompt != original_effective_prompt:
+                app.logger.info("Local SD 1.5 prompt shortened to preserve its leading identity, subject and pose instructions.")
             generator_device = "cuda" if backend == "local_gpu" else "cpu"
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=5,
