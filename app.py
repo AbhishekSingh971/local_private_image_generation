@@ -1176,9 +1176,11 @@ def api_clear_global_body_training_data():
         staged = _stage_profile_dataset_files(GLOBAL_BODY_PROFILE_ID, filenames)
         remote_cleanup = "not_configured"
         remote_cleanup_error = ""
+        remote_cleanup_result = {}
         if cloud_worker_configured():
             try:
-                cloud_worker_request("DELETE", "/api/remote/global-body-model", timeout=(10, 30))
+                remote_response = cloud_worker_request("DELETE", "/api/remote/global-body-model", timeout=(10, 30))
+                remote_cleanup_result = remote_response.json() if remote_response.content else {}
                 remote_cleanup = "deleted"
             except RuntimeError as remote_exc:
                 # A live remote training job must finish before either copy is cleared.
@@ -1215,9 +1217,9 @@ def api_clear_global_body_training_data():
             status="cleared",
             profile_id=GLOBAL_BODY_PROFILE_ID,
             profile_preserved=True,
-            photos_deleted=int(result.get("photos_deleted", 0)),
-            groups_deleted=int(result.get("groups_deleted", 0)),
-            adapters_deleted=int(result.get("artifacts_deleted", 0)),
+            photos_deleted=max(int(result.get("photos_deleted", 0)), int(remote_cleanup_result.get("photos_deleted", 0))),
+            groups_deleted=max(int(result.get("groups_deleted", 0)), int(remote_cleanup_result.get("groups_deleted", 0))),
+            adapters_deleted=max(int(result.get("artifacts_deleted", 0)), int(remote_cleanup_result.get("adapters_deleted", 0))),
             remote_cleanup=remote_cleanup,
             remote_cleanup_error=remote_cleanup_error,
             message=(
