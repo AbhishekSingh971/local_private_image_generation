@@ -29,11 +29,11 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile application and generation modules
-        run: python -m py_compile app.py face_profiles.py studio_db.py gpu_worker.py train_face_lora.py image_generation.py training_generation.py pose_validation.py safe_diagnostics.py dataset_policy.py video_generation.py
+        run: python -m py_compile app.py face_profiles.py studio_db.py gpu_worker.py train_face_lora.py image_generation.py training_generation.py pose_validation.py safe_diagnostics.py dataset_policy.py video_generation.py video_quality.py body_pose.py prompt_intelligence/runtime.py
       - name: Install lightweight test dependencies
         run: python -m pip install Flask requests python-dotenv Pillow pytest SQLAlchemy numpy mediapipe==0.10.21 'psycopg[binary]>=3.2,<4'
       - name: Test compute routing, face profiles, image generation and pose targets
-        run: python -m pytest -q tests/test_compute_routing.py tests/test_face_profiles.py tests/test_image_generation.py tests/test_training_generation.py tests/test_dataset_policy.py tests/test_video_generation.py tests/test_prompt_intelligence.py tests/test_generation_feedback.py tests/test_safe_diagnostics.py tests/test_face_dataset_startup.py tests/test_studio_js_tabs.py tests/test_studio_js_controls.py
+        run: python -m pytest -q tests/test_compute_routing.py tests/test_face_profiles.py tests/test_image_generation.py tests/test_training_generation.py tests/test_dataset_policy.py tests/test_video_generation.py tests/test_video_quality.py tests/test_body_pose.py tests/test_prompt_runtime.py tests/test_prompt_intelligence.py tests/test_generation_feedback.py tests/test_safe_diagnostics.py tests/test_face_dataset_startup.py tests/test_studio_js_tabs.py tests/test_studio_js_controls.py
       - name: Test PostgreSQL job and generated-image persistence
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/studio_test
