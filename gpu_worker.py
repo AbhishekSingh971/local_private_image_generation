@@ -306,6 +306,9 @@ def remote_clear_global_body_model():
         return jsonify(error="A shared body training job is still active on this worker."), 409
 
     photos = dataset_images(profile_id)
+    database_counts = {"photos_deleted": 0, "groups_deleted": 0, "artifacts_deleted": 0}
+    if local_engine.database_url_configured():
+        database_counts = local_engine.clear_face_profile_training_data(profile_id)
     for image_path in photos:
         for path_to_remove in (
             image_path,
@@ -322,13 +325,19 @@ def remote_clear_global_body_model():
     update_profile(
         profile_id,
         local_model_ready=False,
+        runpod_model_ready=False,
         local_training_state="not_trained",
+        runpod_training_state="not_trained",
         local_training_error=None,
         local_training_job_id=None,
+        runpod_training_error=None,
+        runpod_training_job_id=None,
     )
     return jsonify(
         status="cleared",
-        photos_deleted=len(photos),
+        photos_deleted=max(len(photos), int(database_counts.get("photos_deleted", 0))),
+        groups_deleted=int(database_counts.get("groups_deleted", 0)),
+        adapters_deleted=int(database_counts.get("artifacts_deleted", 0)),
         model_directory_removed=True,
         profile_preserved=True,
     )
