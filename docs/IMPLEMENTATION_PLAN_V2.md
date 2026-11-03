@@ -300,3 +300,14 @@ Still not implemented and intentionally not represented as complete:
 - Temporal metrics are advisory. They do not compare face embeddings, verify anatomy, establish prompt adherence or guarantee identity consistency.
 - The prompt strategy bandit learns only from explicit feedback recorded for saved assets. It is not diffusion-model RL and does not update model weights.
 - Full fine-tuning remains blocked until a separately validated trainer is installed.
+
+## 14. Duration-based video generation (2026-11-03)
+
+- Replaced the single 8/16/24-frame video request with a duration-based request (1–60 seconds) and a frame budget derived from the selected FPS.
+- AnimateDiff generation is split into supported 8/16/24-frame windows, then FFmpeg concatenates and trims the output to the requested duration.
+- Added Fast/Balanced/High/Maximum quality presets mapping to 8/12/16/20 denoising steps per segment. The output resize control remains separate and is explicitly not treated as native model detail.
+- Local GPU and GHive worker use the same segmented generation helper. GHive generation runs as an asynchronous job so a long request does not keep the tunnel HTTP request open; the app polls worker progress and fetches the MP4 after completion.
+- No face profile, body adapter, angle or expression is required. With those fields empty, the base AnimateDiff pipeline generates without loading any LoRA adapters.
+- Tests cover the 60-second cap, FPS/frame budget, quality presets, supported frame-window splitting, and mocked MP4 assembly.
+
+Known architecture limit: segments are generated independently with the same prompt/adapters and distinct deterministic seeds. The current AnimateDiff pipeline does not pass latent motion state or the final frame from one segment into the next. The output is a single assembled MP4, but longer clips can show visible transitions and are not guaranteed to be temporally continuous.
