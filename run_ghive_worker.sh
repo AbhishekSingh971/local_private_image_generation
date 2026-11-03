@@ -26,13 +26,8 @@ PY
 
 MODEL_DIR="${SD_MODEL_PATH:-models/stable-diffusion-v1-5}"
 python ensure_sd15_model.py --model-dir "$MODEL_DIR"
-if [[ ! -f models/animatediff-motion-adapter-v1-5-2/config.json ]]; then
-python - <<'PY'
-import os
-from huggingface_hub import snapshot_download
-snapshot_download("guoyww/animatediff-motion-adapter-v1-5-2", local_dir="models/animatediff-motion-adapter-v1-5-2", token=os.getenv("HF_TOKEN") or None)
-PY
-fi
+ANIMATEDIFF_DIR="${ANIMATEDIFF_MODEL_PATH:-models/animatediff-motion-adapter-v1-5-2}"
+python ensure_animatediff_adapter.py --adapter-dir "$ANIMATEDIFF_DIR"
 
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
