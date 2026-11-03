@@ -546,7 +546,13 @@ def remote_generation_job_result(job_id):
             return jsonify(error="Generation result is not ready."), 409
         result = job["result"]
         content_type = job.get("content_type") or "image/png"
-    return send_file(io.BytesIO(result), mimetype=content_type, download_name="generated.png")
+        response_headers = dict(job.get("response_headers") or {})
+        download_name = job.get("download_name") or "generated.bin"
+    response = send_file(io.BytesIO(result), mimetype=content_type, download_name=download_name)
+    for name, value in response_headers.items():
+        if name.lower().startswith("x-"):
+            response.headers[name] = str(value)
+    return response
 
 
 @worker.post("/api/remote/generate")
@@ -842,6 +848,80 @@ def remote_generate_video():
         return jsonify(error=f"GPU video generation failed: {message}"), 500
     finally:
         local_engine.generation_lock.release()
+
+
+
+def _run_async_remote_video(job_id, form_data):
+    """Run the long video route in the background and retain its MP4 bytes and metadata headers."""
+    with REMOTE_GENERATION_JOBS_LOCK:
+        job = REMOTE_GENERATION_JOBS.get(job_id)
+        if not job:
+            return
+        job["status"] = "queued"
+    try:
+        while local_engine.generation_lock.locked():
+            time.sleep(0.5)
+        with worker.test_request_context(
+            "/api/remote/generate-video", method="POST", data=dict(form_data)
+        ):
+            response = worker.make_response(remote_generate_video())
+            response.direct_passthrough = False
+            status_code = response.status_code
+            body = response.get_data()
+            content_type = response.mimetype
+            response_headers = {
+                key: value for key, value in response.headers.items()
+                if key.lower().startswith("x-")
+            }
+            download_name = response.headers.get("Content-Disposition", "")
+        if status_code < 200 or status_code >= 300:
+            try:
+                error_payload = json.loads(body.decode("utf-8", errors="replace"))
+                error = error_payload.get("error") or error_payload.get("message") or body[:2000].decode("utf-8", errors="replace")
+            except (ValueError, AttributeError):
+                error = body[:2000].decode("utf-8", errors="replace")
+            with REMOTE_GENERATION_JOBS_LOCK:
+                job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                job.update(status="failed", error=str(error)[:2500], finished_at=time.time())
+            return
+        with REMOTE_GENERATION_JOBS_LOCK:
+            job = REMOTE_GENERATION_JOBS.get(job_id, {})
+            job.update(
+                status="completed", result=body, content_type=content_type,
+                response_headers=response_headers, download_name="generated.mp4",
+                finished_at=time.time(),
+            )
+    except Exception as exc:
+        with REMOTE_GENERATION_JOBS_LOCK:
+            job = REMOTE_GENERATION_JOBS.get(job_id, {})
+            job.update(status="failed", error=str(exc)[:2500], finished_at=time.time())
+
+
+@worker.post("/api/remote/generate-video-async")
+def remote_generate_video_async():
+    if not torch.cuda.is_available():
+        return jsonify(error="This cloud GPU worker has no CUDA GPU attached."), 503
+    task_id = (request.form.get("task_id") or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+        return jsonify(error="Invalid generation task ID."), 400
+    with REMOTE_GENERATION_JOBS_LOCK:
+        existing = REMOTE_GENERATION_JOBS.get(task_id)
+        if existing:
+            return jsonify(job_id=task_id, status=existing.get("status", "queued")), 202
+        if len(REMOTE_GENERATION_JOBS) >= 40:
+            completed = [
+                key for key, value in REMOTE_GENERATION_JOBS.items()
+                if value.get("status") in {"completed", "failed", "cancelled"}
+            ]
+            for key in completed[:20]:
+                REMOTE_GENERATION_JOBS.pop(key, None)
+        REMOTE_GENERATION_JOBS[task_id] = {
+            "job_id": task_id, "task_id": task_id, "status": "queued",
+            "created_at": time.time(), "error": None,
+        }
+        form_data = request.form.to_dict(flat=True)
+    REMOTE_GENERATION_POOL.submit(_run_async_remote_video, task_id, form_data)
+    return jsonify(job_id=task_id, status="queued"), 202
 
 
 if __name__ == "__main__":
