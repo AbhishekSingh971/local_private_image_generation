@@ -3448,6 +3448,20 @@ def generate():
         return jsonify(error=str(exc)), 502
     effective_prompt = prompt_plan["prompt"]
     effective_negative = prompt_plan["negative_prompt"]
+    if profile:
+        trigger_phrase = f"a photo of {profile['token']} person"
+        if not effective_prompt.lower().startswith(trigger_phrase.lower()):
+            # A configured prompt-rewrite provider must never strip the trained
+            # identity token; put the exact training trigger back at the front.
+            effective_prompt = trigger_phrase + ", " + effective_prompt
+    elif face_identity_mode == "prompt_matrix":
+        face_guard = (
+            "clear, coherent natural human face, balanced facial proportions, "
+            "naturally aligned eyes, anatomically well-formed nose and lips, "
+            "consistent jaw and cheek structure, realistic skin texture"
+        )
+        if face_guard not in effective_prompt:
+            effective_prompt = effective_prompt + ", " + face_guard
 
     _set_generation_progress(
         task_id, asset_type="image", backend=backend, status="running", progress=1,
