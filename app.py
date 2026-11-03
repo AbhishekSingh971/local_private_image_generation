@@ -366,8 +366,8 @@ def cloud_worker_generate_video_async(*, data, task_id):
         if remote_progress:
             _set_generation_progress(
                 task_id, asset_type="video", backend="cloud_gpu",
-                status=remote_progress.get("status", "running"),
-                progress=remote_progress.get("progress", 2),
+                status="running" if remote_progress.get("status") == "completed" else remote_progress.get("status", "running"),
+                progress=min(94, int(remote_progress.get("progress", 2) or 2)),
                 current_step=remote_progress.get("current_step", 0),
                 total_steps=remote_progress.get("total_steps", 0),
                 stage=remote_progress.get("stage", "cloud_generation"),
