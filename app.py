@@ -56,6 +56,7 @@ from face_profiles import (
 )
 from pose_validation import build_pose_control_image, estimate_head_pose, validate_pose_target
 from training_generation import targets_for_dataset_type
+from video_generation import validate_video_settings
 from image_quality import assess_image_quality
 from safe_diagnostics import format_exception_detail
 from prompt_intelligence.feedback_service import record_generation_feedback
@@ -3032,6 +3033,11 @@ def generate_video():
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
         backend = _resolve_compute_backend(request.form)
+        video_settings = validate_video_settings(steps=steps, frames=frames, fps=fps, seed=seed)
+        steps, frames, fps, seed = (
+            video_settings["steps"], video_settings["frames"],
+            video_settings["fps"], video_settings["seed"],
+        )
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID. Refresh the page and retry.")
@@ -3039,8 +3045,6 @@ def generate_video():
         return jsonify(error=str(exc) or "Invalid video settings."), 400
     if not prompt:
         return jsonify(error="Enter a video prompt."), 400
-    if not 5 <= steps <= 20 or frames not in (8, 16, 24) or fps not in (6, 8, 12):
-        return jsonify(error="Choose 5–20 steps, 8/16/24 frames, and 6/8/12 FPS."), 400
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
