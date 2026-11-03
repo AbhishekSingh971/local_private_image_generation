@@ -64,3 +64,28 @@ def test_contextual_bandit_never_shares_identity_feedback_between_profiles():
     assert restored.select(second) == "cfg-b"
     with pytest.raises(ValueError):
         restored.select({"task": "image", "model_family": "sd15", "profile_id": "face-c"})
+
+
+
+def test_feedback_service_uses_one_atomic_persistence_operation(monkeypatch):
+    from prompt_intelligence import feedback_service
+    captured = {}
+
+    def fake_atomic_save(**kwargs):
+        captured.update(kwargs)
+        return {"feedback_id": "f" * 32, "configuration_trials": 1, "mean_reward": 0.8}
+
+    monkeypatch.setattr(feedback_service, "save_feedback_and_bandit_state", fake_atomic_save)
+    result = feedback_service.record_generation_feedback(
+        asset_id="a" * 32,
+        profile_id="face-profile-a",
+        task="image",
+        configuration_id="identity_guard",
+        context={"model_family": "sd15", "backend_class": "local_gpu", "control_mode": "txt2img"},
+        human_scores={"identity": 5},
+    )
+    assert result["learning"]["atomic"] is True
+    assert captured["configuration_id"] == "identity_guard"
+    assert captured["context"]["profile_id"] == "face-profile-a"
+    assert captured["context"]["strategy_version"] == "v2"
+    assert captured["context_key"] == PreferenceBandit.context_key(captured["context"])
