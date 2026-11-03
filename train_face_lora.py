@@ -151,9 +151,20 @@ def main():
                 "Could not load dataset-purpose metadata from PostgreSQL; refusing to train on an unfiltered dataset. "
                 f"Check DATABASE_URL and database connectivity. Details: {exc}"
             ) from exc
-    elif purpose == "body":
-        # Body examples must be explicitly labelled; unknown legacy files are not safe body data.
-        metadata_by_filename = {}
+    # Read local sidecars as a portable fallback when the GHive worker is offline
+    # from PostgreSQL. Database records take precedence over their local mirrors.
+    if args.profile_id:
+        for image_path in candidate_files:
+            if image_path.name in metadata_by_filename:
+                continue
+            sidecar = image_path.with_name(image_path.name + ".training.json")
+            if sidecar.is_file():
+                try:
+                    record = json.loads(sidecar.read_text(encoding="utf-8"))
+                    if isinstance(record, dict) and record.get("version") == 1:
+                        metadata_by_filename[image_path.name] = record
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
     files, excluded_files = select_training_files(
         candidate_files, metadata_by_filename, purpose,
         include_unclassified_identity=(purpose == "identity"),
