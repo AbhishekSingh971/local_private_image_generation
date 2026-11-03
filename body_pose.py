@@ -1,7 +1,7 @@
 """Validation helpers for optional pre-rendered SD 1.5 OpenPose ControlNet maps."""
 from __future__ import annotations
 
-from PIL import Image, ImageStat
+from PIL import Image
 
 
 def prepare_openpose_control_map(image: Image.Image, width: int, height: int) -> Image.Image:
@@ -22,6 +22,6 @@ def prepare_openpose_control_map(image: Image.Image, width: int, height: int) ->
     fitted = Image.new("RGB", (int(width), int(height)), (0, 0, 0))
     source.thumbnail((int(width), int(height)), Image.Resampling.LANCZOS)
     fitted.paste(source, ((int(width) - source.width) // 2, (int(height) - source.height) // 2))
-    if sum(ImageStat.Stat(fitted).mean) < 2:
+    if fitted.getbbox() is None:
         raise ValueError("The uploaded pose map appears blank after resizing.")
     return fitted
