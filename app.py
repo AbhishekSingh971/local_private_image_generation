@@ -82,8 +82,10 @@ from studio_db import (
     get_face_profile_record,
     insert_face_profile_record,
     list_face_dataset_groups,
+    list_face_photo_metadata,
     list_face_photo_training_metadata,
     list_face_profile_records,
+    clear_face_profile_training_data,
     update_face_dataset_group,
     update_face_photo,
     update_face_dataset_job,
@@ -1153,6 +1155,204 @@ def api_global_body_status():
         return jsonify(error="Could not read the shared body model status."), 503
 
 
+@app.delete("/api/global-body/training-data")
+def api_clear_global_body_training_data():
+    """Clear shared body samples/adapters without deleting the reserved shared profile."""
+    try:
+        profile = ensure_global_body_profile()
+        groups = list_face_dataset_groups(profile_id=GLOBAL_BODY_PROFILE_ID)
+        profile_state = get_profile(GLOBAL_BODY_PROFILE_ID) or profile
+        active_jobs = list_face_dataset_jobs(profile_id=GLOBAL_BODY_PROFILE_ID, active_only=True)
+        if (
+            profile_state.get("local_training_state") == "running"
+            or profile_state.get("runpod_training_state") == "running"
+            or active_jobs
+            or any(group.get("status") == "generating" for group in groups)
+        ):
+            return jsonify(error="The shared body model is generating or training. Wait for the active job to finish before clearing it."), 409
+
+        filenames = [item.name for item in dataset_images(GLOBAL_BODY_PROFILE_ID)]
+        staged = _stage_profile_dataset_files(GLOBAL_BODY_PROFILE_ID, filenames)
+        try:
+            result = clear_face_profile_training_data(GLOBAL_BODY_PROFILE_ID)
+        except Exception:
+            _restore_staged_profile_files(staged)
+            raise
+        _discard_staged_profile_files(staged)
+        # The local component directory can contain multiple adapters/checkpoints;
+        # remove it only after the database deletion succeeds.
+        from shutil import rmtree
+        rmtree(LORA_DIR / GLOBAL_BODY_PROFILE_ID, ignore_errors=True)
+        # Keep the reserved profile and trigger token, but make both backends unavailable.
+        update_profile(
+            GLOBAL_BODY_PROFILE_ID,
+            local_model_ready=False,
+            runpod_model_ready=False,
+            local_training_state="not_trained",
+            runpod_training_state="not_trained",
+            local_training_error=None,
+            local_training_job_id=None,
+            runpod_training_error=None,
+            runpod_training_job_id=None,
+        )
+        return jsonify(
+            status="cleared",
+            profile_id=GLOBAL_BODY_PROFILE_ID,
+            profile_preserved=True,
+            photos_deleted=int(result.get("photos_deleted", 0)),
+            groups_deleted=int(result.get("groups_deleted", 0)),
+            adapters_deleted=int(result.get("artifacts_deleted", 0)),
+            message="Shared body training data and saved adapter artifacts were cleared. The shared profile and globalbody trigger token were preserved.",
+        )
+    except Exception:
+        app.logger.exception("Could not clear shared body training data")
+        return jsonify(error="Could not clear the shared body data/model. Check the database and local model storage."), 503
+
+
+@app.get("/api/face-profiles/<profile_id>/photos")
+def api_list_face_profile_photos(profile_id):
+    """List all photos for one profile, including uploads that are not in a named group."""
+    try:
+        profile_id = validate_profile_id(profile_id)
+        if not get_profile(profile_id):
+            return jsonify(error="Face profile not found."), 404
+        if database_url_configured():
+            photos = list_face_photo_metadata(profile_id)
+            for photo in photos:
+                photo["content_url"] = url_for("face_photo_content", photo_id=photo["id"])
+                photo["manage_url"] = url_for("api_face_photo_detail", photo_id=photo["id"])
+                photo["storage"] = "database"
+        else:
+            photos = []
+            for image_path in dataset_images(profile_id):
+                match = re.fullmatch(r"face_([a-f0-9]{32})", image_path.stem)
+                if not match:
+                    continue
+                photo_id = match.group(1)
+                metadata_path = image_path.with_name(image_path.name + ".training.json")
+                metadata = {}
+                if metadata_path.is_file():
+                    try:
+                        loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        if isinstance(loaded, dict) and loaded.get("version") == 1:
+                            metadata = loaded
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        metadata = {}
+                caption_path = image_path.with_name(image_path.name + ".caption.txt")
+                caption = metadata.get("training_caption", "")
+                if not caption and caption_path.is_file():
+                    try:
+                        caption = caption_path.read_text(encoding="utf-8")
+                    except OSError:
+                        caption = ""
+                photos.append({
+                    "id": photo_id, "profile_id": profile_id, "filename": image_path.name,
+                    "group_id": metadata.get("group_id"), "angle_label": metadata.get("angle_label") or image_path.stem,
+                    "photo_kind": metadata.get("photo_kind") or "manual",
+                    "validation_status": metadata.get("validation_status") or "not_checked",
+                    "validation_message": metadata.get("validation_message") or "",
+                    "training_caption": caption, "created_at": None, "storage": "file",
+                    "content_url": url_for("local_profile_photo_content", profile_id=profile_id, photo_id=photo_id),
+                    "manage_url": url_for("api_local_profile_photo_detail", profile_id=profile_id, photo_id=photo_id),
+                })
+        photos.sort(key=lambda item: item.get("created_at") or "")
+        return jsonify(profile_id=profile_id, photos=photos, count=len(photos))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not list profile training photos")
+        return jsonify(error="Could not load this profile's training photos."), 503
+
+
+@app.get("/api/face-profiles/<profile_id>/photos/<photo_id>/content")
+def local_profile_photo_content(profile_id, photo_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+        if not re.fullmatch(r"[a-f0-9]{32}", photo_id or ""):
+            return jsonify(error="Invalid face photo ID."), 400
+        path = dataset_dir(profile_id) / ("face_" + photo_id + ".jpg")
+        if not path.is_file():
+            return jsonify(error="Profile photo not found."), 404
+        return send_file(path, mimetype="image/jpeg", max_age=0)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.route("/api/face-profiles/<profile_id>/photos/<photo_id>", methods=["PATCH", "PUT", "DELETE"])
+def api_local_profile_photo_detail(profile_id, photo_id):
+    """CRUD fallback for file-backed profile photos when no database is configured."""
+    try:
+        profile_id = validate_profile_id(profile_id)
+        if not re.fullmatch(r"[a-f0-9]{32}", photo_id or ""):
+            return jsonify(error="Invalid face photo ID."), 400
+        filename = "face_" + photo_id + ".jpg"
+        folder = dataset_dir(profile_id).resolve()
+        destination = (folder / filename).resolve()
+        if destination.parent != folder or not destination.is_file():
+            return jsonify(error="Profile photo not found."), 404
+        metadata_path = destination.with_name(destination.name + ".training.json")
+        caption_path = destination.with_name(destination.name + ".caption.txt")
+        metadata = {}
+        if metadata_path.is_file():
+            try:
+                loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict) and loaded.get("version") == 1:
+                    metadata = loaded
+            except (OSError, ValueError, json.JSONDecodeError):
+                metadata = {}
+        if request.method == "PATCH":
+            payload = request.get_json(silent=True) or {}
+            allowed = {"angle_label", "training_caption", "photo_kind", "validation_status", "validation_message"}
+            if not payload or set(payload) - allowed:
+                return jsonify(error="Supply supported photo metadata fields to update."), 400
+            kind = payload.get("photo_kind", metadata.get("photo_kind", "manual"))
+            status = payload.get("validation_status", metadata.get("validation_status", "not_checked"))
+            if kind not in {"source", "angle", "expression", "body", "manual"}:
+                return jsonify(error="Invalid photo type."), 400
+            if status not in {"not_checked", "passed", "needs_review", "not_applicable"}:
+                return jsonify(error="Invalid photo review status."), 400
+            label = str(payload.get("angle_label", metadata.get("angle_label") or "Training photo")).strip()
+            caption = str(payload.get("training_caption", metadata.get("training_caption") or "")).strip()[:1200]
+            if not label or len(label) > 80:
+                return jsonify(error="Photo label must contain 1–80 characters."), 400
+            next_metadata = {
+                "version": 1, "angle_label": label, "training_caption": caption,
+                "photo_kind": kind, "validation_status": status,
+                "validation_message": str(payload.get("validation_message", metadata.get("validation_message") or ""))[:1200],
+            }
+            metadata_path.write_text(json.dumps(next_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+            if caption and kind in {"angle", "expression", "body"}:
+                caption_path.write_text(caption, encoding="utf-8")
+            else:
+                caption_path.unlink(missing_ok=True)
+            return jsonify(status="updated", photo={**next_metadata, "id": photo_id, "profile_id": profile_id, "filename": filename})
+        if request.method == "PUT":
+            upload = request.files.get("photo")
+            images = _parse_uploads([upload] if upload and upload.filename else [], max_files=1)
+            if not images:
+                return jsonify(error="Choose a replacement photo file."), 400
+            temporary = destination.with_name("." + destination.name + "." + uuid.uuid4().hex + ".tmp")
+            images[0].convert("RGB").save(temporary, format="JPEG", quality=95, optimize=True)
+            temporary.replace(destination)
+            next_metadata = {
+                "version": 1, "angle_label": metadata.get("angle_label") or "Training photo",
+                "training_caption": metadata.get("training_caption") or "",
+                "photo_kind": metadata.get("photo_kind") or "manual",
+                "validation_status": "needs_review",
+                "validation_message": "The image was replaced; review its identity, pose and expression before training.",
+            }
+            metadata_path.write_text(json.dumps(next_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+            return jsonify(status="replaced", photo={**next_metadata, "id": photo_id, "profile_id": profile_id, "filename": filename})
+        staged = _stage_profile_dataset_files(profile_id, [filename])
+        _discard_staged_profile_files(staged)
+        return jsonify(status="deleted", id=photo_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not manage a file-backed profile photo")
+        return jsonify(error="Could not update this profile photo."), 503
+
+
 @app.get("/api/face-dataset-groups")
 def api_list_face_dataset_groups():
     try:
@@ -1933,7 +2133,7 @@ def _stage_profile_dataset_files(profile_id: str, filenames: list[str]) -> list[
             name = Path(str(filename or "")).name
             if not name or name in {".", ".."}:
                 continue
-            for companion_name in (name, name + ".caption.txt"):
+            for companion_name in (name, name + ".caption.txt", name + ".training.json"):
                 source = folder / companion_name
                 if source.parent.resolve() != folder or not source.is_file():
                     continue
@@ -2042,34 +2242,41 @@ def api_face_photo_detail(photo_id):
         return jsonify(error="Training photo not found."), 404
     metadata, _old_bytes = stored
     group_id = metadata.get("group_id")
-    if not group_id:
-        return jsonify(error="Only photos inside a named training group can be managed here."), 400
-    group = get_face_dataset_group(group_id)
-    if not group:
+    group = get_face_dataset_group(group_id) if group_id else None
+    if group_id and not group:
         return jsonify(error="The photo's dataset group no longer exists."), 404
-    if group.get("status") == "generating":
+    if group and group.get("status") == "generating":
         return jsonify(error="This group is still generating. Wait before editing its photos."), 409
 
     if request.method == "PATCH":
         payload = request.get_json(silent=True) or {}
-        if "angle_label" not in payload:
-            return jsonify(error="Supply an angle_label to update the photo label."), 400
+        allowed = {"angle_label", "training_caption", "photo_kind", "validation_status", "validation_message"}
+        if not payload or set(payload) - allowed:
+            return jsonify(error="Supply supported photo metadata fields to update."), 400
         try:
-            next_label = str(payload.get("angle_label") or "").strip()
-            photo = update_face_photo(photo_id, angle_label=next_label, training_caption=next_label)
+            next_label = str(payload.get("angle_label", metadata.get("angle_label") or "Training photo")).strip()
+            next_caption = str(payload.get("training_caption", metadata.get("training_caption") or "")).strip()[:1200]
+            next_kind = payload.get("photo_kind", metadata.get("photo_kind") or "manual")
+            next_status = payload.get("validation_status", metadata.get("validation_status") or "not_checked")
+            next_message = payload.get("validation_message", metadata.get("validation_message") or "")
+            photo = update_face_photo(
+                photo_id, angle_label=next_label, training_caption=next_caption,
+                photo_kind=next_kind, validation_status=next_status,
+                validation_message=next_message,
+            )
             if not photo:
                 return jsonify(error="Training photo not found."), 404
             caption_path = dataset_dir(metadata["profile_id"]) / (Path(metadata["filename"]).name + ".caption.txt")
-            if metadata.get("photo_kind") in {"angle", "expression", "body"}:
-                caption_path.write_text(next_label[:1200], encoding="utf-8")
+            if next_caption and next_kind in {"angle", "expression", "body"}:
+                caption_path.write_text(next_caption, encoding="utf-8")
             else:
                 caption_path.unlink(missing_ok=True)
             return jsonify(status="updated", photo=photo)
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
         except Exception:
-            app.logger.exception("Could not update training photo label")
-            return jsonify(error="Could not update the training photo label."), 503
+            app.logger.exception("Could not update profile training photo")
+            return jsonify(error="Could not update the training photo metadata."), 503
 
     if request.method == "PUT":
         upload = request.files.get("photo")
@@ -2115,7 +2322,7 @@ def api_face_photo_detail(photo_id):
         _restore_staged_profile_files(staged)
         return jsonify(error="Training photo not found."), 404
     _discard_staged_profile_files(staged)
-    if metadata.get("photo_kind") in {"angle", "expression", "body"}:
+    if group and metadata.get("photo_kind") in {"angle", "expression", "body"}:
         new_count = max(0, int(group.get("generated_count") or 0) - 1)
         next_status = "partial" if new_count < int(group.get("expected_count") or 5) else group.get("status")
         try:
