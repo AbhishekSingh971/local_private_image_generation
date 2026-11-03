@@ -647,6 +647,8 @@ def remote_generate_video():
     try:
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
+        fps = int(request.form.get("fps", "8"))
+        seed = int(request.form.get("seed", "0"))
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
@@ -655,8 +657,10 @@ def remote_generate_video():
         return jsonify(error=str(exc) or "Invalid video settings."), 400
     if not prompt or len(prompt) > 1000 or len(negative_prompt) > 600:
         return jsonify(error="Video prompt is required and must be within the allowed length."), 400
-    if not 5 <= steps <= 20 or frames not in (8, 16, 24):
-        return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
+    if not 5 <= steps <= 20 or frames not in (8, 16, 24) or fps not in (6, 8, 12):
+        return jsonify(error="Choose 5–20 steps, 8/16/24 frames, and 6/8/12 FPS."), 400
+    if not 0 <= seed <= 2147483647:
+        return jsonify(error="Seed must be between 0 and 2147483647."), 400
     if not torch.cuda.is_available():
         _set_generation_progress(task_id, asset_type="video", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
         return jsonify(error="CUDA is not available on this worker."), 503
@@ -684,6 +688,10 @@ def remote_generate_video():
                     torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False,
                 )
                 VIDEO_PIPE.enable_vae_slicing()
+                try:
+                    VIDEO_PIPE.enable_attention_slicing("max")
+                except Exception:
+                    pass
                 VIDEO_PIPE.to("cuda")
                 VIDEO_ACTIVE_LORA = None
             if VIDEO_ACTIVE_LORA != profile_id:
@@ -704,7 +712,7 @@ def remote_generate_video():
                 message=f"Generating video on the cloud GPU · step {current} of {scheduler_steps} · {frames} frames",
             )
             return callback_kwargs
-        generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+        generator = torch.Generator(device="cuda").manual_seed(seed)
         result = VIDEO_PIPE(
             prompt=prompt, negative_prompt=negative_prompt or None,
             num_frames=frames, num_inference_steps=steps,
@@ -714,7 +722,7 @@ def remote_generate_video():
         _set_generation_progress(task_id, asset_type="video", status="running", progress=95, current_step=steps, total_steps=steps, stage="encoding", message="Encoding generated frames into MP4…")
         filename = f"gpu_{uuid.uuid4().hex}.mp4"
         video_path = local_engine.VIDEO_OUTPUT_DIR / filename
-        export_to_video(result.frames[0], str(video_path), fps=8)
+        export_to_video(result.frames[0], str(video_path), fps=fps)
         _set_generation_progress(task_id, asset_type="video", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Video generation completed on the cloud GPU.")
         return send_file(video_path, mimetype="video/mp4", download_name="generated.mp4")
     except Exception as exc:
