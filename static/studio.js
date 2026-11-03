@@ -925,6 +925,20 @@
     }
     throw new Error("Stopped polling after 8 hours. Check the GPU worker logs.");
   }
+  $("#syncComponentButton")?.addEventListener("click",async()=>{
+    const id=$("#trainProfile")?.value;
+    const purpose=$("#trainingPurpose")?.value||"identity";
+    const status=$("#trainStatus");
+    const button=$("#syncComponentButton");
+    if(!id){if(status)status.textContent="Select a face profile first.";return;}
+    if(purpose==="identity"){if(status)status.textContent="Use the existing Sync cloud LoRA action for the identity adapter.";return;}
+    button.disabled=true;
+    try{
+      const data=await readJson(await fetch("/api/face-profiles/"+id+"/sync-cloud-component/"+purpose,{method:"POST"}));
+      if(status)status.textContent=data.message||"Component adapter synced to GHive.";
+    }catch(error){if(status)status.textContent=error.message;}
+    finally{button.disabled=false;}
+  });
   trainForm?.addEventListener("submit",async event=>{
     event.preventDefault();const id=$("#trainProfile")?.value;
     const status=$("#trainStatus");const button=$("#trainButton");
