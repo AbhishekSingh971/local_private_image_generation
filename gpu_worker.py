@@ -322,8 +322,8 @@ def remote_train_profile():
                 raise ValueError("The existing GPU-worker profile token does not match this training request.")
             # Repeated cloud training requests commonly resend the same complete
             # dataset. Do not duplicate an already-restored dataset on the worker.
-            existing_images = dataset_images(profile_id)
-            should_import = len(existing_images) < 5
+            existing_eligible = local_engine._eligible_profile_training_images(profile_id, purpose)
+            should_import = len(existing_eligible) < 5
         else:
             create_profile(name, profile_id=profile_id, token=token, description=description)
             should_import = True
