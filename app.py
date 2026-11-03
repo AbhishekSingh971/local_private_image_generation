@@ -3191,6 +3191,12 @@ def generate_video():
     )
     try:
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
+        face_angle = (request.form.get("face_angle") or "").strip().lower()
+        face_expression = (request.form.get("face_expression") or "").strip().lower()
+        if face_angle not in {"", "front", "three_quarter_left", "three_quarter_right", "left_profile", "right_profile"}:
+            raise ValueError("Choose a supported video face angle.")
+        if face_expression not in {"", "neutral", "smile", "laugh", "serious", "surprised"}:
+            raise ValueError("Choose a supported video expression.")
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
         fps = int(request.form.get("fps", "8"))
@@ -3213,6 +3219,12 @@ def generate_video():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
+    if (face_angle or face_expression) and not profile_id:
+        return jsonify(error="Select a face profile before using video angle or expression controls."), 400
+    if face_angle:
+        prompt += ", head angle: " + {"front":"front-facing view","three_quarter_left":"three-quarter view turned to the subject’s left","three_quarter_right":"three-quarter view turned to the subject’s right","left_profile":"left-facing side profile","right_profile":"right-facing side profile"}[face_angle]
+    if face_expression:
+        prompt += ", facial expression: " + {"neutral":"natural neutral expression","smile":"gentle natural smile","laugh":"natural laughing expression","serious":"serious composed expression","surprised":"mild natural surprised expression"}[face_expression]
     if backend == "cpu":
         return jsonify(error="Video generation requires a GPU. Turn on GPU acceleration and select an available System GPU or cloud GPU."), 400
 
@@ -3221,7 +3233,8 @@ def generate_video():
             prompt, negative_prompt, task="video",
             context={"profile_id": profile_id or "global", "control_mode": "animatediff",
                      "backend_class": "cloud" if backend == "cloud_gpu" else backend,
-                     "model_family": "animatediff_sd15"},
+                     "model_family": "animatediff_sd15", "face_angle": face_angle,
+                     "face_expression": face_expression},
         )
     except PromptEngineError as exc:
         return jsonify(error=str(exc)), 502
@@ -3252,6 +3265,10 @@ def generate_video():
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
+            if face_angle:
+                data["face_angle"] = face_angle
+            if face_expression:
+                data["face_expression"] = face_expression
             try:
                 response = runpod_request(
                     "POST", "/api/remote/generate-video", data=data, timeout=(20, 1200)
@@ -3330,13 +3347,36 @@ def generate_video():
                         pass
                     video_pipe.to("cuda")
                     active_video_lora = None
-                if active_video_lora != profile_id:
+                requested_video_adapters = (profile_id, face_angle, face_expression)
+                if active_video_lora != requested_video_adapters:
                     if active_video_lora is not None:
                         video_pipe.unload_lora_weights()
                         active_video_lora = None
+                    adapter_names = []
+                    adapter_weights = []
                     if profile_id:
-                        video_pipe.load_lora_weights(str(model_path(profile_id)))
-                        active_video_lora = profile_id
+                        video_pipe.load_lora_weights(str(model_path(profile_id)), adapter_name="face_identity")
+                        adapter_names.append("face_identity")
+                        adapter_weights.append(1.0)
+                        for component_kind, selected_value in (("angle", face_angle), ("expression", face_expression)):
+                            if not selected_value:
+                                continue
+                            component_path = model_path(profile_id) / "components" / component_kind
+                            component_weights = (component_path / "pytorch_lora_weights.safetensors", component_path / "pytorch_lora_weights.bin")
+                            if any(path.is_file() for path in component_weights):
+                                adapter_name = "face_" + component_kind
+                                video_pipe.load_lora_weights(str(component_path), adapter_name=adapter_name)
+                                adapter_names.append(adapter_name)
+                                env_key = "FACE_ANGLE_LORA_SCALE" if component_kind == "angle" else "FACE_EXPRESSION_LORA_SCALE"
+                                default_weight = "0.45" if component_kind == "angle" else "0.55"
+                                try:
+                                    weight = float(os.environ.get(env_key, default_weight))
+                                except ValueError:
+                                    weight = float(default_weight)
+                                adapter_weights.append(max(0.0, min(1.0, weight)))
+                    if adapter_names:
+                        video_pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
+                    active_video_lora = requested_video_adapters
             _set_generation_progress(
                 task_id, asset_type="video", backend=backend, status="running", progress=5,
                 total_steps=steps, stage="denoising", message="Starting video denoising steps…",
