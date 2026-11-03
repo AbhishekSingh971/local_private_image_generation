@@ -2663,7 +2663,7 @@ def _load_cpu_or_gpu_pipeline(
                 except Exception:
                     pass
                 loaded._private_face_ip_adapter_loaded = False
-                if mode == "pose_img2img" and _truthy(os.environ.get("FACE_IDENTITY_IP_ADAPTER_ENABLED", "true")):
+                if use_cuda and _truthy(os.environ.get("FACE_IDENTITY_IP_ADAPTER_ENABLED", "true")):
                     try:
                         loaded.load_ip_adapter(
                             os.environ.get("FACE_IDENTITY_IP_ADAPTER_REPO", "h94/IP-Adapter").strip() or "h94/IP-Adapter",
@@ -2950,6 +2950,8 @@ def generate():
             }
             if init_image is not None:
                 kwargs.update(image=init_image, strength=strength)
+                if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
+                    kwargs["ip_adapter_image"] = init_image
             result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=95,
