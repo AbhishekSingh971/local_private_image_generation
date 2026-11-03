@@ -1,6 +1,6 @@
 # Implementation Plan v2 — Reinforced Prompt Intelligence and Identity-Aware Training
 
-**Status:** Phase 0 source audit documented; runtime baseline tests pending; implementation not yet started on this branch  
+**Status:** Phase 0 audit complete; Phase 1 safeguards and reproducibility improvements implemented on this branch; CI verification pending; advanced conditioning remains staged  
 **Base branch:** `feature/unified-prompt-reinforcement-training`  
 **Working branch:** `feature/identity-expression-body-training-v2`
 
@@ -252,3 +252,28 @@ Single user prompt + task + explicit UI settings + profile context
 ## 11. Phase 0 audit addendum
 
 The repository audit is recorded in `docs/PHASE_0_AUDIT.md`. It confirms that the current branch already has a structured PromptEngine, reward/evaluation and PostgreSQL feedback modules, feedback endpoints, nine angle targets, ten expression targets, a hidden shared global body LoRA, and local/cloud GPU routing. However, the PromptEngine and bandit selector are not yet connected as an active prompt-selection loop in generation. Existing identity LoRA training enumerates all image files in the profile dataset folder, so purpose-aware dataset selection is a prerequisite. The current global body feature is a shared body-type LoRA, not full 3D person-specific body reconstruction. Runtime tests and model/control compatibility checks remain open.
+
+
+## 12. Phase 1 implementation record (2026-11-03)
+
+Implemented on `feature/identity-expression-body-training-v2`:
+
+- Added purpose-aware training selection. Identity training uses source/manual photos; the shared body profile uses only body-labelled photos. Expression and angle photos are excluded from identity training. Photos marked `needs_review` are excluded.
+- Added lightweight PostgreSQL training metadata lookup and portable `.training.json` sidecars beside local dataset images. Existing unknown legacy images remain eligible only for ordinary identity profiles; they are never silently treated as body examples.
+- Added a per-training-run manifest recording selected and excluded files. Experimental expression/angle LoRA outputs are placed under a separate `components/<purpose>` directory so they cannot overwrite the identity LoRA.
+- Extended the local GPU image pipeline and GHive worker to apply the existing SD 1.5 face IP-Adapter when a reference image is supplied. This is GPU-only and optional; CPU generation avoids the extra image-encoder memory overhead.
+- Added advisory technical image-quality results to saved asset metadata. These checks cover resolution, sharpness and exposure only; they do not certify face identity or anatomy.
+- Added persistent generation metadata to saved media assets, including seed, steps, dimensions/preset and selected conditioning. Existing databases are upgraded with an additive JSONB column.
+- Added video seed and playback-FPS controls, passed them through to GHive, persisted them with saved videos, and enabled attention slicing as a lower-memory option on both local and cloud AnimateDiff pipelines.
+- Added profile identity and strategy-version scoping to contextual preference-learning keys so one person's feedback is not reused for another profile.
+- Added regression tests for dataset isolation, video settings, profile-scoped reward contexts and asset metadata persistence.
+
+Still staged (not claimed as complete):
+
+- Expression/angle LoRA training is not yet exposed as a selectable UI training workflow or loaded as independent adapters during image/video inference. The CLI output isolation is only a safe foundation.
+- Full-body OpenPose/Depth ControlNet conditioning is not wired. The current pose ControlNet is face/head-pose oriented; a compatible SD 1.5 full-body model and preprocessing path must be validated first.
+- The shared body LoRA remains a body-type/style adapter, not a per-person 3D body identity model.
+- The preference selector is not yet connected to choose prompt strategies at generation time, and feedback observation plus bandit-state writes still need one atomic/concurrency-safe transaction.
+- Video still uses AnimateDiff text-to-video. It has no reference-frame/video conditioning, no body-pose control, and no temporal identity evaluator. Seed/FPS/attention changes improve control and reliability, not motion-model capability.
+- No promise of zero distortion: identity, anatomy and pose must be measured and human-reviewed; a single reference image cannot define unseen geometry.
+
