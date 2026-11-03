@@ -22,7 +22,7 @@ from peft.utils import get_peft_model_state_dict
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from face_profiles import GLOBAL_BODY_PROFILE_ID, get_profile
-from dataset_policy import select_training_files
+from dataset_policy import infer_photo_kind_from_caption, select_training_files
 
 ROOT = Path(__file__).resolve().parent
 BASE_MODEL = ROOT / "models" / "stable-diffusion-v1-5"
@@ -163,8 +163,20 @@ def main():
                     record = json.loads(sidecar.read_text(encoding="utf-8"))
                     if isinstance(record, dict) and record.get("version") == 1:
                         metadata_by_filename[image_path.name] = record
+                        continue
                 except (OSError, ValueError, json.JSONDecodeError):
-                    continue
+                    pass
+            caption_path = image_path.with_name(image_path.name + ".caption.txt")
+            try:
+                inferred_kind = infer_photo_kind_from_caption(
+                    caption_path.read_text(encoding="utf-8") if caption_path.is_file() else ""
+                )
+            except OSError:
+                inferred_kind = None
+            if inferred_kind:
+                metadata_by_filename[image_path.name] = {
+                    "photo_kind": inferred_kind, "validation_status": "not_checked"
+                }
     files, excluded_files = select_training_files(
         candidate_files, metadata_by_filename, purpose,
         include_unclassified_identity=(purpose == "identity"),
