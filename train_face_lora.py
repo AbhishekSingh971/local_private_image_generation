@@ -23,9 +23,13 @@ from transformers import CLIPTextModel, CLIPTokenizer
 
 from face_profiles import GLOBAL_BODY_PROFILE_ID, get_profile
 from dataset_policy import infer_photo_kind_from_caption, select_training_files
+from model_integrity import validate_sd15_model
 
 ROOT = Path(__file__).resolve().parent
-BASE_MODEL = ROOT / "models" / "stable-diffusion-v1-5"
+MODEL_PATH_OVERRIDE = os.environ.get("SD_MODEL_PATH", "").strip()
+BASE_MODEL = Path(MODEL_PATH_OVERRIDE).expanduser() if MODEL_PATH_OVERRIDE else ROOT / "models" / "stable-diffusion-v1-5"
+if not BASE_MODEL.is_absolute():
+    BASE_MODEL = (ROOT / BASE_MODEL).resolve()
 LEGACY_DATASET_DIR = ROOT / "data" / "face_dataset"
 PROFILE_DATASET_ROOT = ROOT / "data" / "face_profiles"
 OUTPUT_ROOT = ROOT / "models" / "face_loras"
@@ -125,8 +129,10 @@ def main():
             "CUDA was not detected. Face LoRA training is not practical on this CPU-only setup. "
             "Use an NVIDIA GPU and a CUDA-enabled PyTorch installation."
         )
-    if not (BASE_MODEL / "model_index.json").is_file():
-        raise SystemExit("Local SD 1.5 model missing. Run download_model.bat first.")
+    try:
+        validate_sd15_model(BASE_MODEL)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     dataset_dir = (
         PROFILE_DATASET_ROOT / args.profile_id / "dataset"
         if args.profile_id else LEGACY_DATASET_DIR
@@ -201,13 +207,16 @@ def main():
     tokenizer = CLIPTokenizer.from_pretrained(str(BASE_MODEL), subfolder="tokenizer", local_files_only=True)
     scheduler = DDPMScheduler.from_pretrained(str(BASE_MODEL), subfolder="scheduler", local_files_only=True)
     text_encoder = CLIPTextModel.from_pretrained(
-        str(BASE_MODEL), subfolder="text_encoder", torch_dtype=dtype, local_files_only=True
+        str(BASE_MODEL), subfolder="text_encoder", torch_dtype=dtype,
+        local_files_only=True, use_safetensors=True,
     )
     vae = AutoencoderKL.from_pretrained(
-        str(BASE_MODEL), subfolder="vae", torch_dtype=dtype, local_files_only=True
+        str(BASE_MODEL), subfolder="vae", torch_dtype=dtype,
+        local_files_only=True, use_safetensors=True,
     )
     unet = UNet2DConditionModel.from_pretrained(
-        str(BASE_MODEL), subfolder="unet", torch_dtype=dtype, local_files_only=True
+        str(BASE_MODEL), subfolder="unet", torch_dtype=dtype,
+        local_files_only=True, use_safetensors=True,
     )
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
