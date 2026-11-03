@@ -1180,7 +1180,10 @@ def api_clear_global_body_training_data():
         if cloud_worker_configured():
             try:
                 remote_response = cloud_worker_request("DELETE", "/api/remote/global-body-model", timeout=(10, 30))
-                remote_cleanup_result = remote_response.json() if remote_response.content else {}
+                try:
+                    remote_cleanup_result = remote_response.json() if remote_response.content else {}
+                except ValueError:
+                    remote_cleanup_result = {}
                 remote_cleanup = "deleted"
             except RuntimeError as remote_exc:
                 # A live remote training job must finish before either copy is cleared.
