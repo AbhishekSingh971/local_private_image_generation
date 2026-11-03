@@ -59,6 +59,7 @@ from training_generation import targets_for_dataset_type
 from dataset_policy import infer_photo_kind_from_caption, select_training_files
 from video_generation import validate_video_settings
 from image_quality import assess_image_quality
+from video_quality import assess_video_temporal_quality
 from safe_diagnostics import format_exception_detail
 from prompt_intelligence.feedback_service import record_generation_feedback
 from prompt_intelligence.runtime import prepare_generation_prompt, PromptEngineError
@@ -618,6 +619,15 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
                 metadata["post_resize_technical_quality"] = {
                     "status": "not_assessed",
                     "reason": str(quality_exc)[:300],
+                }
+        elif asset_type == "video":
+            try:
+                metadata["post_encode_temporal_quality"] = assess_video_temporal_quality(path)
+            except Exception as quality_exc:
+                # Temporal checks are advisory and must never discard a rendered video.
+                metadata["post_encode_temporal_quality"] = {
+                    "status": "not_assessed", "reason": str(quality_exc)[:300],
+                    "identity_consistency": "not_assessed", "human_review_required": True,
                 }
         return create_asset(
             asset_type=asset_type,
