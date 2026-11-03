@@ -89,3 +89,11 @@ def test_feedback_service_uses_one_atomic_persistence_operation(monkeypatch):
     assert captured["context"]["profile_id"] == "face-profile-a"
     assert captured["context"]["strategy_version"] == "v2"
     assert captured["context_key"] == PreferenceBandit.context_key(captured["context"])
+
+
+
+def test_contextual_bandit_separates_different_conditioning_components():
+    base = {"task": "image", "model_family": "sd15", "profile_id": "face-a"}
+    profile_body = {**base, "component_signature": "b"}
+    angle_expression = {**base, "component_signature": "aLeS"}
+    assert PreferenceBandit.context_key(profile_body) != PreferenceBandit.context_key(angle_expression)
