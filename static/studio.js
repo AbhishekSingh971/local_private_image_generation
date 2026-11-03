@@ -127,12 +127,13 @@
   }
   function updateFaceConditionControls() {
     const profileSelected=Boolean($("#faceProfile")?.value);
-    ["faceAngle","faceExpression","useProfileBodyComponent"].forEach(id=>{
-      const control=$("#"+id);
-      if(!control)return;
-      control.disabled=!profileSelected;
-      if(!profileSelected)control.value="";
-    });
+    // Angle and expression remain prompt-driven controls even without a trained
+    // face. Only profile-specific body adapters require a selected identity.
+    const bodyControl=$("#useProfileBodyComponent");
+    if(bodyControl){
+      bodyControl.disabled=!profileSelected;
+      if(!profileSelected)bodyControl.checked=false;
+    }
   }
   $("#faceProfile")?.addEventListener("change",updateFaceConditionControls);
   $("#useGlobalBodyModel")?.addEventListener("change",()=>{
