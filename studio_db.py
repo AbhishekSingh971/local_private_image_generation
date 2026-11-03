@@ -69,9 +69,31 @@ def _run(query, params=(), returning=False):
 
 
 def _ensure_column(conn, table, name, definition):
+    """Add a column only when it is absent; avoid needless ACCESS EXCLUSIVE locks.
+
+    ALTER TABLE takes a strong table lock even with IF NOT EXISTS. Looking up
+    the catalog first prevents every app startup from issuing no-op DDL against
+    large, frequently accessed tables such as generated_assets.
+    """
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} ").format(
-            sql.Identifier(table), sql.Identifier(name)) + sql.SQL(definition))
+        cur.execute(
+            """SELECT EXISTS (
+                   SELECT 1
+                   FROM information_schema.columns
+                   WHERE table_schema = ANY(current_schemas(false))
+                     AND table_name = %s
+                     AND column_name = %s
+               ) AS column_exists""",
+            (table, name),
+        )
+        if cur.fetchone()["column_exists"]:
+            return False
+        cur.execute(
+            sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} ").format(
+                sql.Identifier(table), sql.Identifier(name)
+            ) + sql.SQL(definition)
+        )
+        return True
 
 
 def ensure_schema() -> None:
@@ -130,7 +152,13 @@ def ensure_schema() -> None:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
         ]
         with psycopg.connect(url, row_factory=dict_row, connect_timeout=10) as conn:
+            # Schema migrations run once per process, but multiple app/worker
+            # processes can start at the same time. Serialize them in PostgreSQL
+            # and give DDL enough time while failing quickly on conflicting locks.
             with conn.cursor() as cur:
+                cur.execute("SET LOCAL lock_timeout = '15s'")
+                cur.execute("SET LOCAL statement_timeout = '90s'")
+                cur.execute("SELECT pg_advisory_xact_lock(74112, 1)")
                 for statement in statements:
                     cur.execute(statement)
             _ensure_column(conn, "face_profiles", "description", "TEXT NOT NULL DEFAULT ''")
