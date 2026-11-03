@@ -282,6 +282,118 @@ def _lora_weight_signature(folder: Path | None):
     return None
 
 
+def _load_profile_identity_reference(profile_id: str | None):
+    """Load the best approved front/source photo for identity-only GPU conditioning.
+
+    The returned square face reference is passed only to IP-Adapter. It does not
+    become the img2img source, so a full-body prompt keeps its requested composition.
+    """
+    if not profile_id:
+        return None, None
+    records = []
+    try:
+        records = list_face_photo_metadata(profile_id)
+    except Exception:
+        app.logger.warning("Could not list profile photos for IP-Adapter identity reference", exc_info=True)
+
+    if not records:
+        for path in dataset_images(profile_id):
+            sidecar = path.with_name(path.name + ".training.json")
+            caption_path = path.with_name(path.name + ".caption.txt")
+            metadata = {}
+            caption = ""
+            try:
+                if sidecar.is_file():
+                    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+                if caption_path.is_file():
+                    caption = caption_path.read_text(encoding="utf-8")
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+            records.append({
+                "filename": path.name,
+                "photo_kind": metadata.get("photo_kind", "manual"),
+                "validation_status": metadata.get("validation_status", "not_checked"),
+                "angle_label": caption,
+                "target_yaw": None,
+                "actual_yaw": None,
+                "id": None,
+            })
+
+    scored = []
+    for record in records:
+        if record.get("validation_status") == "needs_review":
+            continue
+        label = " ".join(str(record.get(key) or "") for key in ("angle_label", "filename", "training_caption")).lower()
+        yaw = record.get("target_yaw")
+        if yaw is None:
+            yaw = record.get("actual_yaw")
+        front_label = any(term in label for term in ("front", "straight-on", "straight on", "source face", "identity reference"))
+        side_label = any(term in label for term in ("left profile", "right profile", "side profile", "three-quarter", "three quarter"))
+        if yaw is not None:
+            try:
+                front_pose = abs(float(yaw)) <= 15
+            except (TypeError, ValueError):
+                front_pose = False
+        else:
+            front_pose = False
+        if side_label and not front_label and not front_pose:
+            continue
+        score = 0
+        if record.get("photo_kind") == "source":
+            score += 100
+        if front_label:
+            score += 80
+        if front_pose:
+            score += 70
+        if record.get("validation_status") == "passed":
+            score += 10
+        if record.get("photo_kind") == "manual":
+            score += 5
+        if score:
+            scored.append((score, record))
+    if not scored:
+        return None, None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    for _score, record in scored:
+        image_bytes = None
+        photo_id = record.get("id")
+        if photo_id:
+            try:
+                stored = get_face_photo_bytes(photo_id)
+                if stored:
+                    image_bytes = stored[1]
+            except Exception:
+                app.logger.warning("Could not read profile identity reference photo %s", photo_id, exc_info=True)
+        if image_bytes is None:
+            candidate = dataset_dir(profile_id) / Path(str(record.get("filename") or "")).name
+            if candidate.is_file():
+                try:
+                    image_bytes = candidate.read_bytes()
+                except OSError:
+                    image_bytes = None
+        if not image_bytes:
+            continue
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+                image.load()
+            # Portrait training photos often include shoulders. Crop the upper
+            # region, not the torso/legs, before square IP-Adapter preprocessing.
+            if image.height > image.width * 1.15:
+                crop_height = min(image.height, int(image.width * 1.35))
+                image = image.crop((0, 0, image.width, crop_height))
+            image = ImageOps.fit(image, (512, 512), method=Image.Resampling.LANCZOS, centering=(0.5, 0.28))
+            return image, {
+                "filename": record.get("filename"),
+                "photo_kind": record.get("photo_kind"),
+                "validation_status": record.get("validation_status"),
+                "source": "profile_front_photo",
+            }
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+            app.logger.warning("Ignoring invalid identity reference photo %s", record.get("filename"))
+    return None, None
+
+
 def _cloud_worker_token() -> str:
     """Read the worker token using the current name or the documented alias."""
     return (
