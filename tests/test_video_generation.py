@@ -1,9 +1,12 @@
 import pytest
+from pathlib import Path
+from types import SimpleNamespace
 
 from video_generation import (
     _chunk_frame_counts,
     resolve_video_request,
     validate_video_settings,
+    generate_video_segments,
 )
 
 
@@ -41,3 +44,39 @@ def test_long_video_is_split_into_supported_balanced_chunks():
 
 def test_legacy_video_settings_remain_supported():
     assert validate_video_settings(steps=12, frames=24, fps=8, seed=123)["frames"] == 24
+
+
+
+def test_segmented_video_generates_supported_windows_and_assembles_mp4(tmp_path, monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", SimpleNamespace(get_ffmpeg_exe=lambda: "ffmpeg"))
+    calls = []
+
+    class FakePipeline:
+        def __call__(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(frames=[["frame"] * kwargs["num_frames"]])
+
+    def fake_export(frames, path, fps):
+        Path(path).write_bytes(b"segment")
+
+    def fake_run(command, **kwargs):
+        Path(command[-1]).write_bytes(b"assembled-mp4")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("video_generation.subprocess.run", fake_run)
+    output = tmp_path / "result.mp4"
+    result = generate_video_segments(
+        FakePipeline(), prompt="A calm landscape with moving clouds",
+        negative_prompt="flicker", duration_seconds=4, fps=8,
+        steps=12, guidance_scale=7.0, seed=99, output_path=output,
+        export_to_video=fake_export,
+        generator_factory=lambda seed: seed,
+    )
+    assert [call["num_frames"] for call in calls] == [24, 8]
+    assert [call["generator"] for call in calls] == [99, 104828]
+    assert result["duration_seconds"] == 4
+    assert result["frames"] == 32
+    assert result["segments"] == 2
+    assert output.read_bytes() == b"assembled-mp4"
