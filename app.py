@@ -57,7 +57,7 @@ from face_profiles import (
 from pose_validation import build_pose_control_image, estimate_head_pose, validate_pose_target
 from training_generation import targets_for_dataset_type
 from dataset_policy import infer_photo_kind_from_caption, select_training_files
-from video_generation import validate_video_settings
+from video_generation import resolve_video_request, generate_video_segments
 from image_quality import assess_image_quality
 from video_quality import assess_video_temporal_quality
 from body_pose import prepare_openpose_control_map
@@ -3332,17 +3332,19 @@ def generate_video():
             raise ValueError("Choose a supported video face angle.")
         if face_expression not in {"", "neutral", "smile", "laugh", "serious", "surprised"}:
             raise ValueError("Choose a supported video expression.")
-        steps = int(request.form.get("steps", "12"))
-        frames = int(request.form.get("frames", "16"))
+        duration_seconds = int(request.form.get("duration_seconds", "3"))
         fps = int(request.form.get("fps", "8"))
+        quality = (request.form.get("quality") or "balanced").strip().lower()
         seed = resolve_generation_seed(request.form.get("seed"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
         backend = _resolve_compute_backend(request.form)
-        video_settings = validate_video_settings(steps=steps, frames=frames, fps=fps, seed=seed)
-        steps, frames, fps, seed = (
-            video_settings["steps"], video_settings["frames"],
-            video_settings["fps"], video_settings["seed"],
+        video_settings = resolve_video_request(duration_seconds=duration_seconds, fps=fps, seed=seed, quality=quality)
+        duration_seconds = video_settings["duration_seconds"]
+        fps, seed, quality = video_settings["fps"], video_settings["seed"], video_settings["quality"]
+        steps, guidance_scale, frames, segment_count = (
+            video_settings["steps"], video_settings["guidance_scale"],
+            video_settings["total_frames"], video_settings["segments"],
         )
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
@@ -3401,7 +3403,7 @@ def generate_video():
             )
             data = {
                 "prompt": prompt, "negative_prompt": negative_prompt,
-                "steps": str(steps), "frames": str(frames), "fps": str(fps),
+                "duration_seconds": str(duration_seconds), "quality": quality, "fps": str(fps),
                 "seed": str(seed), "task_id": task_id,
             }
             if profile_id:
@@ -3413,7 +3415,7 @@ def generate_video():
             data["use_profile_body_component"] = "true" if use_profile_body_component else "false"
             try:
                 response = runpod_request(
-                    "POST", "/api/remote/generate-video", data=data, timeout=(20, 1200)
+                    "POST", "/api/remote/generate-video", data=data, timeout=(20, 3600)
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -3442,7 +3444,11 @@ def generate_video():
                     "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                     profile=profile, backend="cloud_gpu", generation_mode="animatediff",
                     generation_metadata={"seed": seed, "steps": steps, "frames": frames, "fps": fps,
-                                         "face_profile_id": profile_id, "motion_adapter": "animatediff",
+                                         "duration_seconds": duration_seconds, "quality": quality,
+                                         "segments": segment_count, "segment_frame_limit": 24,
+                                         "duration_seconds": duration_seconds, "quality": quality,
+                                     "segments": segment_count, "segment_frame_limit": 24,
+                                     "face_profile_id": profile_id, "motion_adapter": "animatediff",
                                          "strategy_id": prompt_plan["strategy_id"],
                                          "strategy_version": prompt_plan["strategy_version"],
                                          "prompt_provider": prompt_plan["provider"],
@@ -3465,8 +3471,9 @@ def generate_video():
                 status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
                 asset_id=asset["id"], title=asset["title"],
                 face_profile=profile["name"] if profile else None, backend="cloud_gpu",
-                seed=seed, frames=frames, fps=fps,
-                message="Generated on the selected cloud GPU and saved to the database library.",
+                seed=seed, frames=frames, fps=fps, duration_seconds=duration_seconds,
+                quality=quality, segments=segment_count,
+                message=f"Generated a {duration_seconds}-second video in {segment_count} AnimateDiff segment(s) on the selected cloud GPU and saved it to the library.",
             )
 
         if backend != "local_gpu" or not torch.cuda.is_available():
@@ -3536,30 +3543,30 @@ def generate_video():
                 task_id, asset_type="video", backend=backend, status="running", progress=5,
                 total_steps=steps, stage="denoising", message="Starting video denoising steps…",
             )
-            def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
-                scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
-                current = min(step_index + 1, scheduler_steps)
-                percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+            filename = f"{uuid.uuid4().hex}.mp4"
+            output_path = VIDEO_OUTPUT_DIR / filename
+
+            def on_segment_progress(segment_index, total_segments, current_step, segment_steps):
+                completed_steps = segment_index * segment_steps + current_step
+                percent = min(92, 5 + round(87 * completed_steps / max(total_segments * segment_steps, 1)))
                 _set_generation_progress(
                     task_id, asset_type="video", backend=backend, status="running", progress=percent,
-                    current_step=current, total_steps=scheduler_steps, stage="denoising",
-                    message=f"Generating video · step {current} of {scheduler_steps} · {frames} frames",
+                    current_step=current_step, total_steps=segment_steps, stage="denoising",
+                    message=f"Generating segment {min(segment_index + 1, total_segments)} of {total_segments} · step {current_step}/{segment_steps}",
                 )
-                return callback_kwargs
-            generator = torch.Generator(device="cuda").manual_seed(seed)
-            result = video_pipe(
-                prompt=prompt, negative_prompt=negative_prompt or None,
-                num_frames=frames, num_inference_steps=steps,
-                guidance_scale=7.0, generator=generator,
-                callback_on_step_end=on_step_end,
+
+            segment_result = generate_video_segments(
+                video_pipe, prompt=prompt, negative_prompt=negative_prompt,
+                duration_seconds=duration_seconds, fps=fps, steps=steps,
+                guidance_scale=guidance_scale, seed=seed, output_path=output_path,
+                export_to_video=export_to_video,
+                generator_factory=lambda chunk_seed: torch.Generator(device="cuda").manual_seed(chunk_seed),
+                progress_callback=on_segment_progress,
             )
             _set_generation_progress(
                 task_id, asset_type="video", backend=backend, status="running", progress=95,
-                current_step=steps, total_steps=steps, stage="encoding", message="Encoding video frames into MP4…",
+                current_step=steps, total_steps=steps, stage="encoding", message="Assembling generated segments into the final MP4…",
             )
-            filename = f"{uuid.uuid4().hex}.mp4"
-            output_path = VIDEO_OUTPUT_DIR / filename
-            export_to_video(result.frames[0], str(output_path), fps=fps)
             _resize_video_file(output_path, output_max_edge)
         except Exception as exc:
             _set_generation_progress(
