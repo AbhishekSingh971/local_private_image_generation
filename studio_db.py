@@ -80,7 +80,7 @@ def _ensure_column(conn, table, name, definition):
             """SELECT EXISTS (
                    SELECT 1
                    FROM information_schema.columns
-                   WHERE table_schema = ANY(current_schemas(false))
+                   WHERE table_schema = current_schema()
                      AND table_name = %s
                      AND column_name = %s
                ) AS column_exists""",
