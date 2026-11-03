@@ -81,7 +81,8 @@ def test_explicit_full_body_request_overrides_reference_crop():
         "full_body_photo",
         has_reference_image=True,
     )
-    assert prompt.startswith("photorealistic full-body photograph")
+    assert prompt.startswith("full-body head-to-toe photograph of a woman seated on a chair")
+    assert "photorealistic full-body photograph" in prompt
     assert "entire person visible from head to feet" in prompt
     assert "cropped body" in negative
     assert "cut off feet" in negative
