@@ -34,6 +34,9 @@ def ensure_adapter(adapter_dir, repo_id=None):
         print(f"  - {item}")
     print("Resuming the adapter checkpoint download. Existing files are kept.")
 
+    # Avoid Xet streaming failures on unstable GHive network paths and
+    # serialize large-file downloads to make resume behavior more reliable.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     from huggingface_hub import snapshot_download
 
     adapter_dir.mkdir(parents=True, exist_ok=True)
@@ -42,6 +45,7 @@ def ensure_adapter(adapter_dir, repo_id=None):
         local_dir=str(adapter_dir),
         token=os.environ.get("HF_TOKEN") or None,
         allow_patterns=list(ANIMATEDIFF_ALLOW_PATTERNS),
+        max_workers=1,
     )
 
     validate_animatediff_adapter(adapter_dir)
