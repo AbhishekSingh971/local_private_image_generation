@@ -1149,6 +1149,7 @@ def api_global_body_status():
             local_training_state=profile.get("local_training_state", "not_trained"),
             runpod_training_state=profile.get("runpod_training_state", "not_trained"),
             groups_count=len(groups),
+            generation_running=any(group.get("status") == "generating" for group in groups),
         )
     except Exception:
         app.logger.exception("Could not read shared body model status")
