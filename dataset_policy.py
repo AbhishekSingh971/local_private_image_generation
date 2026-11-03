@@ -8,6 +8,28 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping
 
+def infer_photo_kind_from_caption(caption: str | None) -> str | None:
+    """Best-effort legacy migration for old grouped photos without a JSON sidecar."""
+    value = " ".join((caption or "").lower().split())
+    if not value:
+        return None
+    if value.startswith("body type:") or value.startswith("body proportions:"):
+        return "body"
+    expression_terms = (
+        "expression", "smile", "laugh", "neutral", "sad", "angry",
+        "surprised", "fearful", "disgusted", "confused",
+    )
+    if any(term in value for term in expression_terms):
+        return "expression"
+    angle_terms = (
+        "yaw", "pitch", "profile", "three-quarter", "front-facing",
+        "head pose", "head turned", "looking up", "looking down",
+    )
+    if any(term in value for term in angle_terms):
+        return "angle"
+    return None
+
+
 PURPOSE_KINDS = {
     "identity": {"source", "manual"},
     "body": {"body"},
