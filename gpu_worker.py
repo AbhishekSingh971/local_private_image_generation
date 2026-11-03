@@ -288,6 +288,52 @@ def remote_upload_profile_lora(profile_id):
     return jsonify(status="installed", ready=True, profile_id=profile_id, purpose=purpose, bytes=len(raw))
 
 
+@worker.delete("/api/remote/global-body-model")
+def remote_clear_global_body_model():
+    """Remove shared-body samples and adapter files but retain the reserved profile/token."""
+    profile_id = local_engine.GLOBAL_BODY_PROFILE_ID
+    profile = local_engine.get_profile(profile_id) or local_engine.ensure_global_body_profile()
+    if profile.get("local_training_state") == "running":
+        return jsonify(error="The shared body model is still training on this worker."), 409
+    with TASKS_LOCK:
+        active = any(
+            task.get("profile_id") == profile_id
+            and task.get("purpose") == "body"
+            and task.get("status") in {"queued", "running"}
+            for task in TASKS.values()
+        )
+    if active:
+        return jsonify(error="A shared body training job is still active on this worker."), 409
+
+    photos = dataset_images(profile_id)
+    for image_path in photos:
+        for path_to_remove in (
+            image_path,
+            image_path.with_name(image_path.name + ".caption.txt"),
+            image_path.with_name(image_path.name + ".training.json"),
+        ):
+            try:
+                path_to_remove.unlink(missing_ok=True)
+            except OSError:
+                return jsonify(error="Could not remove all shared body training photos from the worker."), 500
+
+    from shutil import rmtree
+    rmtree(model_path(profile_id), ignore_errors=True)
+    update_profile(
+        profile_id,
+        local_model_ready=False,
+        local_training_state="not_trained",
+        local_training_error=None,
+        local_training_job_id=None,
+    )
+    return jsonify(
+        status="cleared",
+        photos_deleted=len(photos),
+        model_directory_removed=True,
+        profile_preserved=True,
+    )
+
+
 @worker.post("/api/remote/train-profile")
 def remote_train_profile():
     if not torch.cuda.is_available():
