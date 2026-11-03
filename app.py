@@ -2925,7 +2925,7 @@ def _load_cpu_or_gpu_pipeline(
 
 @app.post("/api/generation-prompt-preview")
 def api_generation_prompt_preview():
-    """Return the exact image prompt pair that generation will submit."""
+    """Return the base image prompt pair; submit-time profile and strategy controls may extend it."""
     payload = request.get_json(silent=True) or {}
     try:
         prompt = _clean_prompt(payload.get("prompt"), "Prompt", 1200)
