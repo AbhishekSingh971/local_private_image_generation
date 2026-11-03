@@ -60,7 +60,9 @@
         <div class="actions">
           <button type="button" id="generateBodyDatasetButton">Generate 5 body samples</button>
           <button type="button" id="trainGlobalBodyButton" class="secondary-button">Train shared body model</button>
+          <button type="button" id="clearGlobalBodyButton" class="secondary-button danger-button">Clear shared body data &amp; model</button>
         </div>
+        <p class="field-help">Clear removes shared-body training photos, dataset groups, saved adapter artifacts and local checkpoints. The reserved shared profile and globalbody token remain available.</p>
         <div id="bodyDatasetStatus" class="status" role="status" aria-live="polite"></div>
         <p id="globalBodyModelStatus" class="field-help">Checking shared body model status…</p>
       </div>
