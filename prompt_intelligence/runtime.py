@@ -77,9 +77,23 @@ def prepare_generation_prompt(
     result = PromptEngine().build(prompt, task=task, context=safe_context)
     strategies = VIDEO_STRATEGIES if task == "video" else IMAGE_STRATEGIES
     strategy_id = _strategy_for(task, safe_context)
-    positive_addition, negative_addition = strategies[strategy_id]
-    positive_parts = [result.positive_prompt.strip(), positive_addition]
-    negative_parts = [result.negative_prompt.strip(), (negative_prompt or "").strip(), negative_addition]
+    # Reinforcement may optimize optional prompt additions, but must never learn
+    # away hard constraints required by the selected face identity or composition.
+    required_strategies = []
+    if task == "image":
+        if safe_context.get("profile_id") not in (None, "", "global"):
+            required_strategies.append("identity_guard")
+        if safe_context.get("full_body"):
+            required_strategies.append("full_body_guard")
+    applied_strategies = list(required_strategies)
+    if strategy_id != "baseline" and strategy_id not in applied_strategies:
+        applied_strategies.append(strategy_id)
+    positive_parts = [result.positive_prompt.strip()]
+    negative_parts = [result.negative_prompt.strip(), (negative_prompt or "").strip()]
+    for applied in applied_strategies:
+        positive_addition, negative_addition = strategies[applied]
+        positive_parts.append(positive_addition)
+        negative_parts.append(negative_addition)
     positive = ", ".join(part for part in positive_parts if part)
     negative = ", ".join(dict.fromkeys(part for part in negative_parts if part))
     if task == "image":
@@ -94,6 +108,7 @@ def prepare_generation_prompt(
         "original_prompt": result.original_prompt,
         "provider": result.provider,
         "strategy_id": strategy_id,
+        "applied_strategies": applied_strategies,
         "strategy_version": "v2",
         "task_instructions": result.task_instructions,
         "parameters": result.parameters,
