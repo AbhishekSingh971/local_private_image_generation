@@ -52,3 +52,15 @@ def test_human_rating_takes_precedence_over_pose_heuristic():
     assert report.scores["image_quality"] == 1.0
     assert report.sources["angle"] == "human"
     assert report.sources["image_quality"] == "human"
+
+
+def test_contextual_bandit_never_shares_identity_feedback_between_profiles():
+    bandit = PreferenceBandit()
+    first = {"task": "image", "model_family": "sd15", "profile_id": "face-a"}
+    second = {"task": "image", "model_family": "sd15", "profile_id": "face-b"}
+    bandit.record("cfg-a", 1.0, first)
+    bandit.register("cfg-b", second)
+    restored = PreferenceBandit.from_dict(bandit.to_dict())
+    assert restored.select(second) == "cfg-b"
+    with pytest.raises(ValueError):
+        restored.select({"task": "image", "model_family": "sd15", "profile_id": "face-c"})
