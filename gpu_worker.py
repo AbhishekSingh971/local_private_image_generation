@@ -564,6 +564,9 @@ def remote_generate():
         use_global_body_model = str(request.form.get("use_global_body_model") or "").strip().lower() in {"1", "true", "yes", "on"}
         face_angle = (request.form.get("face_angle") or "").strip().lower()
         face_expression = (request.form.get("face_expression") or "").strip().lower()
+        pose_control_type = (request.form.get("pose_control_type") or "face_mesh").strip().lower()
+        if pose_control_type not in {"face_mesh", "body_openpose"}:
+            raise ValueError("Unsupported pose control type.")
         if face_angle not in {"", "front", "three_quarter_left", "three_quarter_right", "left_profile", "right_profile"}:
             raise ValueError("Unsupported face angle.")
         if face_expression not in {"", "neutral", "smile", "laugh", "serious", "surprised"}:
@@ -609,14 +612,19 @@ def remote_generate():
             pose_control_image = ImageOps.fit(pose_control_image, (width, height), method=Image.Resampling.LANCZOS)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
             return jsonify(error="Face-pose control image is not a valid image."), 400
-        if image is None:
-            return jsonify(error="Pose control requires a source reference image."), 400
+        if image is None and pose_control_type != "body_openpose":
+            return jsonify(error="Face-mesh pose control requires a source reference image."), 400
     _set_generation_progress(task_id, asset_type="image", status="running", progress=2, total_steps=steps, stage="loading_model", message="Loading the image model and selected face on the cloud GPU…")
     if not local_engine.generation_lock.acquire(blocking=False):
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="busy", message="Another GPU generation is already running.")
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
-        mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
+        mode = (
+            ("body_pose_img2img" if image is not None else "body_pose_txt2img")
+            if pose_control_image is not None and pose_control_type == "body_openpose"
+            else "pose_img2img" if pose_control_image is not None
+            else ("img2img" if image is not None else "txt2img")
+        )
         pipeline = local_engine._load_cpu_or_gpu_pipeline(
             mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
             face_angle=face_angle, face_expression=face_expression,
@@ -656,7 +664,11 @@ def remote_generate():
                 kwargs["ip_adapter_image"] = image
         if pose_control_image is not None:
             kwargs["control_image"] = pose_control_image
-            kwargs["controlnet_conditioning_scale"] = 1.0
+            scale_key = "BODY_POSE_CONTROLNET_SCALE" if pose_control_type == "body_openpose" else "FACE_POSE_CONTROLNET_SCALE"
+            try:
+                kwargs["controlnet_conditioning_scale"] = float(os.environ.get(scale_key, "1.0"))
+            except ValueError:
+                kwargs["controlnet_conditioning_scale"] = 1.0
         result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
