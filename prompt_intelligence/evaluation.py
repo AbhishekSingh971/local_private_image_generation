@@ -59,7 +59,7 @@ def evaluate_generation(*, human_scores: Mapping[str, Any] | None = None,
         sources["image_quality"] = "technical_heuristic"
         penalties.extend(str(item) for item in quality.get("reasons", [])[:8])
         review.append("image_quality")
-    for dimension in set(requested_dimensions or DIMENSIONS):
+    for dimension in dict.fromkeys(requested_dimensions or DIMENSIONS):
         if dimension in DIMENSIONS and dimension not in scores:
             review.append(dimension)
     selected_weights = {key: float((weights or DEFAULT_WEIGHTS).get(key, 0.0)) for key in scores}
