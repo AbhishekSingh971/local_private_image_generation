@@ -896,20 +896,43 @@
     }
     if($("#trainStatus"))$("#trainStatus").textContent="Stopped polling after 8 hours. Check the worker logs and profile state.";
   }
+  async function pollComponentTraining(profileId, jobId, backend, purpose) {
+    const started=Date.now();
+    while(Date.now()-started<8*60*60*1000){
+      await new Promise(resolve=>setTimeout(resolve,4000));
+      const url="/api/face-profiles/"+profileId+"/component-train-status/"+jobId+"?backend="+backend;
+      const data=await readJson(await fetch(url,{cache:"no-store"}));
+      const job=data.job||{};
+      if(job.status==="completed"){
+        const status=$("#trainStatus");
+        if(status)status.textContent=purpose+" component training completed. It is stored separately from the identity LoRA.";
+        return;
+      }
+      if(job.status==="failed")throw new Error(job.error||purpose+" component training failed.");
+      const status=$("#trainStatus");
+      if(status)status.textContent=purpose+" component training is "+(job.status||"running")+"…";
+    }
+    throw new Error("Stopped polling after 8 hours. Check the GPU worker logs.");
+  }
   trainForm?.addEventListener("submit",async event=>{
     event.preventDefault();const id=$("#trainProfile")?.value;
     const status=$("#trainStatus");const button=$("#trainButton");
     const profile=profiles.find(item=>item.id===id);
-    if(!id){if(status)status.textContent="Create or select a face profile first.";return;}
-    if(!profile||profile.image_count<5){if(status)status.textContent="Add at least 5 good photos to this profile before training.";return;}
-    button.disabled=true;if(status)status.textContent="Checking selected compute backend and submitting the face training job…";
+    const purpose=$("#trainingPurpose")?.value||"identity";
+    if(!id||!profile){if(status)status.textContent="Create or select a face profile first.";return;}
+    button.disabled=true;if(status)status.textContent="Checking eligible "+purpose+" photos and submitting the training job…";
     const backend=computeBackend?.value||"auto";
     try{
       const data=await readJson(await fetch("/api/face-profiles/"+id+"/train",{method:"POST",body:addComputeData(new FormData(trainForm))}));
       if(status)status.textContent=data.message||"Training started.";
       await refreshProfiles();
       const resolvedBackend=data.backend||backend;
-      await pollTraining(id,(resolvedBackend==="runpod"||resolvedBackend==="cloud_gpu")?"runpod":"local");
+      const selectedBackend=(resolvedBackend==="runpod"||resolvedBackend==="cloud_gpu")?"runpod":"local";
+      if(purpose==="identity"||profile.id===globalBodyStatusCache?.profile_id){
+        await pollTraining(id,selectedBackend);
+      }else{
+        await pollComponentTraining(id,data.job_id,selectedBackend,purpose);
+      }
     }catch(error){if(status)status.textContent=error.message;}
     finally{button.disabled=false;await refreshProfiles().catch(()=>{});}
   });
