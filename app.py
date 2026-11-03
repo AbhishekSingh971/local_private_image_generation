@@ -3396,7 +3396,7 @@ def generate_video():
             try:
                 cloud_video_component_status = json.loads(response.headers.get("X-Component-Adapter-Status", "{}"))
             except (TypeError, ValueError):
-                cloud_video_component_status = {"angle": "unknown", "expression": "unknown"}
+                cloud_video_component_status = {"body": "unknown", "angle": "unknown", "expression": "unknown"}
             try:
                 _resize_video_file(output_path, output_max_edge)
             except Exception as exc:
