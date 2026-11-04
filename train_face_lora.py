@@ -120,8 +120,35 @@ def main():
             "CUDA was not detected. Face LoRA training is not practical on this CPU-only setup. "
             "Use an NVIDIA GPU and a CUDA-enabled PyTorch installation."
         )
-    if not (BASE_MODEL / "model_index.json").is_file():
-        raise SystemExit("Local SD 1.5 model missing. Run download_model.bat first.")
+    # Check every component before starting training. model_index.json can exist
+    # even when a previous Hugging Face download stopped before the large weights.
+    required_model_files = {
+        "model_index.json": BASE_MODEL / "model_index.json",
+        "tokenizer/tokenizer_config.json": BASE_MODEL / "tokenizer" / "tokenizer_config.json",
+        "scheduler/scheduler_config.json": BASE_MODEL / "scheduler" / "scheduler_config.json",
+        "text_encoder/config.json": BASE_MODEL / "text_encoder" / "config.json",
+        "vae/config.json": BASE_MODEL / "vae" / "config.json",
+        "unet/config.json": BASE_MODEL / "unet" / "config.json",
+    }
+    missing_model_files = [label for label, path in required_model_files.items() if not path.is_file()]
+    for component, filenames in {
+        "text_encoder": ("model.safetensors", "pytorch_model.bin"),
+        "vae": ("diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"),
+        "unet": ("diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"),
+    }.items():
+        if not any((BASE_MODEL / component / filename).is_file() for filename in filenames):
+            missing_model_files.append(
+                f"{component}/" + " or ".join(filenames)
+            )
+    if missing_model_files:
+        missing = "\\n".join(f"  - {item}" for item in missing_model_files)
+        raise SystemExit(
+            "Stable Diffusion 1.5 checkpoint is incomplete in "
+            f"{BASE_MODEL}. Missing required files:\\n{missing}\\n"
+            "On GHive, rerun run_ghive_worker.sh to repair the download. "
+            "If Hugging Face denies access, accept the model license and set HF_TOKEN. "
+            "Do not start LoRA training until all model components are present."
+        )
     dataset_dir = (
         PROFILE_DATASET_ROOT / args.profile_id / "dataset"
         if args.profile_id else LEGACY_DATASET_DIR
@@ -149,7 +176,7 @@ def main():
     tokenizer = CLIPTokenizer.from_pretrained(str(BASE_MODEL), subfolder="tokenizer", local_files_only=True)
     scheduler = DDPMScheduler.from_pretrained(str(BASE_MODEL), subfolder="scheduler", local_files_only=True)
     text_encoder = CLIPTextModel.from_pretrained(
-        str(BASE_MODEL), subfolder="text_encoder", torch_dtype=dtype, local_files_only=True
+        str(BASE_MODEL), subfolder="text_encoder", dtype=dtype, local_files_only=True
     )
     vae = AutoencoderKL.from_pretrained(
         str(BASE_MODEL), subfolder="vae", torch_dtype=dtype, local_files_only=True
