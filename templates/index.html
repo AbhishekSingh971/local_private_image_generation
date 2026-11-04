@@ -111,7 +111,7 @@
         <label for="referenceImage">Reference image (optional)</label><input id="referenceImage" name="image" type="file" accept="image/png,image/jpeg,image/webp">
         <div class="preview" style="margin-top:11px"><img id="sourcePreview" alt="Reference image preview" hidden><div id="sourcePlaceholder" class="placeholder">Optional reference image</div></div>
         <label for="prompt">Prompt</label><textarea id="prompt" name="prompt" maxlength="1200" required placeholder="photo of face_a1b2c3d4 person, editorial portrait, soft window light, realistic photography"></textarea>
-        <label for="negativePrompt">Negative prompt (optional)</label><textarea id="negativePrompt" name="negative_prompt" maxlength="600" style="min-height:58px" placeholder="blurry, distorted face, extra fingers, low quality"></textarea>
+        <label for="negativePrompt">Negative prompt (optional)</label><textarea id="negativePrompt" name="negative_prompt" maxlength="1000" style="min-height:58px" placeholder="blurry, distorted face, extra fingers, low quality"></textarea>
         <div class="twocol">
           <div><label for="strength">Edit strength: <span id="strengthValue">0.45</span></label><input id="strength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.45" style="width:100%"><div class="tiny">Used only with a reference image.</div></div>
           <div><label for="steps">Inference steps</label><select id="steps" name="steps"><option value="5">5 · quick test</option><option value="10" selected>10 · start here</option><option value="15">15</option><option value="20">20</option><option value="25">25 · slower</option></select></div>
