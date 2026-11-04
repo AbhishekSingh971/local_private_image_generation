@@ -2529,7 +2529,7 @@ def api_generation_prompt_preview():
     payload = request.get_json(silent=True) or {}
     try:
         prompt = _clean_prompt(payload.get("prompt"), "Prompt", 1200)
-        negative_prompt = _clean_prompt(payload.get("negative_prompt"), "Negative prompt", 600)
+        negative_prompt = _clean_prompt(payload.get("negative_prompt"), "Negative prompt", 1000)
         preset = validate_image_preset(payload.get("image_preset") or "standard")
         has_reference = bool(payload.get("has_reference_image"))
         final_prompt, final_negative = build_generation_prompts(
@@ -2544,7 +2544,7 @@ def api_generation_prompt_preview():
 def generate():
     try:
         prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1200)
-        negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 1200)
+        negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 1000)
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = float(request.form.get("strength", "0.45"))
         steps = int(request.form.get("steps", "25"))
