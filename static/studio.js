@@ -1025,11 +1025,12 @@
   const generationForm = $("#generationForm");
   const finalPromptInput = $("#finalPrompt");
   let promptPreviewRequest = 0;
+  let finalNegativePrompt = "";
   async function refreshFinalPromptPreview() {
     if (!generationForm || !finalPromptInput) return;
     const requestId = ++promptPreviewRequest;
     const prompt = $("#prompt")?.value || "";
-    if (!prompt.trim()) { finalPromptInput.value = ""; return; }
+    if (!prompt.trim()) { finalPromptInput.value = ""; finalNegativePrompt = ""; return; }
     try {
       const response = await fetch("/api/generation-prompt-preview", {
         method: "POST", headers: {"Content-Type":"application/json"},
@@ -1043,8 +1044,10 @@
       const data = await readJson(response);
       if (requestId === promptPreviewRequest) {
         finalPromptInput.value = data.prompt || prompt;
-        const negative = $("#negativePrompt");
-        if (negative && data.negative_prompt !== undefined) negative.value = data.negative_prompt;
+        // Keep the user's editable negative prompt raw. Writing the enhanced
+        // preview back into the textarea caused the realism prefix to be added
+        // again on every preview refresh, eventually exceeding the worker limit.
+        finalNegativePrompt = data.negative_prompt ?? ($("#negativePrompt")?.value || "");
       }
     } catch (error) {
       if (requestId === promptPreviewRequest) finalPromptInput.value = prompt;
@@ -1066,8 +1069,12 @@
     if(status)status.textContent=useGpuAcceleration?.checked?"Sending this image task to the selected GPU worker…":"Loading the model and generating locally. CPU inference may be slow.";
     const preview=$("#resultPreview");const placeholder=$("#resultPlaceholder");const download=$("#downloadImage");const pill=$("#imageSavedPill");
     preview.hidden=true;placeholder.hidden=false;download.hidden=true;
+    // Refresh synchronously before submitting so the prompt pair belongs to
+    // the latest form values and the worker receives each enhancement exactly once.
+    await refreshFinalPromptPreview();
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
     formData.set("prompt", finalPromptInput?.value || $("#prompt")?.value || "");
+    formData.set("negative_prompt", finalNegativePrompt || $("#negativePrompt")?.value || "");
     formData.set("prompt_is_final", "true");
     const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
