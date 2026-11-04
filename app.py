@@ -291,10 +291,11 @@ def _load_profile_identity_reference(profile_id: str | None):
     if not profile_id:
         return None, None
     records = []
-    try:
-        records = list_face_photo_metadata(profile_id)
-    except Exception:
-        app.logger.warning("Could not list profile photos for IP-Adapter identity reference", exc_info=True)
+    if database_url_configured():
+        try:
+            records = list_face_photo_metadata(profile_id)
+        except Exception:
+            app.logger.warning("Could not list profile photos for IP-Adapter identity reference", exc_info=True)
 
     if not records:
         for path in dataset_images(profile_id):
