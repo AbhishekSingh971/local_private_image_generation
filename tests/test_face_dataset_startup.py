@@ -123,6 +123,8 @@ def test_profile_identity_reference_prefers_approved_front_photo(monkeypatch):
         "2" * 32: front_bytes,
         "3" * 32: review_bytes,
     }
+    monkeypatch.setattr(studio_app, "database_url_configured", lambda: True)
+    monkeypatch.setattr(studio_app, "database_url_configured", lambda: True)
     monkeypatch.setattr(studio_app, "list_face_photo_metadata", lambda _profile: records)
     monkeypatch.setattr(
         studio_app, "get_face_photo_bytes",
