@@ -1050,7 +1050,10 @@
         finalNegativePrompt = data.negative_prompt ?? ($("#negativePrompt")?.value || "");
       }
     } catch (error) {
-      if (requestId === promptPreviewRequest) finalPromptInput.value = prompt;
+      if (requestId === promptPreviewRequest) {
+        finalPromptInput.value = prompt;
+        finalNegativePrompt = $("#negativePrompt")?.value || "";
+      }
     }
   }
   ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage"].forEach(selector => {
