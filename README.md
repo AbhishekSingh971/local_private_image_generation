@@ -224,6 +224,37 @@ python gpu_acceptance.py --model-family flux2_klein --reference-image path/to/re
 
 Run this on the target worker after installing its CUDA-compatible PyTorch build and accepting any required model access terms. Keep the generated PNG and JSON report private if they contain user-provided reference imagery or prompts. CPU CI compiles this script but does not download models or claim that GPU acceptance has passed.
 
+## Model version history and rollback
+
+When PostgreSQL is configured, each successful local or cloud face LoRA training run is archived as an immutable version with a SHA-256 checksum, backend, file count and training metadata. The latest artifact remains available for the existing worker flow. The Face Models profile card exposes **Model versions**; local versions can be restored after checksum verification. Cloud versions are listed but must be restored through the matching GPU worker.
+
+Version history stores model bundles in PostgreSQL and can increase database storage substantially. Configure database capacity and retention/backup policies before large-scale training.
+
+## Encrypted PostgreSQL backups
+
+The repository includes `backup_postgres.py`. It creates an AES-256-GCM encrypted custom-format PostgreSQL dump containing saved media, face photos and archived LoRA bundles.
+
+1. Install PostgreSQL client tools (`pg_dump` and `pg_restore`) on the machine running the script.
+2. Configure `DATABASE_URL` and a separate `BACKUP_ENCRYPTION_KEY` in the private environment. Generate a 32-byte key with:
+
+   ```bash
+   python -c "import secrets; print(secrets.token_hex(32))"
+   ```
+
+3. Create an encrypted backup:
+
+   ```bash
+   python backup_postgres.py create --output backups/private-studio.pfbackup
+   ```
+
+4. Restore only after checking that `DATABASE_URL` points to the intended target database:
+
+   ```bash
+   python backup_postgres.py restore backups/private-studio.pfbackup --confirm-restore
+   ```
+
+Keep the encryption key separately from the backup, restrict filesystem permissions, and test restores against a disposable database. Restore replaces database objects. The backup script does not back up downloaded base model checkpoints; those should be downloaded again from their documented model sources.
+
 ## Face-photo approval before training
 
 Face-photo quality validation and human training approval are separate states:
