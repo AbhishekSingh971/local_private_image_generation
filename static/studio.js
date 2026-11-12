@@ -1689,6 +1689,27 @@
   }
   $("#datasetRefresh")?.addEventListener("click",loadDatasetGroups);
 
+  // ---------- Face and body geometry ----------
+  const geometryPage = $("#geometryPage");
+  if (geometryPage) {
+    const imageInput = $("#geometryImage");
+    const button = $("#analyzeGeometry");
+    const status = $("#geometryStatus");
+    const output = $("#geometryResult");
+    button?.addEventListener("click", async () => {
+      if (!imageInput?.files?.length) { if(status)status.textContent="Choose an image first."; return; }
+      const form = new FormData(); form.append("image", imageInput.files[0]);
+      button.disabled=true;button.textContent="Analyzing…";
+      if(status)status.textContent="Extracting face mesh and body-pose landmarks…";
+      try {
+        const data=await readJson(await fetch("/api/geometry/analyze",{method:"POST",body:form}));
+        if(output)output.textContent=JSON.stringify(data.analysis,null,2);
+        if(status)status.textContent=(data.analysis?.status||"unknown")+" · Image processed in memory; no file saved.";
+      } catch(error) { if(status)status.textContent=error.message; }
+      finally { button.disabled=false;button.textContent="Analyze face and body landmarks"; }
+    });
+  }
+
   // ---------- Operational diagnostics ----------
   const diagnosticsPage = $("#diagnosticsPage");
   if (diagnosticsPage) {
