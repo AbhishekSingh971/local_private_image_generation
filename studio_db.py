@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
-from private_data_crypto import decrypt_sensitive_bytes, encrypt_sensitive_bytes, is_encrypted
+from private_data_crypto import decrypt_sensitive_bytes, encrypt_sensitive_bytes, encryption_configured, is_encrypted
 from psycopg.rows import dict_row
 from psycopg import sql
 from psycopg.errors import UniqueViolation
@@ -737,6 +737,67 @@ def list_face_model_versions(profile_id, backend=None, limit=50):
             try: item["metadata"]=json.loads(item["metadata"])
             except (TypeError,ValueError): item["metadata"]={}
         result.append(item)
+    return result
+
+
+def encrypt_existing_private_data(batch_size=5):
+    """Encrypt legacy plaintext BYTEA blobs in place; run while the app is in maintenance mode."""
+    if not encryption_configured():
+        raise RuntimeError("Set FACE_DATA_ENCRYPTION_KEY before encrypting existing private data.")
+    ensure_schema()
+    targets = (
+        ("face_photos", "image_data"),
+        ("face_model_artifacts", "bundle_data"),
+        ("face_model_versions", "bundle_data"),
+        ("generated_assets", "media_data"),
+    )
+    migrated = {}
+    for table, column in targets:
+        last_id = ""
+        changed = 0
+        while True:
+            rows = _all(
+                f"SELECT id,{column} FROM {table} WHERE id>%s ORDER BY id LIMIT %s",
+                (last_id, max(1, min(int(batch_size), 50))),
+            )
+            if not rows:
+                break
+            with _connect() as conn, conn.cursor() as cur:
+                for row in rows:
+                    last_id = row["id"]
+                    payload = bytes(row[column])
+                    if is_encrypted(payload):
+                        continue
+                    cur.execute(
+                        f"UPDATE {table} SET {column}=%s WHERE id=%s",
+                        (encrypt_sensitive_bytes(payload), row["id"]),
+                    )
+                    changed += 1
+        migrated[f"{table}.{column}"] = changed
+    return migrated
+
+
+def private_data_encryption_status():
+    """Return counts of legacy plaintext blobs without reading the blob contents."""
+    ensure_schema()
+    targets = (
+        ("face_photos", "image_data"),
+        ("face_model_artifacts", "bundle_data"),
+        ("face_model_versions", "bundle_data"),
+        ("generated_assets", "media_data"),
+    )
+    result = {}
+    for table, column in targets:
+        row = _one(
+            f"""SELECT COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE substring({column} from 1 for 5) <> %s) AS plaintext
+                FROM {table}""",
+            (b"PFDB1",),
+        )
+        result[f"{table}.{column}"] = {
+            "total": int(row["total"]),
+            "plaintext": int(row["plaintext"]),
+        }
     return result
 
 
