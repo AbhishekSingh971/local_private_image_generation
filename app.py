@@ -3296,7 +3296,7 @@ def generate():
             _set_generation_progress(
                 task_id, asset_type="image", backend="cloud_gpu", status="completed", progress=100,
                 current_step=steps, total_steps=steps, stage="completed",
-                message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""),
+                message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""), + ((" " + face_restore_warning) if face_restore_warning else ""),
             )
             return jsonify(
                 status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
@@ -3307,7 +3307,7 @@ def generate():
                 upsampled_prompt=upsampled_prompt,
                 generation_metadata=asset.get("generation_metadata", {}),
                 quality_report=quality_report,
-                message="Generated on the selected cloud GPU and saved to the database library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""),
+                message="Generated on the selected cloud GPU and saved to the database library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""), + ((" " + face_restore_warning) if face_restore_warning else ""),
             )
 
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
@@ -3478,7 +3478,7 @@ def generate():
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="completed", progress=100,
             current_step=steps, total_steps=steps, stage="completed",
-            message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""),
+            message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""), + ((" " + face_restore_warning) if face_restore_warning else ""),
         )
         return jsonify(
             status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
@@ -3489,7 +3489,7 @@ def generate():
             original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
             generation_metadata=asset.get("generation_metadata", {}),
             quality_report=quality_report, seed=seed,
-            message=message + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""),
+            message=message + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""), + ((" " + face_restore_warning) if face_restore_warning else ""),
         )
     finally:
         generation_lock.release()
