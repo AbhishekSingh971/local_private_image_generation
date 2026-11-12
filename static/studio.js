@@ -1504,7 +1504,21 @@
           const validationDetail=document.createElement("span");validationDetail.className="photo-validation-details";
           if(photo.validation_message)validationDetail.textContent=photo.validation_message;
           else if(Number.isFinite(Number(photo.actual_yaw)))validationDetail.textContent="Estimated yaw "+Number(photo.actual_yaw).toFixed(0)+"°, pitch "+Number(photo.actual_pitch||0).toFixed(0)+"°.";
+          const approvalStatus=photo.training_approval_status||"pending";
+          const approvalBadge=document.createElement("span");
+          approvalBadge.className="photo-validation-badge training-approval-badge "+approvalStatus;
+          approvalBadge.textContent=approvalStatus==="approved"?"Approved for training":approvalStatus==="rejected"?"Rejected from training":"Pending human approval";
           const photoActions=document.createElement("div");photoActions.className="dataset-photo-actions";
+          const setApproval=async(nextStatus)=>{
+            try{
+              await mutateDatasetPhoto(photo,"PATCH",{training_approval_status:nextStatus});
+              if(status)status.textContent=nextStatus==="approved"?"Photo approved for face-model training.":nextStatus==="rejected"?"Photo rejected and excluded from training.":"Photo returned to pending review.";
+              await loadDatasetGroups();
+            }catch(error){if(status)status.textContent=error.message;}
+          };
+          const approvePhoto=document.createElement("button");approvePhoto.type="button";approvePhoto.className="secondary-button";approvePhoto.textContent=approvalStatus==="approved"?"Revoke approval":"Approve";approvePhoto.disabled=busy||approvalStatus==="approved";approvePhoto.addEventListener("click",()=>setApproval("approved"));
+          const rejectPhoto=document.createElement("button");rejectPhoto.type="button";rejectPhoto.className="secondary-button danger-button";rejectPhoto.textContent=approvalStatus==="rejected"?"Rejected":"Reject";rejectPhoto.disabled=busy||approvalStatus==="rejected";rejectPhoto.addEventListener("click",()=>setApproval("rejected"));
+          const reopenPhoto=document.createElement("button");reopenPhoto.type="button";reopenPhoto.className="secondary-button";reopenPhoto.textContent="Reopen review";reopenPhoto.disabled=busy||approvalStatus==="pending";reopenPhoto.addEventListener("click",()=>setApproval("pending"));
           const renamePhoto=document.createElement("button");renamePhoto.type="button";renamePhoto.className="secondary-button";renamePhoto.textContent="Edit label";renamePhoto.disabled=busy;
           renamePhoto.addEventListener("click",async()=>{
             const next=window.prompt("Photo label",photo.angle_label||"Training photo");
@@ -1542,8 +1556,8 @@
             }catch(error){if(status)status.textContent=error.message;deletePhoto.disabled=false;}
           });
           const editWithPrompt=document.createElement("button");editWithPrompt.type="button";editWithPrompt.className="secondary-button";editWithPrompt.textContent="Edit with prompt";editWithPrompt.disabled=busy;editWithPrompt.addEventListener("click",()=>openTrainingPhotoEdit(photo,group));
-          photoActions.append(editWithPrompt,renamePhoto,replacePhoto,deletePhoto);
-          figure.append(image,label,validation);
+          photoActions.append(approvePhoto,rejectPhoto,reopenPhoto,editWithPrompt,renamePhoto,replacePhoto,deletePhoto);
+          figure.append(image,label,validation,approvalBadge);
           if(validationDetail.textContent)figure.append(validationDetail);
           figure.append(photoActions,replaceInput);photos.appendChild(figure);
         });
