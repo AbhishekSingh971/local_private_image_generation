@@ -533,6 +533,7 @@ def remote_generate():
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
         upsampled_prompt = ""
+        prompt_token_count = None
         if model_family == "flux2_klein":
             if pose_control_image is not None:
                 return jsonify(error="FLUX.2 Klein uses reference-image editing rather than the SD 1.5 face-pose ControlNet path."), 400
@@ -550,6 +551,7 @@ def remote_generate():
                 source=model_configuration("flux2_klein")["source"],
             )
             result = flux_output["image"]
+            prompt_token_count = flux_output.get("prompt_token_count")
             if _remote_generation_cancelled(task_id):
                 raise RemoteGenerationCancelled("Generation cancellation was requested; FLUX.2 inference has completed.")
         else:
@@ -579,7 +581,7 @@ def remote_generate():
                     prompt, negative_prompt, image_preset, has_reference_image=image is not None
                 )
             from generation_contracts import validate_diffusion_prompt_capacity
-            validate_diffusion_prompt_capacity(
+            prompt_token_count = validate_diffusion_prompt_capacity(
                 pipeline, effective_prompt, effective_negative_prompt or ""
             )
             kwargs = {
@@ -634,6 +636,7 @@ def remote_generate():
         if upscale_warning:
             response.headers["X-Upscale-Warning"] = upscale_warning.replace("\\n", " ")[:500]
         response.headers["X-Upscale-Status"] = "completed" if ai_upscale and not upscale_warning else ("failed_fallback" if upscale_warning else "not_requested")
+        response.headers["X-Prompt-Token-Count"] = json.dumps(prompt_token_count, separators=(",", ":"))
         return response
     except RemoteGenerationCancelled:
         _set_generation_progress(
