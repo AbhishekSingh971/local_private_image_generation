@@ -101,6 +101,7 @@ def ensure_schema() -> None:
                 byte_size INTEGER NOT NULL, image_data BYTEA NOT NULL, group_id VARCHAR(32),
                 angle_label VARCHAR(80), photo_kind VARCHAR(16) NOT NULL DEFAULT 'manual',
                 validation_status VARCHAR(24) NOT NULL DEFAULT 'not_checked', validation_message TEXT,
+                training_approval_status VARCHAR(16) NOT NULL DEFAULT 'pending',
                 training_caption TEXT NOT NULL DEFAULT '', target_yaw DOUBLE PRECISION, target_pitch DOUBLE PRECISION,
                 actual_yaw DOUBLE PRECISION, actual_pitch DOUBLE PRECISION, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
             """CREATE TABLE IF NOT EXISTS face_dataset_jobs (
@@ -150,7 +151,9 @@ def ensure_schema() -> None:
                 ("group_id", "VARCHAR(32)"), ("angle_label", "VARCHAR(80)"),
                 ("photo_kind", "VARCHAR(16) NOT NULL DEFAULT 'manual'"),
                 ("validation_status", "VARCHAR(24) NOT NULL DEFAULT 'not_checked'"),
-                ("validation_message", "TEXT"), ("training_caption", "TEXT NOT NULL DEFAULT ''"),
+                ("validation_message", "TEXT"),
+                ("training_approval_status", "VARCHAR(16) NOT NULL DEFAULT 'pending'"),
+                ("training_caption", "TEXT NOT NULL DEFAULT ''"),
                 ("target_yaw", "DOUBLE PRECISION"), ("target_pitch", "DOUBLE PRECISION"),
                 ("actual_yaw", "DOUBLE PRECISION"), ("actual_pitch", "DOUBLE PRECISION")):
                 _ensure_column(conn, "face_photos", name, definition)
@@ -256,10 +259,12 @@ def _repair_face_photo_schema() -> None:
 
 
 def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", group_id=None, angle_label=None,
-    photo_kind="manual", validation_status="not_checked", validation_message=None, training_caption="",
+    photo_kind="manual", validation_status="not_checked", validation_message=None,
+    training_approval_status="pending", training_caption="",
     target_yaw=None,target_pitch=None,actual_yaw=None,actual_pitch=None):
     if photo_kind not in {"source","angle","expression","body","manual"}: raise ValueError("Invalid photo kind.")
     if validation_status not in {"not_checked","passed","needs_review","not_applicable"}: raise ValueError("Invalid photo validation status.")
+    if training_approval_status not in {"pending","approved","rejected"}: raise ValueError("Invalid training approval status.")
     ensure_schema()
     # CREATE TABLE IF NOT EXISTS does not restore defaults on an existing table.
     # Repair this required timestamp even when ensure_schema() is cached.
@@ -268,10 +273,10 @@ def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", gro
     # Supply the timestamp in the INSERT itself as well as repairing the legacy
     # default above. This makes the write independent of the column default.
     _run("""INSERT INTO face_photos(id,profile_id,filename,mime_type,byte_size,image_data,group_id,angle_label,photo_kind,
-        validation_status,validation_message,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch,created_at)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())""",
+        validation_status,validation_message,training_approval_status,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch,created_at)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())""",
         (photo_id,profile_id,Path(filename).name,mime_type,len(image_data),image_data,group_id,(angle_label or "")[:80] or None,
-         photo_kind,validation_status,(validation_message or "")[:1200] or None,(training_caption or "")[:1200],
+         photo_kind,validation_status,(validation_message or "")[:1200] or None,training_approval_status,(training_caption or "")[:1200],
          target_yaw,target_pitch,actual_yaw,actual_pitch))
     return photo_id
 
@@ -376,9 +381,13 @@ def list_face_dataset_groups(profile_id=None,limit=200):
     result=[]
     for row in rows:
         rec=_group_dict(row); rec["profile_name"]=row.get("profile_name") or "Unknown profile"
-        photos=_all("""SELECT id,filename,angle_label,photo_kind,validation_status,validation_message,target_yaw,target_pitch,
-            actual_yaw,actual_pitch,mime_type,byte_size,created_at FROM face_photos WHERE group_id=%s ORDER BY created_at,id""",(row["id"],))
-        rec["photos"]=[dict(p,angle_label=p.get("angle_label") or "Training photo",validation_status=p.get("validation_status") or "not_checked",created_at=_iso(p.get("created_at"))) for p in photos]
+        photos=_all("""SELECT id,filename,angle_label,photo_kind,validation_status,validation_message,
+            training_approval_status,target_yaw,target_pitch,actual_yaw,actual_pitch,mime_type,byte_size,created_at
+            FROM face_photos WHERE group_id=%s ORDER BY created_at,id""",(row["id"],))
+        rec["photos"]=[dict(p,angle_label=p.get("angle_label") or "Training photo",
+            validation_status=p.get("validation_status") or "not_checked",
+            training_approval_status=p.get("training_approval_status") or "pending",
+            created_at=_iso(p.get("created_at"))) for p in photos]
         rec["photo_count"]=len(photos); result.append(rec)
     return result
 
@@ -504,6 +513,23 @@ def update_face_dataset_job(job_id,**fields):
     return get_face_dataset_job(job_id)
 
 
+def update_face_photo_approval(photo_id, *, approval_status):
+    """Record the human review decision for one face-training photo."""
+    if approval_status not in {"pending", "approved", "rejected"}:
+        raise ValueError("Training approval must be pending, approved or rejected.")
+    ensure_schema()
+    updated = _run(
+        "UPDATE face_photos SET training_approval_status=%s WHERE id=%s",
+        (approval_status, photo_id),
+    )
+    if not updated:
+        return None
+    return _one(
+        "SELECT id,profile_id,filename,training_approval_status FROM face_photos WHERE id=%s",
+        (photo_id,),
+    )
+
+
 def update_face_photo_validation(photo_id,*,validation_status,validation_message="",actual_yaw=None,actual_pitch=None):
     if validation_status not in {"not_checked","passed","needs_review","not_applicable"}: raise ValueError("Invalid photo validation status.")
     _run("UPDATE face_photos SET validation_status=%s,validation_message=%s,actual_yaw=%s,actual_pitch=%s WHERE id=%s",
@@ -529,9 +555,11 @@ def list_face_photo_names(profile_id):
 def _photo_dict(r,include_bytes=False):
     if not r:return None
     keys=("id","profile_id","filename","mime_type","byte_size","group_id","angle_label","photo_kind","validation_status",
-          "validation_message","training_caption","target_yaw","target_pitch","actual_yaw","actual_pitch")
+          "validation_message","training_approval_status","training_caption","target_yaw","target_pitch","actual_yaw","actual_pitch")
     d={k:r.get(k) for k in keys}
-    d["validation_status"]=d.get("validation_status") or "not_checked"; d["training_caption"]=d.get("training_caption") or ""
+    d["validation_status"]=d.get("validation_status") or "not_checked"
+    d["training_approval_status"]=d.get("training_approval_status") or "pending"
+    d["training_caption"]=d.get("training_caption") or ""
     if include_bytes:d["image_data"]=bytes(r["image_data"])
     return d
 
@@ -562,6 +590,8 @@ def update_face_photo(photo_id,*,angle_label=None,training_caption=None,image_da
         updates.update(image_data=image_data,byte_size=len(image_data),mime_type=(mime_type or "image/jpeg")[:100],
             validation_status="needs_review",validation_message="The image was replaced; review its identity, pose and expression before training.",
             actual_yaw=None,actual_pitch=None)
+    if angle_label is not None or training_caption is not None or image_data is not None:
+        updates["training_approval_status"]="pending"
     if updates:
         sets=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in updates)
         _run(sql.SQL("UPDATE face_photos SET {} WHERE id=%s").format(sets),tuple(updates.values())+(photo_id,))
