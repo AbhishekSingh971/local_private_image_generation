@@ -677,6 +677,8 @@ def remote_generate():
             except RemoteGenerationCancelled:
                 raise
             except Exception as upscale_exc:
+                if _remote_generation_cancelled(task_id):
+                    raise RemoteGenerationCancelled("Generation cancelled during AI upscaling.") from upscale_exc
                 worker.logger.exception("AI upscaling failed; returning the base generated image")
                 upscale_warning = "AI upscaling failed; the original generated image was returned. " + str(upscale_exc)[:300]
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
