@@ -460,14 +460,23 @@ def remote_generate():
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
         return jsonify(error="CUDA is not available on this worker."), 503
     if profile_id:
+        if not supports_face_lora(model_family):
+            return jsonify(error="This face LoRA was trained for SD 1.5; select SD 1.5 for this identity or use SDXL without the trained face."), 400
         profile = get_profile(profile_id)
         if not profile or not profile.get("local_model_ready"):
             return jsonify(error="The selected face LoRA is not trained on this GPU worker."), 400
     if use_global_body_model:
-        body_profile = local_engine.ensure_global_body_profile()
-        if not local_engine.profile_ready_for_backend(local_engine.GLOBAL_BODY_PROFILE_ID, "local"):
-            return jsonify(error="The shared body-type LoRA is not trained on this cloud GPU worker. Train it using the global body model first."), 400
-        prompt = local_engine.GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
+        if model_family != "sd15":
+            use_global_body_model = False
+        else:
+            try:
+                local_engine.ensure_global_body_profile()
+                if not local_engine.profile_ready_for_backend(local_engine.GLOBAL_BODY_PROFILE_ID, "local"):
+                    use_global_body_model = False
+                else:
+                    prompt = local_engine.GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
+            except (RuntimeError, ValueError):
+                use_global_body_model = False
     image = None
     pose_control_image = None
     uploaded = request.files.get("image")
