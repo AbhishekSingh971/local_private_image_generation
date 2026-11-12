@@ -208,3 +208,13 @@ button.danger-button{background:#3c1f2a;border-color:#643345;color:#ffd9df}
 .model-version-item{display:grid;gap:8px;padding:10px;border:1px solid var(--border);border-radius:10px}
 .model-version-summary{display:grid;gap:4px}
 .model-version-summary span{font-size:.78rem;color:var(--muted)}
+
+
+.diagnostics-panel{display:grid;gap:18px}
+.diagnostics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.diagnostic-card{display:grid;gap:8px;padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--panel-soft,rgba(127,127,127,.05));min-width:0}
+.diagnostic-card>strong{text-transform:capitalize}
+.diagnostic-state{width:max-content;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:700;background:#303847;color:#cbd5e1}
+.diagnostic-state.ok,.diagnostic-state.available{background:#173b34;color:#a4f0cf}
+.diagnostic-state.degraded,.diagnostic-state.unavailable{background:#443619;color:#ffe0a3}
+.diagnostic-card pre,.diagnostics-json{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.76rem;color:var(--muted);max-height:260px;overflow:auto;margin:0}
