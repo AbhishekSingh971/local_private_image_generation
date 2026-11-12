@@ -215,3 +215,31 @@ def test_face_geometry_reports_unavailable_without_mediapipe(monkeypatch):
     report = assess_face_geometry(Image.new("RGB", (512, 512), "white"))
     assert report["status"] == "not_assessed"
     assert "could not be checked" in report["reason"]
+
+
+
+def test_encrypted_backup_round_trip_and_authentication():
+    from backup_postgres import decrypt_bytes, encrypt_bytes
+
+    key = b"\x11" * 32
+    nonce = b"\x22" * 12
+    original = b"private database dump bytes" * 100
+    encrypted = encrypt_bytes(original, key, nonce)
+    assert encrypted != original
+    assert decrypt_bytes(encrypted, key) == original
+    tampered = encrypted[:-1] + bytes([encrypted[-1] ^ 1])
+    with pytest.raises(ValueError, match="authentication failed"):
+        decrypt_bytes(tampered, key)
+
+
+def test_backup_encryption_key_requires_exact_32_bytes():
+    from backup_postgres import load_encryption_key
+
+    with pytest.raises(RuntimeError, match="exactly 32 bytes"):
+        load_encryption_key("short")
+
+
+def test_backup_encryption_key_accepts_64_hex_characters():
+    from backup_postgres import load_encryption_key
+
+    assert load_encryption_key("ab" * 32) == bytes.fromhex("ab" * 32)
