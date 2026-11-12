@@ -24,8 +24,12 @@ def safe_extract_lora_bundle(bundle_data: bytes, destination: str | Path) -> lis
             members = archive.infolist()
             if not members or len(members) > 500:
                 raise ValueError("Model bundle contains an invalid number of files.")
+            seen_names = set()
             for member in members:
                 name = member.filename.replace("\\", "/")
+                if name in seen_names:
+                    raise ValueError("Model bundle contains duplicate file paths.")
+                seen_names.add(name)
                 relative = Path(name)
                 mode = (member.external_attr >> 16) & 0xFFFF
                 if (
