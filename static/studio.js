@@ -1159,11 +1159,12 @@
 
   let promptPreviewRequest = 0;
   let finalNegativePrompt = "";
+  let promptPreviewValid = false;
   async function refreshFinalPromptPreview() {
     if (!generationForm || !finalPromptInput) return;
     const requestId = ++promptPreviewRequest;
     const prompt = $("#prompt")?.value || "";
-    if (!prompt.trim()) { finalPromptInput.value = ""; finalNegativePrompt = ""; return; }
+    if (!prompt.trim()) { finalPromptInput.value = ""; finalNegativePrompt = ""; promptPreviewValid = false; return; }
     try {
       const response = await fetch("/api/generation-prompt-preview", {
         method: "POST", headers: {"Content-Type":"application/json"},
@@ -1172,7 +1173,15 @@
           model_family: $("#imageModelFamily")?.value || "sd15",
           negative_prompt: $("#negativePrompt")?.value || "",
           image_preset: $("#imagePreset")?.value || "standard",
-          has_reference_image: Boolean($("#referenceImage")?.files?.length)
+          has_reference_image: Boolean($("#referenceImage")?.files?.length),
+          style: $("#styleControl")?.value || "",
+          composition: $("#compositionControl")?.value || "",
+          camera: $("#cameraControl")?.value || "",
+          lighting: $("#lightingControl")?.value || "",
+          pose: $("#poseControl")?.value || "",
+          expression: $("#expressionControl")?.value || "",
+          body_shape: $("#bodyShapeControl")?.value || "",
+          environment: $("#environmentControl")?.value || ""
         })
       });
       const data = await readJson(response);
@@ -1182,15 +1191,17 @@
         // preview back into the textarea caused the realism prefix to be added
         // again on every preview refresh, eventually exceeding the worker limit.
         finalNegativePrompt = data.negative_prompt ?? ($("#negativePrompt")?.value || "");
+        promptPreviewValid = true;
       }
     } catch (error) {
       if (requestId === promptPreviewRequest) {
         finalPromptInput.value = prompt;
         finalNegativePrompt = $("#negativePrompt")?.value || "";
+        promptPreviewValid = false;
       }
     }
   }
-  ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage", "#imageModelFamily"].forEach(selector => {
+  ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage", "#imageModelFamily", "#styleControl", "#compositionControl", "#cameraControl", "#lightingControl", "#poseControl", "#expressionControl", "#bodyShapeControl", "#environmentControl"].forEach(selector => {
     $(selector)?.addEventListener("input", refreshFinalPromptPreview);
     $(selector)?.addEventListener("change", refreshFinalPromptPreview);
   });
@@ -1213,7 +1224,7 @@
     formData.set("original_prompt", $("#prompt")?.value || "");
     formData.set("prompt", finalPromptInput?.value || $("#prompt")?.value || "");
     formData.set("negative_prompt", modelFamilySelect?.value === "flux2_klein" ? "" : (finalNegativePrompt || $("#negativePrompt")?.value || ""));
-    formData.set("prompt_is_final", "true");
+    formData.set("prompt_is_final", promptPreviewValid ? "true" : "false");
     const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
       const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
