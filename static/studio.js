@@ -1483,7 +1483,10 @@
         const headingCopy=document.createElement("div");headingCopy.append(title);
         const caption=document.createElement("p");caption.className="dataset-group-caption";
         const date=group.created_at?new Date(group.created_at).toLocaleString():"Saved";
-        caption.textContent=(group.profile_name||"Face profile")+" · "+(group.photo_count||0)+" photo(s) · "+(group.generated_count||0)+"/"+(group.expected_count||5)+" generated · "+date;
+        const groupPhotos=group.photos||[];
+        const approvedPhotoCount=groupPhotos.filter(photo=>(photo.training_approval_status||"pending")==="approved").length;
+        const pendingPhotoCount=groupPhotos.filter(photo=>(photo.training_approval_status||"pending")==="pending").length;
+        caption.textContent=(group.profile_name||"Face profile")+" · "+(group.photo_count||0)+" photo(s) · "+approvedPhotoCount+" approved · "+pendingPhotoCount+" pending · "+(group.generated_count||0)+"/"+(group.expected_count||5)+" generated · "+date;
         headingCopy.append(caption);
         if(group.prompt){
           const promptNote=document.createElement("p");promptNote.className="dataset-group-prompt";
@@ -1516,7 +1519,7 @@
               await loadDatasetGroups();
             }catch(error){if(status)status.textContent=error.message;}
           };
-          const approvePhoto=document.createElement("button");approvePhoto.type="button";approvePhoto.className="secondary-button";approvePhoto.textContent=approvalStatus==="approved"?"Revoke approval":"Approve";approvePhoto.disabled=busy||approvalStatus==="approved";approvePhoto.addEventListener("click",()=>setApproval("approved"));
+          const approvePhoto=document.createElement("button");approvePhoto.type="button";approvePhoto.className="secondary-button";approvePhoto.textContent=approvalStatus==="approved"?"Approved":"Approve";approvePhoto.disabled=busy||approvalStatus==="approved";approvePhoto.addEventListener("click",()=>setApproval("approved"));
           const rejectPhoto=document.createElement("button");rejectPhoto.type="button";rejectPhoto.className="secondary-button danger-button";rejectPhoto.textContent=approvalStatus==="rejected"?"Rejected":"Reject";rejectPhoto.disabled=busy||approvalStatus==="rejected";rejectPhoto.addEventListener("click",()=>setApproval("rejected"));
           const reopenPhoto=document.createElement("button");reopenPhoto.type="button";reopenPhoto.className="secondary-button";reopenPhoto.textContent="Reopen review";reopenPhoto.disabled=busy||approvalStatus==="pending";reopenPhoto.addEventListener("click",()=>setApproval("pending"));
           const renamePhoto=document.createElement("button");renamePhoto.type="button";renamePhoto.className="secondary-button";renamePhoto.textContent="Edit label";renamePhoto.disabled=busy;
