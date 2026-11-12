@@ -622,12 +622,11 @@ def _photo_dict(r,include_bytes=False):
     keys=("id","profile_id","filename","mime_type","byte_size","group_id","angle_label","photo_kind","validation_status",
           "validation_message","training_approval_status","training_caption","target_yaw","target_pitch","actual_yaw","actual_pitch")
     d={k:r.get(k) for k in keys}
-    if d.get("image_data") is not None:
-        d["image_data"] = decrypt_sensitive_bytes(bytes(d["image_data"]))
     d["validation_status"]=d.get("validation_status") or "not_checked"
     d["training_approval_status"]=d.get("training_approval_status") or "pending"
     d["training_caption"]=d.get("training_caption") or ""
-    if include_bytes:d["image_data"]=bytes(r["image_data"])
+    if include_bytes:
+        d["image_data"]=decrypt_sensitive_bytes(bytes(r["image_data"]))
     return d
 
 
@@ -642,7 +641,7 @@ def list_face_photo_records(profile_id,filenames=None):
 
 def get_face_photo_bytes(photo_id):
     ensure_schema(); r=_one("SELECT * FROM face_photos WHERE id=%s",(photo_id,))
-    return (_photo_dict(r),bytes(r["image_data"])) if r else None
+    return (_photo_dict(r),decrypt_sensitive_bytes(bytes(r["image_data"]))) if r else None
 
 
 def update_face_photo(photo_id,*,angle_label=None,training_caption=None,image_data=None,mime_type=None):
@@ -654,7 +653,7 @@ def update_face_photo(photo_id,*,angle_label=None,training_caption=None,image_da
     if angle_label is not None: updates["angle_label"]=angle_label
     if training_caption is not None: updates["training_caption"]=str(training_caption or "").strip()[:1200]
     if image_data is not None:
-        updates.update(image_data=image_data,byte_size=len(image_data),mime_type=(mime_type or "image/jpeg")[:100],
+        updates.update(image_data=encrypt_sensitive_bytes(image_data),byte_size=len(image_data),mime_type=(mime_type or "image/jpeg")[:100],
             validation_status="needs_review",validation_message="The image was replaced; review its identity, pose and expression before training.",
             actual_yaw=None,actual_pitch=None)
     if angle_label is not None or training_caption is not None or image_data is not None:
