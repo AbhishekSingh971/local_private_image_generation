@@ -33,6 +33,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_upscaling import resolve_upscale_options, upscale_image
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from generation_contracts import preserve_generation_text
 from face_profiles import (
@@ -2660,6 +2661,10 @@ def generate():
         backend = _resolve_compute_backend(request.form)
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = _truthy(request.form.get("use_global_body_model"))
+        upscale_options = resolve_upscale_options(
+            request.form.get("ai_upscale"), request.form.get("upscale_steps") or 20
+        )
+        ai_upscale = upscale_options["enabled"]
         face_angle = (request.form.get("face_angle") or "").strip().lower()
         face_expression = (request.form.get("face_expression") or "").strip().lower()
         angle_prompts = {
@@ -2704,6 +2709,8 @@ def generate():
         return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
     if model_family == "flux2_klein" and backend == "cpu":
         return jsonify(error="FLUX.2 Klein requires a CUDA GPU. Enable GPU acceleration and select a local or remote GPU worker."), 400
+    if ai_upscale and backend == "cpu":
+        return jsonify(error="AI x4 upscaling requires a CUDA GPU. Select a local or remote GPU worker, or disable AI upscaling."), 400
     if face_angle:
         prompt += ", head angle: " + angle_prompts[face_angle]
     if face_expression:
@@ -2770,6 +2777,8 @@ def generate():
                 "use_global_body_model": "true" if use_global_body_model else "false",
                 "task_id": task_id, "aspect_ratio": aspect_ratio, "image_preset": image_preset,
                 "prompt_is_final": "true", "model_family": model_family,
+                "ai_upscale": "true" if ai_upscale else "false",
+                "upscale_steps": str(upscale_options["steps"]),
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
@@ -2896,6 +2905,16 @@ def generate():
                 if init_image is not None:
                     kwargs.update(image=init_image, strength=strength)
                 result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+            if ai_upscale:
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="running", progress=93,
+                    current_step=0, total_steps=upscale_options["steps"], stage="upscaling",
+                    message="Running optional AI x4 super-resolution…",
+                )
+                result = upscale_image(
+                    result, prompt, negative_prompt=negative_prompt, seed=seed,
+                    steps=upscale_options["steps"],
+                )
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=95,
                 current_step=steps, total_steps=steps, stage="finalizing", message="Finalizing the generated image…",
