@@ -168,6 +168,23 @@ def ensure_schema() -> None:
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_model_artifacts_profile_id ON face_model_artifacts(profile_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_asset_type ON generated_assets(asset_type)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_profile_id ON generated_assets(profile_id)")
+                # Group legacy ungrouped profile photos so they appear in the review UI.
+                cur.execute("SELECT profile_id, COUNT(*) AS photo_count FROM face_photos WHERE group_id IS NULL GROUP BY profile_id")
+                ungrouped_profiles = cur.fetchall()
+                for legacy_profile in ungrouped_profiles:
+                    group_id = uuid.uuid4().hex
+                    photo_count = int(legacy_profile["photo_count"])
+                    cur.execute(
+                        """INSERT INTO face_dataset_groups(
+                            id,profile_id,title,dataset_type,prompt,status,expected_count,generated_count
+                        ) VALUES(%s,%s,'Imported manual photos','face_angles','',
+                            'completed',%s,%s)""",
+                        (group_id, legacy_profile["profile_id"], max(photo_count, 1), photo_count),
+                    )
+                    cur.execute(
+                        "UPDATE face_photos SET group_id=%s WHERE profile_id=%s AND group_id IS NULL",
+                        (group_id, legacy_profile["profile_id"]),
+                    )
         _SCHEMA_READY.add(url)
 
 
