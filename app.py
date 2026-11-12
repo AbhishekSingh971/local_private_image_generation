@@ -3136,7 +3136,7 @@ def generate():
                     quality_report = assess_image_quality(saved_image).to_dict()
                     if profile:
                         quality_report["face_geometry"] = assess_face_geometry(saved_image)
-                    quality_report["identity_similarity"] = _evaluate_profile_identity(profile["id"], saved_image)
+                        quality_report["identity_similarity"] = _evaluate_profile_identity(profile["id"], saved_image)
             except Exception as quality_exc:
                 app.logger.warning("Cloud generated-image quality assessment unavailable: %s", quality_exc)
                 output_width, output_height = width, height
@@ -3299,6 +3299,7 @@ def generate():
                 quality_report = assess_image_quality(saved_image).to_dict()
                 if profile:
                     quality_report["face_geometry"] = assess_face_geometry(saved_image)
+                    quality_report["identity_similarity"] = _evaluate_profile_identity(profile["id"], saved_image)
         except Exception as quality_exc:
             app.logger.warning("Generated-image quality assessment was unavailable: %s", quality_exc)
             output_width, output_height = result.size
