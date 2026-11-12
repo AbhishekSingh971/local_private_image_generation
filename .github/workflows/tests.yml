@@ -29,7 +29,7 @@ jobs:
           cache-dependency-path: requirements-dev.txt
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip pytest
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
 
       - name: Compile changed Python modules
         run: |
