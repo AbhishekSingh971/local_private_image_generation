@@ -198,3 +198,20 @@ def test_model_bundle_safe_extract_rejects_missing_lora_weights(tmp_path):
         archive.writestr("readme.txt", "not a model")
     with pytest.raises(ValueError, match="does not contain"):
         safe_extract_lora_bundle(buffer.getvalue(), tmp_path / "restored")
+
+
+
+def test_face_geometry_reports_unavailable_without_mediapipe(monkeypatch):
+    import builtins
+    from PIL import Image
+    from pose_validation import assess_face_geometry
+
+    real_import = builtins.__import__
+    def guarded_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("optional dependency unavailable")
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    report = assess_face_geometry(Image.new("RGB", (512, 512), "white"))
+    assert report["status"] == "not_assessed"
+    assert "could not be checked" in report["reason"]
