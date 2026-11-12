@@ -6,6 +6,7 @@ import secrets
 import io
 import json
 import os
+import platform
 import re
 import subprocess
 import shutil
@@ -2384,6 +2385,73 @@ def api_add_generated_photos(profile_id):
         return jsonify(error="Could not save selected images to the database or local dataset."), 503
     return jsonify(status="saved", added=added, profile=get_profile(profile_id))
 
+
+
+@app.get("/api/system/diagnostics")
+def system_diagnostics():
+    """Sanitized operational diagnostics for authenticated workspace administrators."""
+    db = database_status()
+    storage = {}
+    for name, folder in {
+        "outputs": OUTPUT_DIR,
+        "videos": VIDEO_OUTPUT_DIR,
+        "face_models": LORA_DIR,
+    }.items():
+        try:
+            usage = shutil.disk_usage(folder)
+            storage[name] = {
+                "writable": os.access(folder, os.W_OK),
+                "free_gb": round(usage.free / (1024 ** 3), 2),
+            }
+        except OSError:
+            storage[name] = {"writable": False, "free_gb": None}
+    gpu = {"available": False, "name": None, "vram_total_gb": None, "error": None}
+    try:
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            gpu = {
+                "available": True, "name": torch.cuda.get_device_name(0),
+                "vram_total_gb": round(props.total_memory / (1024 ** 3), 2),
+                "error": None,
+            }
+    except Exception as exc:
+        gpu["error"] = type(exc).__name__
+    worker = {"configured": cloud_worker_configured(), "reachable": None, "message": "Not configured."}
+    if worker["configured"]:
+        try:
+            response = runpod_request("GET", "/api/remote/health", timeout=(3, 5))
+            payload = response.json() if hasattr(response, "json") else {}
+            worker.update(reachable=True, message="Remote GPU worker responded.", health=payload.get("status", "unknown"))
+        except Exception as exc:
+            worker.update(reachable=False, message="Remote GPU worker health probe failed.", error=type(exc).__name__)
+    components = {
+        "database": {"status": "ok" if db.get("connected") else "degraded", "configured": db.get("configured_postgresql", False)},
+        "local_gpu": {"status": "available" if gpu["available"] else "unavailable", **gpu},
+        "remote_worker": {"status": "available" if worker.get("reachable") else ("unavailable" if worker["configured"] else "not_configured"), **worker},
+        "storage": {
+            "status": "ok" if all(item["writable"] for item in storage.values()) else "degraded",
+            "directories": storage,
+        },
+        "models": {
+            "sd15_available": (MODEL_DIR / "model_index.json").is_file(),
+            "animatediff_adapter_available": (MOTION_DIR / "config.json").is_file(),
+            "face_model_profiles": len(list_profiles()),
+        },
+        "jobs": {
+            "generation_lock_busy": generation_lock.locked(),
+            "training_threads": TRAINING_POOL._max_workers,
+            "training_queue_depth": TRAINING_POOL._work_queue.qsize(),
+        },
+    }
+    critical = [name for name in ("database", "storage") if components[name]["status"] != "ok"]
+    return jsonify(
+        status="degraded" if critical else "ok",
+        app_version=os.environ.get("APP_VERSION", "development"),
+        python_version=platform.python_version(),
+        platform=platform.system(),
+        components=components,
+        note="Diagnostics omit secrets, prompts, profile names, face data and filesystem paths.",
+    )
 
 
 @app.get("/health")
