@@ -98,18 +98,20 @@ def create_backup(output_path: str | Path, *, database_url: str | None = None, k
     temporary = destination.with_name(destination.name + ".tmp")
     command = ["pg_dump", *args, "--format=custom", "--no-owner", "--no-acl"]
     try:
-        with temporary.open("wb") as target:
+        with temporary.open("wb") as target, tempfile.TemporaryFile() as stderr_file:
             target.write(MAGIC + nonce)
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-            assert process.stdout is not None
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr_file, env=env)
+            if process.stdout is None:
+                raise RuntimeError("pg_dump did not provide an output stream.")
             while True:
                 chunk = process.stdout.read(CHUNK_SIZE)
                 if not chunk:
                     break
                 target.write(encryptor.update(chunk))
             target.write(encryptor.finalize())
-            stderr = process.stderr.read() if process.stderr else b""
             return_code = process.wait()
+            stderr_file.seek(0)
+            stderr = stderr_file.read()
             if return_code != 0:
                 raise RuntimeError("pg_dump failed: " + stderr.decode("utf-8", "replace")[-1200:])
             target.write(encryptor.tag)
@@ -154,7 +156,7 @@ def restore_backup(backup_path: str | Path, *, database_url: str | None = None, 
                 dst.write(decryptor.finalize())
             except Exception as exc:
                 raise ValueError("Backup authentication failed. Check the encryption key and file integrity.") from exc
-        command = ["pg_restore", *args, "--clean", "--if-exists", "--no-owner", "--no-acl", str(decrypted)]
+        command = ["pg_restore", *args, "--clean", "--if-exists", "--exit-on-error", "--no-owner", "--no-acl", str(decrypted)]
         completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=3600, check=False)
         if completed.returncode != 0:
             raise RuntimeError("pg_restore failed: " + (completed.stderr or "")[-1600:])
