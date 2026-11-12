@@ -226,7 +226,7 @@ Run this on the target worker after installing its CUDA-compatible PyTorch build
 
 ## Model version history and rollback
 
-When PostgreSQL is configured, each successful local or cloud face LoRA training run is archived as an immutable version with a SHA-256 checksum, backend, file count and training metadata. The latest artifact remains available for the existing worker flow. The Face Models profile card exposes **Model versions**; local versions can be restored after checksum verification. Cloud versions are listed but must be restored through the matching GPU worker.
+When PostgreSQL is configured, each successful local or cloud face LoRA training run is archived as an immutable version with a SHA-256 checksum, backend, file count and training metadata. The latest artifact remains available for the existing worker flow. The Face Models profile card exposes **Model versions**; local and cloud versions can be restored after checksum verification. Cloud rollback sends the archived bundle to the authenticated GPU worker.
 
 Version history stores model bundles in PostgreSQL and can increase database storage substantially. Configure database capacity and retention/backup policies before large-scale training.
 
