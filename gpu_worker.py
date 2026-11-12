@@ -454,7 +454,12 @@ def remote_generate():
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt:
         return jsonify(error="Prompt is required."), 400
-    if not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
+    if model_family == "flux3_klein":
+        if negative_prompt:
+            return jsonify(error="FLUX 3 Klein distilled does not support negative prompts."), 400
+        if not 4 <= steps <= 16:
+            return jsonify(error="FLUX 3 Klein supports 4–16 inference steps."), 400
+    elif not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
         return jsonify(error="Invalid step count or image strength."), 400
     if not torch.cuda.is_available():
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
