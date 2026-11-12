@@ -673,7 +673,7 @@ def _generation_metadata(
     *, model_family, backend, seed, steps, width, height, output_width, output_height,
     aspect_ratio, generation_mode, strength, ai_upscale, upscale_options,
     upscale_warning="", quality_report=None, prompt_token_count=None, profile=None,
-    face_restore_options=None, face_restore_warning="",
+    face_restore_options=None, face_restore_warning="", face_restore_status="not_requested",
 ):
     """Capture enough provenance to reproduce or compare a generated asset."""
     config = model_configuration(model_family)
@@ -721,7 +721,7 @@ def _generation_metadata(
         "quality": quality_report or {"status": "not_assessed", "reasons": []},
         "face_restoration": {
             "enabled": bool((face_restore_options or {}).get("enabled")),
-            "status": "failed_fallback" if face_restore_warning else ("completed_or_no_face" if (face_restore_options or {}).get("enabled") else "not_requested"),
+            "status": "failed_fallback" if face_restore_warning else face_restore_status,
             "weight": (face_restore_options or {}).get("weight") if (face_restore_options or {}).get("enabled") else None,
             "warning": face_restore_warning[:500] if face_restore_warning else None,
         },
@@ -3279,6 +3279,7 @@ def generate():
                     upscale_warning=upscale_warning, quality_report=quality_report,
                     prompt_token_count=prompt_token_count, profile=profile,
                     face_restore_options=face_restore_options, face_restore_warning=face_restore_warning,
+                    face_restore_status=face_restore_status,
                 )
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
@@ -3451,6 +3452,7 @@ def generate():
             upscale_warning=upscale_warning, quality_report=quality_report,
             prompt_token_count=flux_prompt_token_count or prompt_token_count, profile=profile,
             face_restore_options=face_restore_options, face_restore_warning=face_restore_warning,
+            face_restore_status=face_restore_status,
         )
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="running", progress=97,
