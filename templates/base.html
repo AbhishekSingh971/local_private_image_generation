@@ -28,6 +28,7 @@
     <main class="main-area">
       <header class="topbar">
         <div><div class="eyebrow">PRIVATE FACE STUDIO</div><div class="topbar-title">{% block page_heading %}Your creative workspace{% endblock %}</div></div>
+        {% if access_gate_enabled and workspace_authenticated %}<form method="post" action="{{ url_for('logout') }}" class="workspace-signout"><button type="submit" class="secondary-button">Sign out</button></form>{% endif %}
         <div class="storage-chip {{ 'connected' if storage_status.connected and storage_status.configured_postgresql else 'warning' }}"><span></span>{{ 'PostgreSQL connected' if storage_status.connected and storage_status.configured_postgresql else ('Local DB · set DATABASE_URL' if storage_status.connected else 'Database unavailable') }}</div>
       </header>
 
