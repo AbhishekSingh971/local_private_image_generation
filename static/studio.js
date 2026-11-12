@@ -202,6 +202,44 @@
         badges.append(makeTag("Local: " + (profile.local_model_ready ? "trained" : (profile.local_training_state || "not trained")), profile.local_model_ready));
         badges.append(makeTag("Cloud: " + (profile.runpod_model_ready ? "trained" : (profile.runpod_training_state || "not trained")), profile.runpod_model_ready));
         const actions = document.createElement("div"); actions.className = "profile-actions";
+        const historyButton = document.createElement("button"); historyButton.type="button"; historyButton.className="secondary-button"; historyButton.textContent="Model versions";
+        const historyPanel = document.createElement("div"); historyPanel.className="model-version-panel"; historyPanel.hidden=true;
+        historyButton.addEventListener("click", async () => {
+          if (!historyPanel.hidden) { historyPanel.hidden=true; return; }
+          historyPanel.hidden=false; historyPanel.textContent="Loading model versions…"; historyButton.disabled=true;
+          try {
+            const data=await readJson(await fetch("/api/face-profiles/"+profile.id+"/model-versions",{cache:"no-store"}));
+            historyPanel.replaceChildren();
+            if (!data.versions?.length) {
+              const empty=document.createElement("p");empty.className="field-help";empty.textContent="No versioned model bundles are stored yet. Train this profile with PostgreSQL connected to create rollback points.";historyPanel.appendChild(empty);
+            } else {
+              data.versions.forEach(version=>{
+                const item=document.createElement("div");item.className="model-version-item";
+                const summary=document.createElement("div");summary.className="model-version-summary";
+                const name=document.createElement("strong");name.textContent=(version.backend==="local"?"Local":"Cloud")+" · v"+version.version_number;
+                const detail=document.createElement("span");detail.textContent=new Date(version.created_at).toLocaleString()+" · "+(version.file_count||0)+" files · SHA-256 "+String(version.sha256||"").slice(0,12);
+                summary.append(name,detail);item.appendChild(summary);
+                if(version.backend==="local"){
+                  const restore=document.createElement("button");restore.type="button";restore.className="secondary-button";restore.textContent="Restore this version";
+                  restore.addEventListener("click",async()=>{
+                    if(!confirm("Restore local face model version "+version.version_number+" for "+profile.name+"? The current local LoRA will be replaced."))return;
+                    restore.disabled=true;restore.textContent="Restoring…";
+                    try {
+                      await readJson(await fetch("/api/face-profiles/"+profile.id+"/model-versions/"+version.id+"/restore",{method:"POST"}));
+                      await refreshProfiles();historyPanel.hidden=true;
+                      alert("Face model version "+version.version_number+" restored.");
+                    } catch(error){alert(error.message);restore.disabled=false;restore.textContent="Restore this version";}
+                  });
+                  item.appendChild(restore);
+                } else {
+                  const note=document.createElement("p");note.className="field-help";note.textContent="Cloud version archived. Restore is available through the configured GPU worker only.";item.appendChild(note);
+                }
+                historyPanel.appendChild(item);
+              });
+            }
+          } catch(error) { historyPanel.textContent=error.message; }
+          finally { historyButton.disabled=false; }
+        });
         const useButton = document.createElement("button"); useButton.type="button"; useButton.className="secondary-button"; useButton.textContent="Use for training";
         useButton.addEventListener("click", () => {
           if ($("#trainProfile")) $("#trainProfile").value = profile.id;
@@ -221,8 +259,8 @@
           } catch (error) { alert(error.message); }
           finally { deleteButton.disabled = false; }
         });
-        actions.append(useButton, deleteButton);
-        card.append(top, badges, actions); profileList.appendChild(card);
+        actions.append(useButton, historyButton, deleteButton);
+        card.append(top, badges, actions, historyPanel); profileList.appendChild(card);
       });
     }
     loadGeneratedPhotoPicker();
