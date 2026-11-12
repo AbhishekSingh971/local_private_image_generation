@@ -28,6 +28,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 import app as local_engine
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
+from generation_contracts import preserve_generation_text, resolve_generation_seed
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from face_profiles import (
     create_profile,
@@ -659,19 +660,23 @@ def remote_generate():
 @worker.post("/api/remote/generate-video")
 def remote_generate_video():
     global VIDEO_PIPE, VIDEO_ACTIVE_LORA
-    prompt = (request.form.get("prompt") or "").strip()
-    negative_prompt = (request.form.get("negative_prompt") or "").strip()
+    try:
+        prompt = preserve_generation_text(request.form.get("prompt"), "Prompt")
+        negative_prompt = preserve_generation_text(request.form.get("negative_prompt"), "Negative prompt")
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     try:
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
+        seed = resolve_generation_seed(request.form.get("seed"))
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
     except (ValueError, TypeError, KeyError) as exc:
         return jsonify(error=str(exc) or "Invalid video settings."), 400
-    if not prompt or len(prompt) > 1000 or len(negative_prompt) > 600:
-        return jsonify(error="Video prompt is required and must be within the allowed length."), 400
+    if not prompt.strip():
+        return jsonify(error="Video prompt is required."), 400
     if not 5 <= steps <= 20 or frames not in (8, 16, 24):
         return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
     if not torch.cuda.is_available():
@@ -721,7 +726,9 @@ def remote_generate_video():
                 message=f"Generating video on the cloud GPU · step {current} of {scheduler_steps} · {frames} frames",
             )
             return callback_kwargs
-        generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+        from generation_contracts import validate_diffusion_prompt_capacity
+        validate_diffusion_prompt_capacity(VIDEO_PIPE, prompt, negative_prompt)
+        generator = torch.Generator(device="cuda").manual_seed(seed)
         result = VIDEO_PIPE(
             prompt=prompt, negative_prompt=negative_prompt or None,
             num_frames=frames, num_inference_steps=steps,
