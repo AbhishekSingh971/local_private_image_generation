@@ -61,7 +61,7 @@ from face_profiles import (
     update_profile,
     validate_profile_id,
 )
-from pose_validation import build_pose_control_image, estimate_head_pose, validate_pose_target
+from pose_validation import assess_face_geometry, build_pose_control_image, estimate_head_pose, validate_pose_target
 from training_generation import targets_for_dataset_type
 from image_quality import assess_image_quality
 from safe_diagnostics import format_exception_detail
@@ -2962,6 +2962,8 @@ def generate():
                 with Image.open(output_path) as saved_image:
                     output_width, output_height = saved_image.size
                     quality_report = assess_image_quality(saved_image).to_dict()
+                    if profile:
+                        quality_report["face_geometry"] = assess_face_geometry(saved_image)
             except Exception as quality_exc:
                 app.logger.warning("Cloud generated-image quality assessment unavailable: %s", quality_exc)
                 output_width, output_height = width, height
@@ -3122,6 +3124,8 @@ def generate():
             with Image.open(OUTPUT_DIR / filename) as saved_image:
                 output_width, output_height = saved_image.size
                 quality_report = assess_image_quality(saved_image).to_dict()
+                if profile:
+                    quality_report["face_geometry"] = assess_face_geometry(saved_image)
         except Exception as quality_exc:
             app.logger.warning("Generated-image quality assessment was unavailable: %s", quality_exc)
             output_width, output_height = result.size
