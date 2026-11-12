@@ -1687,6 +1687,38 @@
   }
   $("#datasetRefresh")?.addEventListener("click",loadDatasetGroups);
 
+  // ---------- Operational diagnostics ----------
+  const diagnosticsPage = $("#diagnosticsPage");
+  if (diagnosticsPage) {
+    const status = $("#diagnosticsStatus");
+    const summary = $("#diagnosticsSummary");
+    const details = $("#diagnosticsDetails");
+    const refresh = $("#refreshDiagnostics");
+    const renderDiagnostics = async () => {
+      refresh.disabled = true;
+      if (status) status.textContent = "Checking system components…";
+      try {
+        const data = await readJson(await fetch("/api/system/diagnostics", {cache:"no-store"}));
+        summary.replaceChildren();
+        const components = data.components || {};
+        Object.entries(components).forEach(([key, value]) => {
+          const card = document.createElement("article"); card.className="diagnostic-card";
+          const heading = document.createElement("strong"); heading.textContent=key.replaceAll("_"," ");
+          const badge = document.createElement("span"); badge.className="diagnostic-state "+(value.status||"unknown");
+          badge.textContent=value.status||"unknown";
+          const body = document.createElement("pre"); body.textContent=JSON.stringify(value,null,2);
+          card.append(heading,badge,body);summary.appendChild(card);
+        });
+        if (details) details.textContent=JSON.stringify({app_version:data.app_version,python_version:data.python_version,platform:data.platform},null,2);
+        if (status) status.textContent=(data.status||"unknown").toUpperCase()+" · Updated "+new Date().toLocaleTimeString();
+      } catch(error) {
+        if (status) status.textContent="Diagnostics unavailable: "+error.message;
+      } finally { refresh.disabled=false; }
+    };
+    refresh?.addEventListener("click",renderDiagnostics);
+    renderDiagnostics();
+  }
+
   async function loadStatus() {
     try{
       const data=await readJson(await fetch("/health"));
