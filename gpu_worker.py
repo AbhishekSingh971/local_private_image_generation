@@ -28,7 +28,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 import app as local_engine
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
-from generation_contracts import preserve_generation_text, resolve_generation_seed
+from generation_contracts import preserve_generation_text
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from face_profiles import (
     create_profile,
