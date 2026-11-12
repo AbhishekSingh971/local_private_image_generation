@@ -1,6 +1,7 @@
 Flask==3.1.1
 gunicorn>=23,<24
 Pillow>=10.4,<12
+torch>=2.6,<3  # Install a CUDA-specific wheel first on GPU hosts; this also supports CPU-only web hosts.
 diffusers==0.43.0
 transformers>=5.0,<6
 accelerate>=1.0,<2
