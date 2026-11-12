@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Private Face Studio{% endblock %}
+{% block page_heading %}Private workspace sign-in{% endblock %}
+{% block content %}
+<section class="panel form-panel" style="max-width:460px;margin:48px auto">
+  <div class="eyebrow">PRIVATE WORKSPACE</div>
+  <h1>Sign in</h1>
+  <p class="field-help">This workspace is protected by an access password. Your face profiles and generated media are private to this shared workspace.</p>
+  {% if error %}<div class="status error" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('login') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next_path }}">
+    <label for="accessPassword">Access password</label>
+    <input id="accessPassword" name="password" type="password" autocomplete="current-password" required autofocus>
+    <button type="submit">Sign in</button>
+  </form>
+</section>
+{% endblock %}
