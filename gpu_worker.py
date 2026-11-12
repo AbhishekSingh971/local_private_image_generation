@@ -27,7 +27,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
-from model_registry import resolve_model_family, supports_face_lora
+from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from face_profiles import (
     create_profile,
     dataset_images,
@@ -511,54 +511,80 @@ def remote_generate():
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="busy", message="Another GPU generation is already running.")
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
-        mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
-        pipeline = local_engine._load_cpu_or_gpu_pipeline(
-            mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
-            model_family=model_family,
-        )
-        _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the cloud GPU…")
-        def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+        upsampled_prompt = ""
+        if model_family == "flux3_klein":
+            if pose_control_image is not None:
+                return jsonify(error="FLUX 3 Klein uses reference-image editing rather than the SD 1.5 face-pose ControlNet path."), 400
             if _remote_generation_cancelled(task_id):
                 raise RemoteGenerationCancelled("Generation cancelled by the user.")
-            scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
-            current = min(step_index + 1, scheduler_steps)
-            percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+            from flux3_engine import generate_flux3_image
             _set_generation_progress(
-                task_id, asset_type="image", status="running", progress=percent,
-                current_step=current, total_steps=scheduler_steps, stage="denoising",
-                message=f"Generating image on the cloud GPU · step {current} of {scheduler_steps}",
+                task_id, asset_type="image", status="running", progress=5,
+                total_steps=steps, stage="loading_model",
+                message="Loading FLUX 3 Klein and its prompt upsampler on the remote GPU…",
             )
-            return callback_kwargs
-        generator = torch.Generator(device="cuda").manual_seed(seed)
-        if str(request.form.get("prompt_is_final") or "").strip().lower() in {"1", "true", "yes", "on"}:
-            effective_prompt, effective_negative_prompt = prompt, negative_prompt
+            flux_output = generate_flux3_image(
+                prompt, image=image, seed=seed, steps=steps,
+                width=width, height=height,
+                source=model_configuration("flux3_klein")["source"],
+            )
+            result = flux_output["image"]
+            upsampled_prompt = flux_output["upsampled_prompt"]
+            if _remote_generation_cancelled(task_id):
+                raise RemoteGenerationCancelled("Generation cancelled after FLUX 3 inference completed.")
         else:
-            effective_prompt, effective_negative_prompt = build_generation_prompts(
-                prompt, negative_prompt, image_preset, has_reference_image=image is not None
+            mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
+            pipeline = local_engine._load_cpu_or_gpu_pipeline(
+                mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
+                model_family=model_family,
             )
-        kwargs = {
-            "prompt": effective_prompt,
-            "negative_prompt": effective_negative_prompt or None,
-            "width": width,
-            "height": height,
-            "num_inference_steps": steps,
-            "guidance_scale": 7.5,
-            "generator": generator,
-        }
-        if image is not None:
-            kwargs.update(image=image, strength=strength)
-        if pose_control_image is not None:
-            kwargs["control_image"] = pose_control_image
-            kwargs["controlnet_conditioning_scale"] = 1.0
-            if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
-                kwargs["ip_adapter_image"] = image
-        result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+            _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the remote GPU…")
+            def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+                if _remote_generation_cancelled(task_id):
+                    raise RemoteGenerationCancelled("Generation cancelled by the user.")
+                scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
+                current = min(step_index + 1, scheduler_steps)
+                percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+                _set_generation_progress(
+                    task_id, asset_type="image", status="running", progress=percent,
+                    current_step=current, total_steps=scheduler_steps, stage="denoising",
+                    message=f"Generating image on the remote GPU · step {current} of {scheduler_steps}",
+                )
+                return callback_kwargs
+            generator = torch.Generator(device="cuda").manual_seed(seed)
+            if str(request.form.get("prompt_is_final") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                effective_prompt, effective_negative_prompt = prompt, negative_prompt
+            else:
+                effective_prompt, effective_negative_prompt = build_generation_prompts(
+                    prompt, negative_prompt, image_preset, has_reference_image=image is not None
+                )
+            kwargs = {
+                "prompt": effective_prompt,
+                "negative_prompt": effective_negative_prompt or None,
+                "width": width,
+                "height": height,
+                "num_inference_steps": steps,
+                "guidance_scale": 7.5,
+                "generator": generator,
+            }
+            if image is not None:
+                kwargs.update(image=image, strength=strength)
+            if pose_control_image is not None:
+                kwargs["control_image"] = pose_control_image
+                kwargs["controlnet_conditioning_scale"] = 1.0
+                if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
+                    kwargs["ip_adapter_image"] = image
+            result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
         result.save(output, format="PNG")
         output.seek(0)
         _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on the cloud GPU.")
-        return send_file(output, mimetype="image/png", download_name="generated.png")
+        response = send_file(output, mimetype="image/png", download_name="generated.png")
+        if upsampled_prompt:
+            from urllib.parse import quote
+            response.headers["X-FLUX3-Upsampled-Prompt"] = quote(upsampled_prompt, safe="")
+        return response
     except RemoteGenerationCancelled:
         _set_generation_progress(
             task_id, asset_type="image", status="cancelled", progress=0, total_steps=steps,
