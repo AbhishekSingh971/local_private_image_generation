@@ -27,6 +27,11 @@
         <div><label for="upscaleSteps">AI upscaling steps</label><input id="upscaleSteps" name="upscale_steps" type="number" min="10" max="30" step="1" value="20"></div>
         <div><p class="field-help">Uses a separate Stable Diffusion x4 upscaler checkpoint. It can add detail but may change small features. It is optional, needs additional GPU memory and can be slower. The original generated image is retained if enhancement fails.</p></div>
       </div>
+      <label class="switchline" for="faceRestore"><input id="faceRestore" name="face_restore" type="checkbox" value="true"> AI face restoration <span class="optional">optional · GFPGAN checkpoint required</span></label>
+      <div class="twocol">
+        <div><label for="faceRestoreWeight">Face restoration fidelity</label><input id="faceRestoreWeight" name="face_restore_weight" type="range" min="0" max="1" step="0.05" value="0.5"><p class="field-help">Lower values favour the original face; higher values favour restoration. Restoration may still alter identity details.</p></div>
+        <div><p class="field-help">Requires the optional <code>gfpgan</code> package and a licensed checkpoint configured as <code>GFPGAN_MODEL_PATH</code> on the app or GPU worker. If unavailable or it fails, the pre-restoration image is saved with a warning.</p></div>
+      </div>
       <label for="imagePreset">Image preset</label><select id="imagePreset" name="image_preset"><option value="standard">Standard · use my prompt as written</option><option value="photorealistic">Photorealistic · improve skin and lighting</option><option value="full_body_photo" selected>Photorealistic full-body · head to feet</option></select>
       <label for="aspectRatio">Composition / aspect ratio</label><select id="aspectRatio" name="aspect_ratio"><option value="portrait" selected>Portrait 2:3 · 512 × 768 · full-body</option><option value="square">Square · 512 × 512</option><option value="landscape">Landscape 3:2 · 768 × 512</option></select>
       <label for="imageSeed">Seed <span class="optional">optional · leave blank for random</span></label><input id="imageSeed" name="seed" type="number" min="0" max="2147483647" step="1" placeholder="Random seed">
