@@ -614,7 +614,7 @@ def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",nega
     full_negative_prompt=str(negative_prompt or "")
     original_prompt=full_prompt if original_prompt is None else str(original_prompt or "")
     family=str(model_family or "sd15").strip().lower()
-    if family not in {"sd15","sdxl","flux3_klein"}: raise ValueError("Model family must be sd15, sdxl or flux3_klein.")
+    if family not in {"sd15","sdxl","flux2_klein"}: raise ValueError("Model family must be sd15, sdxl or flux2_klein.")
     upsampled_prompt=str(upsampled_prompt or "")
     r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,original_prompt,upsampled_prompt,model_family,profile_id,profile_name,
         backend,generation_mode,media_size,media_data,created_at,updated_at)
