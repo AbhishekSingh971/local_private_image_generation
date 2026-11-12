@@ -2505,32 +2505,46 @@ def api_restore_face_model_version(profile_id, version_id):
         version = get_face_model_version(profile_id, version_id)
         if not version:
             return jsonify(error="Face-model version not found."), 404
-        if version.get("backend") != "local":
-            return jsonify(error="Only local model versions can be restored from this application process. Restore cloud versions through their GPU worker."), 400
         bundle_data = version.get("bundle_data") or b""
         if sha256_bytes(bundle_data) != version.get("sha256"):
             return jsonify(error="Stored model bundle checksum failed. The current model was not changed."), 409
-        temp_root = Path(tempfile.mkdtemp(prefix=f"restore-{profile_id}-", dir=str(LORA_DIR)))
-        staging = temp_root / "staging"
-        backup = temp_root / "previous"
-        target = model_path(profile_id)
-        try:
-            safe_extract_lora_bundle(bundle_data, staging)
-            if target.exists():
-                target.rename(backup)
+        if version.get("backend") == "runpod":
+            if not cloud_worker_configured():
+                return jsonify(error="The cloud GPU worker is not configured; the archived version remains safe in PostgreSQL."), 503
+            response = runpod_request(
+                "POST", f"/api/remote/models/{profile_id}/restore",
+                data={"sha256": version["sha256"]},
+                files={"bundle": ("face-lora-version.zip", io.BytesIO(bundle_data), "application/zip")},
+                timeout=(20, 600),
+            )
+            update_profile(
+                profile_id, runpod_model_ready=True,
+                runpod_training_state="completed", runpod_training_error=None,
+            )
+        elif version.get("backend") == "local":
+            temp_root = Path(tempfile.mkdtemp(prefix=f"restore-{profile_id}-", dir=str(LORA_DIR)))
+            staging = temp_root / "staging"
+            backup = temp_root / "previous"
+            target = model_path(profile_id)
             try:
-                staging.rename(target)
-            except Exception:
-                if backup.exists() and not target.exists():
-                    backup.rename(target)
-                raise
-            shutil.rmtree(backup, ignore_errors=True)
-        finally:
-            shutil.rmtree(temp_root, ignore_errors=True)
-        update_profile(
-            profile_id, local_model_ready=True,
-            local_training_state="completed", local_training_error=None,
-        )
+                safe_extract_lora_bundle(bundle_data, staging)
+                if target.exists():
+                    target.rename(backup)
+                try:
+                    staging.rename(target)
+                except Exception:
+                    if backup.exists() and not target.exists():
+                        backup.rename(target)
+                    raise
+                shutil.rmtree(backup, ignore_errors=True)
+            finally:
+                shutil.rmtree(temp_root, ignore_errors=True)
+            update_profile(
+                profile_id, local_model_ready=True,
+                local_training_state="completed", local_training_error=None,
+            )
+        else:
+            return jsonify(error="Unsupported model artifact backend."), 400
         return jsonify(
             status="restored", profile=get_profile(profile_id),
             restored_version={
