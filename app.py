@@ -33,6 +33,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from face_profiles import (
     DATA_DIR,
     LORA_DIR,
@@ -123,6 +124,7 @@ MODEL_PATH_OVERRIDE = os.environ.get("SD_MODEL_PATH", "").strip()
 pipe = None
 pipeline_mode = None
 pipeline_device = None
+pipeline_family = None
 active_lora = None
 model_error = None
 video_pipe = None
@@ -405,6 +407,15 @@ def _resolve_compute_backend(form) -> str:
         cloud_gpu_available=options["cloud_gpu"]["available"],
     )
     return "cloud_gpu" if selected == "runpod" else selected
+
+
+def _clean_generation_text(value: str, field_name: str) -> str:
+    """Preserve full user text; HTTP request-size limits protect the service."""
+    text = value if isinstance(value, str) else str(value or "")
+    text = text.strip()
+    if "\\x00" in text:
+        raise ValueError(f"{field_name} contains an unsupported null character.")
+    return text
 
 
 def _clean_prompt(value: str, field_name: str, limit: int) -> str:
@@ -2387,12 +2398,28 @@ def api_face_train_status(profile_id):
 
 
 def _load_cpu_or_gpu_pipeline(
-    mode, profile_id, compute_backend="cpu", *, use_global_body_model=False
+    mode, profile_id, compute_backend="cpu", *, use_global_body_model=False, model_family="sd15"
 ):
-    """Load one face identity and optionally the reusable shared-body LoRA."""
-    global pipe, pipeline_mode, pipeline_device, active_lora, model_error
+    """Load one compatible image model family and its optional SD 1.5 adapters."""
+    global pipe, pipeline_mode, pipeline_device, pipeline_family, active_lora, model_error
     global video_pipe, active_video_lora
-    from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
+    family = resolve_model_family(model_family)
+    config = model_configuration(family)
+
+    if profile_id and not supports_face_lora(family):
+        raise ValueError(
+            "The selected face LoRA was trained for Stable Diffusion 1.5 and cannot be loaded into SDXL. "
+            "Choose Stable Diffusion 1.5 for this trained identity, or generate with SDXL without that adapter."
+        )
+    if use_global_body_model and family != "sd15":
+        raise ValueError(
+            "The shared body LoRA was trained for Stable Diffusion 1.5. SDXL uses its own compatible adapter family."
+        )
+    if family == "sdxl" and mode == "pose_img2img":
+        raise ValueError(
+            "The configured face-pose ControlNet is SD 1.5-specific. SDXL pose conditioning is not enabled until "
+            "an SDXL-compatible ControlNet is configured and benchmarked."
+        )
 
     if compute_backend not in {"cpu", "local_gpu"}:
         raise ValueError("Local image pipeline requires the CPU or System GPU backend.")
@@ -2401,25 +2428,19 @@ def _load_cpu_or_gpu_pipeline(
     with model_lock:
         use_cuda = compute_backend == "local_gpu"
         device = "cuda" if use_cuda else "cpu"
-        if pipe is None or pipeline_mode != mode or pipeline_device != device:
+        if pipe is None or pipeline_mode != mode or pipeline_device != device or pipeline_family != family:
             pipe = None
             pipeline_mode = None
             pipeline_device = None
+            pipeline_family = None
             active_lora = None
             video_pipe = None
             active_video_lora = None
             gc.collect()
             if use_cuda:
                 torch.cuda.empty_cache()
-            if MODEL_PATH_OVERRIDE:
-                override_path = Path(MODEL_PATH_OVERRIDE).expanduser()
-                if not override_path.is_dir() or not (override_path / "model_index.json").is_file():
-                    raise ValueError("SD_MODEL_PATH must point to an existing Diffusers model directory containing model_index.json.")
-                local_model = override_path
-            elif os.environ.get("SD_MODEL_ID", "").strip():
-                local_model = MODEL_ID
-            else:
-                local_model = MODEL_DIR if (MODEL_DIR / "model_index.json").is_file() else MODEL_ID
+
+            local_model = config["source"]
             dtype = torch.float16 if use_cuda else torch.float32
             controlnet = None
             if mode == "pose_img2img":
@@ -2427,10 +2448,6 @@ def _load_cpu_or_gpu_pipeline(
                 controlnet_id = os.environ.get(
                     "FACE_POSE_CONTROLNET_ID", "CrucibleAI/ControlNetMediaPipeFace"
                 ).strip() or "CrucibleAI/ControlNetMediaPipeFace"
-                # The default app model is Stable Diffusion 1.5 (CLIP hidden size 768).
-                # CrucibleAI/ControlNetMediaPipeFace at the repository root is SD 2.1
-                # (cross-attention size 1024); its SD 1.5 weights are in diffusion_sd15.
-                # Allow an explicit override for users intentionally pairing a different base.
                 controlnet_subfolder = os.environ.get(
                     "FACE_POSE_CONTROLNET_SUBFOLDER", "diffusion_sd15"
                 ).strip()
@@ -2439,8 +2456,13 @@ def _load_cpu_or_gpu_pipeline(
                     controlnet_kwargs["subfolder"] = controlnet_subfolder
                 controlnet = ControlNetModel.from_pretrained(controlnet_id, **controlnet_kwargs)
                 pipeline_class = StableDiffusionControlNetImg2ImgPipeline
+            elif family == "sdxl":
+                from diffusers import StableDiffusionXLImg2ImgPipeline, StableDiffusionXLPipeline
+                pipeline_class = StableDiffusionXLImg2ImgPipeline if mode == "img2img" else StableDiffusionXLPipeline
             else:
+                from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
                 pipeline_class = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
+
             kwargs = {
                 "torch_dtype": dtype,
                 "safety_checker": None,
@@ -2450,7 +2472,9 @@ def _load_cpu_or_gpu_pipeline(
                 kwargs["controlnet"] = controlnet
             if isinstance(local_model, Path):
                 if not (local_model / "model_index.json").is_file():
-                    raise ValueError(f"SD_MODEL_PATH is not a Diffusers model folder containing model_index.json.")
+                    raise ValueError(
+                        f"{family} model path must be a Diffusers model folder containing model_index.json."
+                    )
                 kwargs["local_files_only"] = True
             try:
                 loaded = pipeline_class.from_pretrained(local_model, **kwargs)
@@ -2462,8 +2486,7 @@ def _load_cpu_or_gpu_pipeline(
                         raise RuntimeError(
                             "Face-pose ControlNet is incompatible with the selected base model: "
                             f"ControlNet cross_attention_dim={control_dim}, text encoder hidden_size={text_dim}. "
-                            "For Stable Diffusion 1.5, use FACE_POSE_CONTROLNET_SUBFOLDER=diffusion_sd15; "
-                            "for a compatible SD 2.1 base, use FACE_POSE_CONTROLNET_SUBFOLDER=none."
+                            "For Stable Diffusion 1.5, use FACE_POSE_CONTROLNET_SUBFOLDER=diffusion_sd15."
                         )
                 loaded = loaded.to("cuda" if use_cuda else "cpu")
                 if not use_cuda:
@@ -2491,12 +2514,13 @@ def _load_cpu_or_gpu_pipeline(
                 pipe = loaded
                 pipeline_mode = mode
                 pipeline_device = device
+                pipeline_family = family
                 model_error = None
             except Exception as exc:
                 model_error = str(exc)
                 raise
 
-        requested_loras = (profile_id or None, bool(use_global_body_model))
+        requested_loras = (profile_id or None, bool(use_global_body_model), family)
         if active_lora != requested_loras:
             if active_lora is not None:
                 pipe.unload_lora_weights()
@@ -2505,15 +2529,19 @@ def _load_cpu_or_gpu_pipeline(
             if profile_id:
                 identity_path = model_path(profile_id)
                 if not profile_ready_for_backend(profile_id, "local") or not identity_path.is_dir():
-                    raise ValueError("This face profile has no locally trained LoRA. Train it locally or turn on GPU acceleration and select the cloud GPU.")
+                    raise ValueError(
+                        "This face profile has no locally trained SD 1.5 LoRA. Train it locally or use a compatible remote worker."
+                    )
                 pipe.load_lora_weights(str(identity_path), adapter_name="face_identity")
                 adapter_names.append("face_identity")
                 adapter_weights.append(1.0)
             if use_global_body_model:
-                body_profile = ensure_global_body_profile()
                 body_path = model_path(GLOBAL_BODY_PROFILE_ID)
                 if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, "local") or not body_path.is_dir():
-                    raise ValueError("The shared body model has not been trained on this device. Train it from Training datasets first.")
+                    raise ValueError(
+                        "The optional shared body LoRA is unavailable on this device. "
+                        "Retry without it to use the base model's normal anatomy."
+                    )
                 pipe.load_lora_weights(str(body_path), adapter_name="global_body")
                 adapter_names.append("global_body")
                 adapter_weights.append(0.75)
@@ -2528,14 +2556,18 @@ def api_generation_prompt_preview():
     """Return the exact image prompt pair that generation will submit."""
     payload = request.get_json(silent=True) or {}
     try:
-        prompt = _clean_prompt(payload.get("prompt"), "Prompt", 1200)
-        negative_prompt = _clean_prompt(payload.get("negative_prompt"), "Negative prompt", 1000)
+        prompt = _clean_generation_text(payload.get("prompt"), "Prompt")
+        negative_prompt = _clean_generation_text(payload.get("negative_prompt"), "Negative prompt")
+        resolve_model_family(payload.get("model_family") or "sd15")
         preset = validate_image_preset(payload.get("image_preset") or "standard")
         has_reference = bool(payload.get("has_reference_image"))
         final_prompt, final_negative = build_generation_prompts(
             prompt, negative_prompt, preset, has_reference_image=has_reference
         )
-        return jsonify(prompt=final_prompt, negative_prompt=final_negative)
+        return jsonify(
+            prompt=final_prompt, negative_prompt=final_negative,
+            original_prompt=prompt, prompt_changed=(final_prompt != prompt),
+        )
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
 
@@ -2543,8 +2575,10 @@ def api_generation_prompt_preview():
 @app.post("/generate")
 def generate():
     try:
-        prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1200)
-        negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 1200)
+        prompt = _clean_generation_text(request.form.get("prompt"), "Prompt")
+        original_prompt = _clean_generation_text(request.form.get("original_prompt") or prompt, "Original prompt")
+        negative_prompt = _clean_generation_text(request.form.get("negative_prompt"), "Negative prompt")
+        model_family = resolve_model_family(request.form.get("model_family") or "sd15")
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = float(request.form.get("strength", "0.45"))
         steps = int(request.form.get("steps", "25"))
@@ -2557,7 +2591,7 @@ def generate():
         output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
         if generation_profile == "photorealistic":
             image_preset = "photorealistic"
-        width, height = resolve_image_dimensions(aspect_ratio)
+        width, height = resolve_image_dimensions(aspect_ratio, model_family)
         backend = _resolve_compute_backend(request.form)
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = _truthy(request.form.get("use_global_body_model"))
@@ -2591,28 +2625,36 @@ def generate():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
+    if profile_id and not supports_face_lora(model_family):
+        return jsonify(
+            error="This face profile has an SD 1.5 LoRA. SDXL adapters are model-family-specific; "
+                  "choose Stable Diffusion 1.5 for this identity or generate with SDXL without the trained face."
+        ), 400
     if (face_angle or face_expression) and not profile_id:
         return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
     if face_angle:
         prompt += ", head angle: " + angle_prompts[face_angle]
     if face_expression:
         prompt += ", facial expression: " + expression_prompts[face_expression]
+    body_model_fallback = False
     if use_global_body_model:
-        try:
-            body_profile = ensure_global_body_profile()
-            body_backend = "runpod" if backend in {"runpod", "cloud_gpu"} else "local"
-            if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, body_backend):
-                return jsonify(error=(
-                    "The shared body model is not trained for the selected backend. Open Training datasets, "
-                    "generate body-type samples, train the shared body model on this backend, then retry."
-                )), 400
-            if backend not in {"runpod", "cloud_gpu"}:
-                prompt = f"{GLOBAL_BODY_PROFILE_TOKEN}, {prompt}"
-        except (RuntimeError, ValueError) as exc:
-            return jsonify(error=str(exc)), 400
-
-    if len(prompt) > 1200:
-        return jsonify(error="The prompt plus face/body controls exceeds 1200 characters. Shorten the text prompt."), 400
+        if model_family != "sd15":
+            use_global_body_model = False
+            body_model_fallback = True
+        else:
+            try:
+                ensure_global_body_profile()
+                body_backend = "runpod" if backend in {"runpod", "cloud_gpu"} else "local"
+                if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, body_backend):
+                    use_global_body_model = False
+                    body_model_fallback = True
+                elif backend not in {"runpod", "cloud_gpu"}:
+                    prompt = f"{GLOBAL_BODY_PROFILE_TOKEN}, {prompt}"
+            except (RuntimeError, ValueError):
+                # The shared body adapter is optional. Keep generation available
+                # using the base model's normal anatomy rather than failing.
+                use_global_body_model = False
+                body_model_fallback = True
 
     image_file = request.files.get("image")
     try:
@@ -2650,7 +2692,7 @@ def generate():
                 "steps": str(steps), "strength": str(strength), "seed": str(seed),
                 "use_global_body_model": "true" if use_global_body_model else "false",
                 "task_id": task_id, "aspect_ratio": aspect_ratio, "image_preset": image_preset,
-                "prompt_is_final": "true",
+                "prompt_is_final": "true", "model_family": model_family,
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
@@ -2695,14 +2737,16 @@ def generate():
                 return jsonify(error=str(exc)), 503
             _set_generation_progress(
                 task_id, asset_type="image", backend="cloud_gpu", status="completed", progress=100,
-                current_step=steps, total_steps=steps, stage="completed", message="Image saved to the library.",
+                current_step=steps, total_steps=steps, stage="completed",
+                message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
             )
             return jsonify(
                 status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
                 asset_id=asset["id"], title=asset["title"],
                 mode="img2img" if init_image is not None else "txt2img",
                 face_profile=profile["name"] if profile else None,
-                backend="cloud_gpu", message="Generated on the selected cloud GPU and saved to the database library.",
+                backend="cloud_gpu", model_family=model_family,
+                message="Generated on the selected cloud GPU and saved to the database library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
             )
 
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
@@ -2714,7 +2758,8 @@ def generate():
                 total_steps=steps, stage="loading_model", message="Loading the image model and selected face…",
             )
             pipeline = _load_cpu_or_gpu_pipeline(
-                mode, profile_id, backend, use_global_body_model=use_global_body_model
+                mode, profile_id, backend, use_global_body_model=use_global_body_model,
+                model_family=model_family,
             )
             generator_device = "cuda" if backend == "local_gpu" else "cpu"
             _set_generation_progress(
