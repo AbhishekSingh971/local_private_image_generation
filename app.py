@@ -39,6 +39,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
+from identity_evaluation import evaluate_identity_similarity
 from model_artifacts import safe_extract_lora_bundle, sha256_bytes
 from private_data_crypto import encryption_configured
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
@@ -623,6 +624,26 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
         raise RuntimeError(
             "The media was generated but could not be saved to the database. Check DATABASE_URL and database permissions. The local output copy remains in " + str(path)
         ) from exc
+
+
+def _evaluate_profile_identity(profile_id: str, generated_image) -> dict:
+    """Compare generated output against only human-approved profile references."""
+    if not database_url_configured():
+        return {"status": "not_assessed", "reason": "PostgreSQL reference photos are unavailable."}
+    try:
+        records = list_face_photo_records(profile_id)
+        approved = [
+            record for record in records
+            if record.get("training_approval_status") == "approved" and record.get("image_data")
+        ][:20]
+        reference_images = []
+        for record in approved:
+            with Image.open(io.BytesIO(record["image_data"])) as source:
+                reference_images.append(ImageOps.exif_transpose(source).convert("RGB").copy())
+        return evaluate_identity_similarity(reference_images, generated_image)
+    except Exception as exc:
+        app.logger.warning("Identity similarity evaluation unavailable for profile %s: %s", profile_id, type(exc).__name__)
+        return {"status": "not_assessed", "reason": "Could not load approved reference photos for identity comparison."}
 
 
 def _generation_metadata(
@@ -3115,6 +3136,7 @@ def generate():
                     quality_report = assess_image_quality(saved_image).to_dict()
                     if profile:
                         quality_report["face_geometry"] = assess_face_geometry(saved_image)
+                    quality_report["identity_similarity"] = _evaluate_profile_identity(profile["id"], saved_image)
             except Exception as quality_exc:
                 app.logger.warning("Cloud generated-image quality assessment unavailable: %s", quality_exc)
                 output_width, output_height = width, height
