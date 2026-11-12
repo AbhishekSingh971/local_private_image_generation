@@ -1829,6 +1829,12 @@ def api_face_photo_detail(photo_id):
         return jsonify(error="The photo's dataset group no longer exists."), 404
     if group.get("status") == "generating":
         return jsonify(error="This group is still generating. Wait before editing its photos."), 409
+    profile = get_profile(metadata["profile_id"])
+    if profile and (
+        profile.get("local_training_state") == "running"
+        or profile.get("runpod_training_state") == "running"
+    ):
+        return jsonify(error="Face-model training is running. Photo approval and edits are locked until the training snapshot finishes."), 409
 
     if request.method == "PATCH":
         payload = request.get_json(silent=True) or {}
