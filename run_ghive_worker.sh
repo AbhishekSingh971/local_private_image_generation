@@ -88,8 +88,10 @@ if motion_dir.exists():
         if not path.is_file():
             continue
         rel = path.relative_to(motion_dir).as_posix()
-        if path.suffix in {".bin", ".ckpt", ".safetensors"}
-            and rel not in {"diffusion_pytorch_model.safetensors"}:
+        if (
+            path.suffix in {".bin", ".ckpt", ".safetensors"}
+            and rel not in {"diffusion_pytorch_model.safetensors"}
+        ):
             path.unlink(missing_ok=True)
 
 if not all((motion_dir / name).is_file() for name in motion_required):
