@@ -1,4 +1,4 @@
-"""Authenticated GPU worker for a user-managed Colab or cloud GPU runtime.
+"""Provider-neutral authenticated worker for a user-managed remote CUDA GPU.
 
 Set REMOTE_API_TOKEN to a strong random secret and expose port 8000 only through
 an HTTPS tunnel/proxy. This worker does not provision, purchase, or keep a runtime alive.
