@@ -175,13 +175,19 @@ def _training_job(profile_id, job_id, steps, resolution, approved_filenames):
             local_model_ready=False,
         )
         task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error}
+    cleanup_warnings = []
     for filename in approved_filenames:
         safe_name = Path(filename).name
         if safe_name != filename or not safe_name.startswith("approved_"):
             continue
         image_path = dataset_dir(profile_id) / safe_name
-        image_path.unlink(missing_ok=True)
-        image_path.with_name(image_path.name + ".caption.txt").unlink(missing_ok=True)
+        try:
+            image_path.unlink(missing_ok=True)
+            image_path.with_name(image_path.name + ".caption.txt").unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            cleanup_warnings.append(f"Could not remove temporary training photo {safe_name}: {cleanup_error}")
+    if cleanup_warnings:
+        task["cleanup_warnings"] = cleanup_warnings[:10]
     with TASKS_LOCK:
         task["finished_at"] = time.time()
         TASKS[job_id] = task
