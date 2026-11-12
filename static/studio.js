@@ -1304,7 +1304,22 @@
       const title=document.createElement("h3");title.textContent=asset.title;card.appendChild(title);
       const prompt=document.createElement("p");prompt.className="asset-prompt";prompt.textContent=asset.prompt||"No prompt details saved.";card.appendChild(prompt);
       const meta=document.createElement("div");meta.className="asset-meta";
-      [asset.backend||"unknown backend",asset.profile_name||"Base model",asset.created_at?new Date(asset.created_at).toLocaleString(): "Saved",formatBytes(asset.media_size||0)].forEach(text=>{const tag=document.createElement("span");tag.textContent=text;meta.appendChild(tag);});
+      const generation=asset.generation_metadata||{};
+      const sampling=generation.sampling||{};
+      const upscaling=generation.upscaling||{};
+      const quality=generation.quality||{};
+      const metadataLabels=[
+        asset.backend||"unknown backend",
+        asset.model_family||generation.model?.family||"Base model",
+        asset.profile_name||"No trained identity",
+        Number.isInteger(sampling.seed)?"Seed "+sampling.seed:"",
+        Number.isInteger(sampling.steps)?sampling.steps+" steps":"",
+        upscaling.enabled?"AI upscale: "+(upscaling.status||"requested"):"",
+        quality.status&&quality.status!=="not_assessed"?"Quality: "+quality.status:"",
+        asset.created_at?new Date(asset.created_at).toLocaleString():"Saved",
+        formatBytes(asset.media_size||0),
+      ].filter(Boolean);
+      metadataLabels.forEach(text=>{const tag=document.createElement("span");tag.textContent=text;meta.appendChild(tag);});
       card.appendChild(meta);
       const actions=document.createElement("div");actions.className="asset-actions";
       const download=document.createElement("a");download.className="button-link";download.textContent="Download ↓";download.href="/assets/"+asset.id+"/content?download=1";
