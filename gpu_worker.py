@@ -599,23 +599,41 @@ def remote_generate():
                 if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
                     kwargs["ip_adapter_image"] = image
             result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+        upscale_warning = ""
         if ai_upscale:
             _set_generation_progress(
                 task_id, asset_type="image", status="running", progress=93,
                 current_step=0, total_steps=upscale_options["steps"], stage="upscaling",
                 message="Running optional AI x4 super-resolution on the remote GPU…",
             )
-            result = upscale_image(
-                result, prompt, negative_prompt=negative_prompt, seed=seed,
-                steps=upscale_options["steps"],
-                cancelled=lambda: _remote_generation_cancelled(task_id),
-            )
+            def on_upscale_step(current, total):
+                percent = min(94, 93 + round(current / max(total, 1)))
+                _set_generation_progress(
+                    task_id, asset_type="image", status="running", progress=percent,
+                    current_step=current, total_steps=total, stage="upscaling",
+                    message=f"AI x4 super-resolution · step {current} of {total}",
+                )
+            try:
+                result = upscale_image(
+                    result, prompt, negative_prompt=negative_prompt, seed=seed,
+                    steps=upscale_options["steps"],
+                    cancelled=lambda: _remote_generation_cancelled(task_id),
+                    progress_callback=on_upscale_step,
+                )
+            except RemoteGenerationCancelled:
+                raise
+            except Exception as upscale_exc:
+                worker.logger.exception("AI upscaling failed; returning the base generated image")
+                upscale_warning = "AI upscaling failed; the original generated image was returned. " + str(upscale_exc)[:300]
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
         result.save(output, format="PNG")
         output.seek(0)
         _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on the cloud GPU.")
         response = send_file(output, mimetype="image/png", download_name="generated.png")
+        if upscale_warning:
+            response.headers["X-Upscale-Warning"] = upscale_warning.replace("\\n", " ")[:500]
+        response.headers["X-Upscale-Status"] = "completed" if ai_upscale and not upscale_warning else ("failed_fallback" if upscale_warning else "not_requested")
         return response
     except RemoteGenerationCancelled:
         _set_generation_progress(
