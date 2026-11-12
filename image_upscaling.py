@@ -25,12 +25,15 @@ _INFERENCE_LOCK = threading.Lock()
 def resolve_upscale_options(enabled: object, steps: object = DEFAULT_STEPS) -> dict[str, Any]:
     """Validate enhancement options without importing torch or downloading models."""
     active = str(enabled or "").strip().lower() in {"1", "true", "yes", "on"}
-    try:
-        count = int(steps if steps not in (None, "") else DEFAULT_STEPS)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("AI upscaling steps must be an integer.") from exc
-    if not MIN_STEPS <= count <= MAX_STEPS:
-        raise ValueError(f"AI upscaling steps must be between {MIN_STEPS} and {MAX_STEPS}.")
+    if not active:
+        count = DEFAULT_STEPS
+    else:
+        try:
+            count = int(steps if steps not in (None, "") else DEFAULT_STEPS)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("AI upscaling steps must be an integer.") from exc
+        if not MIN_STEPS <= count <= MAX_STEPS:
+            raise ValueError(f"AI upscaling steps must be between {MIN_STEPS} and {MAX_STEPS}.")
     model_id = (str(__import__("os").environ.get("IMAGE_UPSCALER_MODEL_ID") or "").strip()
                 or DEFAULT_UPSCALER_MODEL)
     return {"enabled": active, "steps": count, "model_id": model_id, "scale_factor": 4}
