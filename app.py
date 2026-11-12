@@ -40,6 +40,7 @@ from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
 from model_artifacts import safe_extract_lora_bundle, sha256_bytes
+from private_data_crypto import encryption_configured
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from generation_contracts import preserve_generation_text
 from face_profiles import (
@@ -74,6 +75,7 @@ from studio_db import (
     database_status,
     database_url_configured,
     ensure_schema,
+    private_data_encryption_status,
     create_face_dataset_group,
     delete_face_dataset_group,
     delete_face_photo,
@@ -135,6 +137,9 @@ APP_ACCESS_PASSWORD = os.environ.get("APP_ACCESS_PASSWORD", "")
 APP_ACCESS_PASSWORD_HASH = os.environ.get("APP_ACCESS_PASSWORD_HASH", "")
 APP_ACCESS_GATE_ENABLED = bool(APP_ACCESS_PASSWORD or APP_ACCESS_PASSWORD_HASH)
 APP_SECRET_KEY = os.environ.get("APP_SECRET_KEY") or os.environ.get("SECRET_KEY") or ""
+_PRIVATE_DATA_ENCRYPTION_CHECKED = False
+_PRIVATE_DATA_ENCRYPTION_READY = False
+_PRIVATE_DATA_ENCRYPTION_ERROR = ""
 app.secret_key = APP_SECRET_KEY or secrets.token_hex(32)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
@@ -778,6 +783,42 @@ def _request_is_same_origin() -> bool:
     return (request.headers.get("Sec-Fetch-Site") or "").lower() != "cross-site"
 
 
+def _production_private_data_ready() -> tuple[bool, str]:
+    global _PRIVATE_DATA_ENCRYPTION_CHECKED, _PRIVATE_DATA_ENCRYPTION_READY, _PRIVATE_DATA_ENCRYPTION_ERROR
+    if _PRIVATE_DATA_ENCRYPTION_CHECKED:
+        return _PRIVATE_DATA_ENCRYPTION_READY, _PRIVATE_DATA_ENCRYPTION_ERROR
+    _PRIVATE_DATA_ENCRYPTION_CHECKED = True
+    if not database_url_configured():
+        _PRIVATE_DATA_ENCRYPTION_READY = True
+        return True, ""
+    if not encryption_configured():
+        _PRIVATE_DATA_ENCRYPTION_ERROR = (
+            "FACE_DATA_ENCRYPTION_KEY is required for production PostgreSQL storage. "
+            "Configure it, back up the database, then run encrypt_private_data.py --confirm-encryption."
+        )
+        return False, _PRIVATE_DATA_ENCRYPTION_ERROR
+    try:
+        status = private_data_encryption_status()
+        plaintext = {
+            table: details["plaintext"]
+            for table, details in status.items()
+            if details["plaintext"]
+        }
+        if plaintext:
+            _PRIVATE_DATA_ENCRYPTION_ERROR = (
+                "Private database blobs are not fully encrypted. Keep the app in maintenance mode and run "
+                "encrypt_private_data.py --confirm-encryption after taking an encrypted backup. "
+                + json.dumps(plaintext)
+            )
+            return False, _PRIVATE_DATA_ENCRYPTION_ERROR
+    except Exception:
+        app.logger.exception("Could not verify private-data encryption status")
+        _PRIVATE_DATA_ENCRYPTION_ERROR = "Could not verify private-data encryption. Check PostgreSQL and encryption-key configuration."
+        return False, _PRIVATE_DATA_ENCRYPTION_ERROR
+    _PRIVATE_DATA_ENCRYPTION_READY = True
+    return True, ""
+
+
 @app.before_request
 def _protect_private_workspace():
     if request.endpoint in {"login", "health", "static"}:
@@ -786,6 +827,10 @@ def _protect_private_workspace():
         return jsonify(
             error="Production access is disabled until APP_ACCESS_PASSWORD (or APP_ACCESS_PASSWORD_HASH) and APP_SECRET_KEY are configured."
         ), 503
+    if APP_ENV == "production":
+        private_data_ready, private_data_error = _production_private_data_ready()
+        if not private_data_ready:
+            return jsonify(error=private_data_error), 503
     if not APP_ACCESS_GATE_ENABLED:
         return None
     if not session.get("private_workspace_authenticated"):
