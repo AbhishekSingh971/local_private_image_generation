@@ -1,6 +1,6 @@
 # Private Face Studio
 
-A local-first Windows/Flask application for generating photos, training separate face-identity LoRAs, managing a persistent face library, and optionally using a remote CUDA GPU through the authenticated cloud worker API. Google Colab remains supported, and GHive can host the same authenticated remote CUDA worker.
+A local-first Windows/Flask application for image generation, separate face-identity LoRA training, image editing, and private media-library management. It supports local CUDA and a provider-neutral authenticated remote CUDA GPU worker. Google Colab (removed) is not supported.
 
 ## Features
 
@@ -18,7 +18,7 @@ A local-first Windows/Flask application for generating photos, training separate
 - Reusable LoRA adapters stored under `models/face_loras/<profile-id>/`.
 - Face selector for photo and video generation.
 - A GPU acceleration toggle that is OFF by default: OFF forces local CPU; ON checks actual local CUDA and connected cloud GPU availability.
-- A backend selector that appears when acceleration is on: supported local System GPU, connected remote GPU (Google Colab or GHive), and CPU fallback. Auto mode prefers a usable local CUDA GPU first, then the configured remote GPU, then CPU if neither GPU is available.
+- A backend selector for local System GPU, a configured authenticated remote GPU worker, and CPU for compatible workloads. Auto prefers a usable local CUDA GPU, then the remote worker, then CPU for models that support it.
 - Authenticated provider-neutral cloud worker endpoints for face training, photo generation, video generation and status polling.
 - Local output copies saved under `data/outputs/` and `data/videos/`.
 
@@ -86,20 +86,20 @@ The original Stable Diffusion 1.5 checkpoint often produces less convincing huma
 - Each training job reads only its selected profile's local working dataset and writes an adapter to models/face_loras/<profile-id>/. When PostgreSQL is configured, successful local training also writes a ZIP backup of the adapter to the database. A completed RunPod training job is similarly backed up to the database when the local app polls its final status.
 - Select the same face in the image or video panel. Include the displayed prompt token in your prompt, such as photo of face_a1b2c3d4 person, natural studio light.
 
-Local LoRA training requires a CUDA-enabled NVIDIA GPU. Your local Windows venv will normally report `torch.cuda.is_available() == False`; on that machine, select a connected cloud GPU worker (Colab or RunPod) after configuring it.
+Local LoRA training requires a CUDA-enabled NVIDIA GPU. If the local machine has no CUDA GPU, configure a supported remote worker and use the same authenticated worker API.
 
 ### Existing ungrouped dataset note
 
 Older versions stored all uploaded photos in `data/face_dataset/`. New named profiles use `data/face_profiles/<profile-id>/dataset/`. Review and manually copy any old images into the correct new profile through the UI; the app deliberately will not guess which person those old images belong to.
 
-## GHive GPU mode (optional; preserves Google Colab)
+## Remote GPU worker
 
-GHive runs the same repository worker used by the existing Colab integration. The Flask application can remain on your Windows laptop or on Render; both connect to the worker using the same HTTPS base URL and bearer token. GHive is a compute host, not a second copy of the web application.
+The remote worker runs the same repository's authenticated `gpu_worker.py` service on a CUDA host. The Flask application can remain on your Windows laptop or a web host and connect through a stable HTTPS endpoint and bearer token. The GPU provider is independent of the application code.
 
 1. Rent an NVIDIA GPU using GHive's **PyTorch + Jupyter** workload. Prefer 24 GB VRAM for AnimateDiff and face-LoRA training.
 2. In JupyterLab, open a terminal and clone this branch (or the merged branch once reviewed):
    ```bash
-   git clone --branch feature/ghive-runtime-integration https://github.com/AbhishekSingh971/local_private_image_generation.git
+   git clone --branch feature/production-image-engine https://github.com/AbhishekSingh971/local_private_image_generation.git
    cd local_private_image_generation
    ```
 3. Create a strong shared secret and start the worker/tunnel:
@@ -116,7 +116,7 @@ GHive runs the same repository worker used by the existing Colab integration. Th
    REMOTE_API_TOKEN=THE_EXACT_SAME_SECRET
    ```
    For Render, add the same two values as environment variables in the Render service dashboard. Do not commit either secret.
-6. Restart the local app / redeploy or restart the Render service. Enable GPU acceleration and choose **GHive / Colab GPU** (or Auto). The app's authenticated `/api/gpu-status?probe=1` check reports the worker's actual CUDA device and VRAM.
+6. Restart the local app / redeploy or restart the Render service. Enable GPU acceleration and choose **Remote GPU** (or Auto). The app's authenticated `/api/gpu-status?probe=1` check reports the worker's actual CUDA device and VRAM.
 7. Test a small image first, then video generation, face-angle/expression generation, and face-LoRA training.
 
 ### Networking, persistence and production notes
@@ -128,15 +128,7 @@ GHive runs the same repository worker used by the existing Colab integration. Th
 - GHive rental costs continue until the rental is stopped in GHive's dashboard. Closing the browser or local Flask app does not stop the rental.
 - Face photos and prompts sent to the worker are processed on a third-party host. Use only images you have permission to process and consider GHive host trust/privacy options.
 
-Detailed setup: [GHIVE_GPU_SETUP.md](GHIVE_GPU_SETUP.md). Existing Colab setup remains available in [COLAB_GPU_SETUP.md](COLAB_GPU_SETUP.md).
-
-## Google Colab GPU mode (free runtime, optional)
-
-You can experiment with the same authenticated `gpu_worker.py` worker from a Colab notebook. Start with [COLAB_GPU_SETUP.md](COLAB_GPU_SETUP.md) and [run_colab_worker.sh](run_colab_worker.sh). The app code supports the existing `/api/remote/*` endpoints, with `GPU_WORKER_URL` and `REMOTE_API_TOKEN` for the generic worker connection; legacy RunPod-specific environment variables are no longer used.
-
-**Important:** Google's current Colab FAQ warns that free managed runtimes may be terminated when used as a web service for content generation. This worker exposes an HTTP image/video-generation API, so free Colab is not a reliable supported deployment target; use this section for limited experimentation only and check Google's [current policy](https://research.google.com/colaboratory/faq.html) before using it.
-
-Colab's free runtime is temporary and may be disconnected or reclaim its GPU. A stable ngrok Dev Domain can keep the same HTTPS hostname, but it does not keep the Colab session or tunnel alive. Model weights and LoRA files on Colab storage can be lost when the runtime is reset; save trained adapters and important outputs to durable storage. Do not expose the worker without a strong `REMOTE_API_TOKEN` and HTTPS.
+Provider-specific deployment details can be documented separately; the worker itself only requires CUDA, `GPU_WORKER_URL`, and `REMOTE_API_TOKEN` on the application host.
 
 ## RunPod GPU mode (optional, OFF by default)
 
@@ -185,6 +177,20 @@ Keep `.env` private. Do not commit it or paste a real token into an issue/chat. 
 ### RunPod persistence and storage
 
 The worker stores the uploaded face datasets and generated LoRAs on the Pod's filesystem under the project directory. Put the repository and its `data/` and `models/` directories on a persistent volume if you need them to survive a Pod replacement. Back up important profiles and LoRA weights before terminating a Pod.
+
+## Advanced image model: FLUX 3 Image Klein
+
+The generation page offers three model families:
+
+- **Stable Diffusion 1.5** remains the identity-training backend. Existing face and body LoRAs and the configured face-pose ControlNet are SD 1.5-specific.
+- **Stable Diffusion XL 1.0** is an experimental base-model option. It does not load the current SD 1.5 identity adapters.
+- **FLUX 3 Image Klein (distilled)** is the advanced text-to-image and reference-image editing backend. It uses the Diffusers modular pipeline and automatically expands the user's prompt into a longer scene caption. The app stores the original prompt, compiled prompt, and FLUX-expanded caption separately.
+
+FLUX 3 Klein distilled supports 4–16 inference steps and reference-image editing, but does not accept a negative prompt or an SD-style denoising-strength value. The UI disables those controls when this model is selected. It does not yet load this project's SD 1.5 face/body LoRAs or face-pose ControlNet. Choose SD 1.5 when you need an already-trained face identity.
+
+The model uses a large text encoder and prompt upsampler in addition to the image transformer. The application uses Diffusers component CPU offloading, but actual memory use and speed must be benchmarked on the target GPU. A supported CUDA device, adequate host RAM/disk cache, and Hugging Face access to the gated model repository are required. Accept the model repository's access terms before first download.
+
+**License:** FLUX 3 Image Klein is released under the FLUX Kommunity License v1.0, not Apache 2.0. It allows non-commercial use and a conditional commercial-output exception for qualifying users under US$5M gross annualized revenue, subject to the complete license. Review the full terms and obtain the appropriate license before building a paid generation service around this model.
 
 ## Training details
 
