@@ -1087,7 +1087,7 @@
     }
     if (modelFamilyHelp) {
       if (isFlux2) {
-        modelFamilyHelp.textContent = "FLUX.2 Klein 4B is the advanced Apache-2.0 text-to-image and reference-image editing backend. It is designed for consumer GPUs (around 13 GB VRAM with suitable settings). The distilled checkpoint uses 4 steps. Your prompt is passed directly without automatic caption rewriting; prompts exceeding its 512-token text context are rejected. Existing SD 1.5 face/body LoRAs and the SD 1.5 face-pose ControlNet are not compatible. It does not accept a negative prompt or denoising-strength control.";
+        modelFamilyHelp.textContent = "FLUX.2 Klein 4B is the advanced Apache-2.0 text-to-image and reference-image editing backend. It is designed for consumer GPUs (around 13 GB VRAM with suitable settings). The distilled checkpoint uses 4 steps. Your prompt is passed directly without automatic caption rewriting; prompts exceeding its 512-token text context are rejected. Existing SD 1.5 face/body LoRAs and the SD 1.5 face-pose ControlNet are not compatible. It does not accept a negative prompt or denoising-strength control. The app does not add clothing or hide anatomy, but the model has its own safety fine-tuning and may still refuse or under-depict some requests.";
       } else if (family === "sdxl") {
         modelFamilyHelp.textContent = "SDXL uses a larger native canvas and typically needs more GPU memory. Existing SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible with SDXL.";
       } else {
