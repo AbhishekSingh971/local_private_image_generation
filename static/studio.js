@@ -1031,6 +1031,9 @@
   const faceExpressionGroup = $("#faceExpressionGroup");
   const negativePromptHelp = $("#negativePromptHelp");
   const modelFamilyHelp = $("#modelFamilyHelp");
+  const finalPromptLabel = $("#finalPromptLabel");
+  const finalPromptHelp = $("#finalPromptHelp");
+  const aspectRatioSelect = $("#aspectRatio");
   const upsampledPromptDetails = $("#upsampledPromptDetails");
   const upsampledPromptPreview = $("#upsampledPromptPreview");
 
@@ -1050,9 +1053,23 @@
     if (faceAngleGroup) faceAngleGroup.hidden = isFlux3;
     if (faceExpressionGroup) faceExpressionGroup.hidden = isFlux3;
     if (negativePromptHelp) negativePromptHelp.hidden = !isFlux3;
+    if (finalPromptLabel) finalPromptLabel.textContent = isFlux3 ? "Prompt sent to FLUX 3 captioner · editable" : "Final prompt sent to model · editable";
+    if (finalPromptHelp) finalPromptHelp.textContent = isFlux3
+      ? "FLUX 3 expands this instruction into a detailed model caption during generation. You can inspect the exact expanded caption after the image is generated; the original text remains saved separately."
+      : "Review or edit the compiled prompt before generating. The original prompt and compiled prompt are stored separately.";
+    if (aspectRatioSelect) {
+      const labels = family === "flux3_klein"
+        ? ["Portrait 2:3 · 1024 × 1536", "Square · 1024 × 1024", "Landscape 3:2 · 1536 × 1024"]
+        : family === "sdxl"
+          ? ["Portrait 2:3 · 832 × 1216", "Square · 1024 × 1024", "Landscape 3:2 · 1216 × 832"]
+          : ["Portrait 2:3 · 512 × 768", "Square · 512 × 512", "Landscape 3:2 · 768 × 512"];
+      Array.from(aspectRatioSelect.options).forEach((option, index) => {
+        if (labels[index]) option.textContent = labels[index];
+      });
+    }
     if (modelFamilyHelp) {
       if (isFlux3) {
-        modelFamilyHelp.textContent = "FLUX 3 Klein is the advanced model for text-to-image and reference-image editing. It automatically expands your prompt into a detailed caption that is saved separately. It requires a CUDA GPU, Hugging Face access to the gated model, and substantial RAM/VRAM. Existing SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible. The distilled checkpoint has no negative-prompt or denoising-strength parameter.";
+        modelFamilyHelp.textContent = "FLUX 3 Image Klein is the advanced text-to-image and reference-editing backend. It requires a CUDA GPU, accepted access to the gated Hugging Face model, and substantial host/GPU memory. Its built-in caption upsampler can rephrase your request; the exact expanded caption is returned and stored separately for inspection. Existing SD 1.5 face/body LoRAs and the SD 1.5 pose ControlNet are not compatible. The distilled checkpoint has no negative-prompt or denoising-strength input.";
       } else if (family === "sdxl") {
         modelFamilyHelp.textContent = "SDXL uses a larger native canvas and typically needs more GPU memory. Existing SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible with SDXL.";
       } else {
@@ -1123,7 +1140,7 @@
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
     formData.set("original_prompt", $("#prompt")?.value || "");
     formData.set("prompt", finalPromptInput?.value || $("#prompt")?.value || "");
-    formData.set("negative_prompt", finalNegativePrompt || $("#negativePrompt")?.value || "");
+    formData.set("negative_prompt", modelFamilySelect?.value === "flux3_klein" ? "" : (finalNegativePrompt || $("#negativePrompt")?.value || ""));
     formData.set("prompt_is_final", "true");
     const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
