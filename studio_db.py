@@ -169,17 +169,25 @@ def ensure_schema() -> None:
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_asset_type ON generated_assets(asset_type)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_profile_id ON generated_assets(profile_id)")
                 # Group legacy ungrouped profile photos so they appear in the review UI.
-                cur.execute("SELECT profile_id, COUNT(*) AS photo_count FROM face_photos WHERE group_id IS NULL GROUP BY profile_id")
+                cur.execute("""SELECT profile_id, COUNT(*) AS photo_count,
+                    BOOL_OR(photo_kind='body') AS has_body,
+                    BOOL_OR(photo_kind='expression') AS has_expression
+                    FROM face_photos WHERE group_id IS NULL GROUP BY profile_id""")
                 ungrouped_profiles = cur.fetchall()
                 for legacy_profile in ungrouped_profiles:
                     group_id = uuid.uuid4().hex
                     photo_count = int(legacy_profile["photo_count"])
+                    dataset_type = (
+                        "body_type" if legacy_profile.get("has_body")
+                        else "expressions" if legacy_profile.get("has_expression")
+                        else "face_angles"
+                    )
                     cur.execute(
                         """INSERT INTO face_dataset_groups(
                             id,profile_id,title,dataset_type,prompt,status,expected_count,generated_count
-                        ) VALUES(%s,%s,'Imported manual photos','face_angles','',
+                        ) VALUES(%s,%s,'Imported manual photos',%s,'',
                             'completed',%s,%s)""",
-                        (group_id, legacy_profile["profile_id"], max(photo_count, 1), photo_count),
+                        (group_id, legacy_profile["profile_id"], dataset_type, max(photo_count, 1), photo_count),
                     )
                     cur.execute(
                         "UPDATE face_photos SET group_id=%s WHERE profile_id=%s AND group_id IS NULL",
@@ -286,11 +294,16 @@ def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", gro
     # Legacy and direct profile uploads without a named group still need a visible
     # review surface. Reuse one completed manual-upload group per profile.
     if not group_id:
+        manual_group_type = (
+            "body_type" if photo_kind == "body"
+            else "expressions" if photo_kind == "expression"
+            else "face_angles"
+        )
         existing_group = _one(
             """SELECT id FROM face_dataset_groups
-               WHERE profile_id=%s AND title='Manual uploads' AND dataset_type='face_angles'
+               WHERE profile_id=%s AND title='Manual uploads' AND dataset_type=%s
                ORDER BY created_at DESC LIMIT 1""",
-            (profile_id,),
+            (profile_id, manual_group_type),
         )
         if existing_group:
             group_id = existing_group["id"]
@@ -303,8 +316,8 @@ def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", gro
             _run(
                 """INSERT INTO face_dataset_groups(
                     id,profile_id,title,dataset_type,prompt,status,expected_count,generated_count
-                ) VALUES(%s,%s,'Manual uploads','face_angles','','completed',1,1)""",
-                (group_id, profile_id),
+                ) VALUES(%s,%s,'Manual uploads',%s,'','completed',1,1)""",
+                (group_id, profile_id, manual_group_type),
             )
     # CREATE TABLE IF NOT EXISTS does not restore defaults on an existing table.
     # Repair this required timestamp even when ensure_schema() is cached.
