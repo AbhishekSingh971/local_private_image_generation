@@ -1,6 +1,6 @@
 # Private Face Studio
 
-A local-first Windows/Flask application for image generation, separate face-identity LoRA training, image editing, and private media-library management. It supports local CUDA and a provider-neutral authenticated remote CUDA GPU worker. Google  is not supported.
+A local-first Windows/Flask application for image generation, separate face-identity LoRA training, image editing, and private media-library management. It supports local CUDA and a provider-neutral authenticated remote CUDA GPU worker. Notebook-hosted GPU integrations are not included.
 
 ## Features
 
@@ -68,7 +68,7 @@ Requirements: Windows 10/11 64-bit, Python 3.11 x64, PostgreSQL reachable from t
 4. Run `run_local.bat`.
 5. Open http://127.0.0.1:5000.
 
-The Windows installer installs CPU-only PyTorch. This is for local development and slow image generation; it does not enable CUDA training or local video generation. The local web app binds to 127.0.0.1 only.
+The Windows installer installs a CPU-only PyTorch/TorchVision pair for local development and slow image generation; it does not enable CUDA training or local video generation. PyTorch is deliberately not in the shared `requirements.txt`, so lightweight web hosts do not pull a large GPU runtime. CUDA workers must use a CUDA-enabled PyTorch installation supplied by their GPU image/template. The local web app binds to 127.0.0.1 only.
 
 ### Select a compatible photorealistic checkpoint
 
@@ -78,12 +78,12 @@ The original Stable Diffusion 1.5 checkpoint often produces less convincing huma
 
 - Image generation: open Generate image from the sidebar, select a trained face, choose the composition and image preset, optionally upload a reference image, enter a concise prompt and save a title. Portrait is 512×768 by default to provide more room for full-length subjects; inference defaults to 25 steps and can be reduced for faster tests. Successful output is stored in PostgreSQL and appears in Generated images. Stable Diffusion 1.5 has a short CLIP text context, so keep essential subject, clothing/nudity, body, and framing terms near the start. A preset can improve the wording and framing, but cannot guarantee a particular result.
 - Video generation: open Generate video, select the face/profile trained on the selected backend, choose frame count and steps, and generate the clip. Successful output is stored in PostgreSQL and appears in Generated videos.
-- Face models: create isolated identity profiles, add photos from your computer, reuse saved generated images, or select **Face angles** / **Expressions** and upload one source image to start a background job. Angles queues 9 precise yaw/pitch targets; Expressions queues 10 expression targets. A shared progress banner and Cancel button remain available across routes; the Start button stays disabled while a job is active. Every successful output is saved immediately and appears in Training datasets while later targets continue. A failed target can be retried from the global job banner without regenerating successful targets. Pose conditioning improves the requested view, but visual review is still required because SD 1.5 can invent unseen face details and identity/pose estimates are approximate. Each profile can include an optional face/training description of up to 200 words; the trigger token remains a short identifier. Stable Diffusion 1.5 uses a fixed text-encoder context window, so the trainer rotates through short description chunks across training steps instead of sending all 200 words in one prompt. At least 5 photos are required to start training; 15–30 varied photos are a better starting point.
-- Training datasets: separate filters show **Face angles**, **Expressions**, and **Body type · global**. Photo cards show automatic pose-validation status, estimated yaw/pitch when available, and the reason a photo needs review. A prompt-edit preview remains non-destructive until **Save new photo** is clicked; replacing an image resets its pose status to Needs review. Retrain the associated identity after reviewing and accepting dataset updates.
+- Face models: create isolated identity profiles, add photos from your computer, reuse saved generated images, or select **Face angles** / **Expressions** and upload one source image to start a background job. Angles queues 9 precise yaw/pitch targets; Expressions queues 10 expression targets. A shared progress banner and Cancel button remain available across routes; the Start button stays disabled while a job is active. Every successful output is saved immediately and appears in Training datasets while later targets continue. A failed target can be retried from the global job banner without regenerating successful targets. Pose conditioning improves the requested view, but visual review is still required because SD 1.5 can invent unseen face details and identity/pose estimates are approximate. Each profile can include an optional face/training description of up to 200 words; the trigger token remains a short identifier. Stable Diffusion 1.5 uses a fixed text-encoder context window, so the trainer rotates through short description chunks across training steps instead of sending all 200 words in one prompt. At least 5 human-approved photos are required to start training; pending or rejected photos are excluded. 15–30 varied, approved photos are a better starting point.
+- Training datasets: separate filters show **Face angles**, **Expressions**, and **Body type · global**. Photo cards show automatic pose-validation status separately from human training approval, estimated yaw/pitch when available, and the reason a photo needs review. Approve or reject each image before training; editing, relabeling or replacing a photo resets its approval to pending. A prompt-edit preview remains non-destructive until **Save new photo** is clicked. Retrain the associated identity after reviewing and accepting dataset updates.
 - Libraries: use the separate Generated images and Generated videos pages to search across all saved items, page through the results, preview, edit the title/prompt/negative prompt, download the original media bytes, or delete an item. Deletion removes the database record and the local output copy. The generated-image picker on Face models can also search and page through saved image outputs when selecting training photos.
 - **Live generation progress:** image and video pages show the current phase and real Diffusers denoising step count while generation runs. A browser poll updates the progress bar roughly every 0.8 seconds; the RunPod worker exposes its own authenticated progress endpoint so cloud generations show their actual worker-side steps too. Model loading, final encoding, and database save appear as separate phases, so the percentage is an approximate overall indicator while the step counter reflects the pipeline callback.
 - **Background dataset jobs:** job ID, target manifest, target progress, cancellation state, per-target failures and pose-review records are persisted in the database. Navigation does not cancel a job; only stopping the app/worker process interrupts execution. After an app restart, a stale active job is marked interrupted and completed photos remain saved rather than claiming the generation continued.
-- Each training job reads only its selected profile's local working dataset and writes an adapter to models/face_loras/<profile-id>/. When PostgreSQL is configured, successful local training also writes a ZIP backup of the adapter to the database. A completed RunPod training job is similarly backed up to the database when the local app polls its final status.
+- Each profile training job reads only the exact human-approved filenames captured at job start from its selected profile's local working dataset and writes an adapter to models/face_loras/<profile-id>/. When PostgreSQL is configured, successful local training also writes a ZIP backup of the adapter to the database. A completed RunPod training job is similarly backed up to the database when the local app polls its final status.
 - Select the same face in the image or video panel. Include the displayed prompt token in your prompt, such as photo of face_a1b2c3d4 person, natural studio light.
 
 Local LoRA training requires a CUDA-enabled NVIDIA GPU. If the local machine has no CUDA GPU, configure a supported remote worker and use the same authenticated worker API.
@@ -138,10 +138,10 @@ The UI toggle routes training/generation requests to a worker that you already d
 
 1. In RunPod, deploy a CUDA-enabled NVIDIA GPU Pod. Select RTX 3090 if it is available for your region/account.
 2. Expose HTTP port `8000` and mount a persistent volume, recommended at `/workspace`.
-3. Clone this repository's `feature/face-identity-lora` branch into the persistent workspace, for example:
+3. Clone this repository's `feature/production-image-engine` branch into the persistent workspace, for example:
 
        cd /workspace
-       git clone --branch feature/face-identity-lora https://github.com/AbhishekSingh971/local_private_image_generation.git
+       git clone --branch feature/production-image-engine https://github.com/AbhishekSingh971/local_private_image_generation.git
        cd local_private_image_generation
 
 4. Confirm that the Pod sees its GPU:
@@ -158,7 +158,7 @@ The UI toggle routes training/generation requests to a worker that you already d
 
 6. In RunPod, confirm the Pod is running and note the exposed port URL. It should follow:
 
-For background face-angle/expression jobs, pose-conditioned generation and Cancel support, the worker must be running the latest `feature/face-identity-lora` code. It uses the authenticated `/api/remote/generation-progress/<task-id>` and `/api/remote/generation-cancel/<task-id>` endpoints. Pull this branch and restart `runpod_worker_linux.sh`; updating only the Windows app is not enough for cloud jobs. The first angle job downloads the SD 1.5 OpenPose ControlNet and IP-Adapter weights if they are not already cached, so leave enough disk space and expect first-run model loading to take longer.
+For background face-angle/expression jobs, pose-conditioned generation and Cancel support, the worker must be running the latest `feature/production-image-engine` code. It uses the authenticated `/api/remote/generation-progress/<task-id>` and `/api/remote/generation-cancel/<task-id>` endpoints. Pull this branch and restart `runpod_worker_linux.sh`; updating only the Windows app is not enough for cloud jobs. The first angle job downloads the SD 1.5 OpenPose ControlNet and IP-Adapter weights if they are not already cached, so leave enough disk space and expect first-run model loading to take longer.
 
        https://<POD_ID>-8000.proxy.runpod.net
 
@@ -215,7 +215,7 @@ Only the photos approved when the training job starts are included. Pending and 
 - A profile is trained independently by ID, token and dataset.
 - Example direct command (only on CUDA-enabled hardware, after photos have been saved to a profile):
 
-      python train_face_lora.py --profile-id <32-character-profile-id> --output-name <same-profile-id> --token <profile-token> --steps 800 --resolution 512 --mixed-precision fp16
+      python train_face_lora.py --profile-id <32-character-profile-id> --output-name <same-profile-id> --token <profile-token> --steps 800 --resolution 512 --mixed-precision fp16 --approved-filename face_a.jpg --approved-filename face_b.jpg --approved-filename face_c.jpg --approved-filename face_d.jpg --approved-filename face_e.jpg
 
 - Default web UI training values are 800 steps and 512px. Lower to 384px if VRAM is tight. More steps do not automatically produce a better likeness; inspect results and adjust dataset/parameters.
 - The app uses a job ID and status polling for RunPod training so the browser request does not need to remain open for the entire training run.
