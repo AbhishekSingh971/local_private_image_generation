@@ -571,7 +571,7 @@ def _safe_profile_count():
         return 0
 
 
-def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode, original_prompt=None, model_family="sd15"):
+def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode, original_prompt=None, upsampled_prompt="", model_family="sd15"):
     folder = OUTPUT_DIR if asset_type == "image" else VIDEO_OUTPUT_DIR
     path = folder / Path(filename).name
     try:
@@ -584,6 +584,7 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
             prompt=prompt,
             negative_prompt=negative_prompt,
             original_prompt=original_prompt if original_prompt is not None else prompt,
+            upsampled_prompt=upsampled_prompt,
             model_family=model_family,
             profile_id=profile["id"] if profile else None,
             profile_name=profile["name"] if profile else None,
@@ -2561,11 +2562,17 @@ def api_generation_prompt_preview():
         prompt = _clean_generation_text(payload.get("prompt"), "Prompt")
         negative_prompt = _clean_generation_text(payload.get("negative_prompt"), "Negative prompt")
         resolve_model_family(payload.get("model_family") or "sd15")
+        model_family = resolve_model_family(payload.get("model_family") or "sd15")
         preset = validate_image_preset(payload.get("image_preset") or "standard")
         has_reference = bool(payload.get("has_reference_image"))
-        final_prompt, final_negative = build_generation_prompts(
-            prompt, negative_prompt, preset, has_reference_image=has_reference
-        )
+        if model_family == "flux3_klein":
+            # FLUX 3's own caption upsampler is the model-specific compiler.
+            # Preserve the user's original text for that stage; never add SD presets.
+            final_prompt, final_negative = prompt, negative_prompt
+        else:
+            final_prompt, final_negative = build_generation_prompts(
+                prompt, negative_prompt, preset, has_reference_image=has_reference
+            )
         return jsonify(
             prompt=final_prompt, negative_prompt=final_negative,
             original_prompt=prompt, prompt_changed=(final_prompt != prompt),
@@ -2622,7 +2629,12 @@ def generate():
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt:
         return jsonify(error="Enter a prompt describing the image you want."), 400
-    if not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
+    if model_family == "flux3_klein":
+        if negative_prompt:
+            return jsonify(error="FLUX 3 Klein distilled does not support a negative prompt. Remove it or select SD 1.5 / SDXL."), 400
+        if not 4 <= steps <= 16:
+            return jsonify(error="FLUX 3 Klein supports 4–16 inference steps."), 400
+    elif not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
         return jsonify(error="Strength must be 0.20–0.95 and steps must be 5–25."), 400
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
@@ -2634,11 +2646,17 @@ def generate():
         ), 400
     if (face_angle or face_expression) and not profile_id:
         return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
+    if model_family == "flux3_klein" and backend == "cpu":
+        return jsonify(error="FLUX 3 Klein requires a CUDA GPU. Enable GPU acceleration and select a local or remote GPU worker."), 400
     if face_angle:
         prompt += ", head angle: " + angle_prompts[face_angle]
     if face_expression:
         prompt += ", facial expression: " + expression_prompts[face_expression]
     body_model_fallback = False
+    upsampled_prompt = ""
+    if model_family == "flux3_klein" and use_global_body_model:
+        use_global_body_model = False
+        body_model_fallback = True
     if use_global_body_model:
         if model_family != "sd15":
             use_global_body_model = False
@@ -2708,6 +2726,9 @@ def generate():
                 response = runpod_request(
                     "POST", "/api/remote/generate", data=data, files=files, timeout=(20, 600)
                 )
+                if model_family == "flux3_klein":
+                    from urllib.parse import unquote
+                    upsampled_prompt = unquote(response.headers.get("X-FLUX3-Upsampled-Prompt", ""))
             except RuntimeError as exc:
                 _set_generation_progress(
                     task_id, asset_type="image", backend="cloud_gpu", status="failed", progress=0,
@@ -2729,8 +2750,9 @@ def generate():
             try:
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
-                    original_prompt=original_prompt, model_family=model_family,
-                    profile=profile, backend="cloud_gpu", generation_mode="img2img" if init_image is not None else "txt2img",
+                    original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
+                    model_family=model_family, profile=profile, backend="cloud_gpu",
+                    generation_mode="img2img" if init_image is not None else "txt2img",
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -2749,6 +2771,7 @@ def generate():
                 mode="img2img" if init_image is not None else "txt2img",
                 face_profile=profile["name"] if profile else None,
                 backend="cloud_gpu", model_family=model_family,
+                upsampled_prompt=upsampled_prompt,
                 message="Generated on the selected cloud GPU and saved to the database library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
             )
 
