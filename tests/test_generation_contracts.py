@@ -131,3 +131,27 @@ def test_training_selector_rejects_windows_path_traversal(tmp_path):
 
     with pytest.raises(ValueError, match="plain file basenames"):
         select_approved_training_files(tmp_path, [r"..\outside.jpg"], {".jpg"})
+
+
+
+def test_upscale_options_are_opt_in_and_use_x4():
+    from image_upscaling import resolve_upscale_options
+
+    options = resolve_upscale_options("false")
+    assert options["enabled"] is False
+    assert options["scale_factor"] == 4
+    assert options["steps"] == 20
+
+
+def test_upscale_options_validate_step_range():
+    from image_upscaling import resolve_upscale_options
+
+    with pytest.raises(ValueError, match="between 10 and 30"):
+        resolve_upscale_options(True, 31)
+
+
+def test_upscale_options_reject_non_integer_steps():
+    from image_upscaling import resolve_upscale_options
+
+    with pytest.raises(ValueError, match="must be an integer"):
+        resolve_upscale_options(True, "many")
