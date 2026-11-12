@@ -123,7 +123,7 @@ def _valid_profile(profile_id):
     return value if get_profile(value) else None
 
 
-def _training_job(profile_id, job_id, steps, resolution):
+def _training_job(profile_id, job_id, steps, resolution, approved_filenames):
     profile = get_profile(profile_id)
     if not profile:
         with TASKS_LOCK:
@@ -139,6 +139,8 @@ def _training_job(profile_id, job_id, steps, resolution):
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
     ]
+    for filename in approved_filenames:
+        command.extend(["--approved-filename", filename])
     with TASKS_LOCK:
         TASKS[job_id] = {
             "job_id": job_id, "profile_id": profile_id, "status": "running",
@@ -217,7 +219,11 @@ def remote_train_profile():
                 caption_by_name[Path(caption_file.filename or "").name] = caption_file.stream.read(1200).decode("utf-8", errors="replace").strip()
             except (OSError, UnicodeError):
                 continue
+        existing = get_profile(profile_id)
+        if existing and existing.get("local_training_state") == "running":
+            return jsonify(error="This face profile is already training on the GPU worker."), 409
         create_profile(name, profile_id=profile_id, token=token, description=description)
+        approved_filenames = []
         for upload, image in zip(photo_uploads, images):
             caption = caption_by_name.get(Path(upload.filename or "").name, "")
             if caption:
@@ -228,12 +234,10 @@ def remote_train_profile():
                     photo_kind = "expression"
                 else:
                     photo_kind = "angle"
-                save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
+                saved_path = save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
             else:
-                save_profile_image(profile_id, image)
-        existing = get_profile(profile_id)
-        if existing and existing.get("local_training_state") == "running":
-            return jsonify(error="This face profile is already training on the GPU worker."), 409
+                saved_path = save_profile_image(profile_id, image)
+            approved_filenames.append(saved_path.name)
         job_id = uuid.uuid4().hex
         update_profile(
             profile_id, local_training_state="running", local_training_job_id=job_id,
@@ -241,7 +245,7 @@ def remote_train_profile():
         )
         with TASKS_LOCK:
             TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "status": "queued"}
-        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution)
+        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution, approved_filenames)
         return jsonify(status="queued", job_id=job_id, profile_id=profile_id), 202
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
