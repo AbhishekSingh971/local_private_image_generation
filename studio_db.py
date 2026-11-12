@@ -126,6 +126,7 @@ def ensure_schema() -> None:
                 negative_prompt TEXT NOT NULL DEFAULT '', original_prompt TEXT NOT NULL DEFAULT '',
                 upsampled_prompt TEXT NOT NULL DEFAULT '', model_family VARCHAR(16) NOT NULL DEFAULT 'sd15', profile_id VARCHAR(32), profile_name VARCHAR(80),
                 backend VARCHAR(32) NOT NULL DEFAULT 'cpu', generation_mode VARCHAR(32) NOT NULL DEFAULT '',
+                generation_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 media_size INTEGER NOT NULL, media_data BYTEA NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
         ]
@@ -137,6 +138,7 @@ def ensure_schema() -> None:
             _ensure_column(conn, "generated_assets", "original_prompt", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(conn, "generated_assets", "upsampled_prompt", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(conn, "generated_assets", "model_family", "VARCHAR(16) NOT NULL DEFAULT 'sd15'")
+            _ensure_column(conn, "generated_assets", "generation_metadata", "JSONB NOT NULL DEFAULT '{}'::jsonb")
             for name, definition in (("dataset_type", "VARCHAR(24) NOT NULL DEFAULT 'face_angles'"), ("prompt", "TEXT NOT NULL DEFAULT ''"), ("generated_count", "INTEGER NOT NULL DEFAULT 0")):
                 _ensure_column(conn, "face_dataset_groups", name, definition)
             # Older installations may already have generated_count but no database
@@ -680,12 +682,19 @@ def get_face_model_bundle(profile_id,backend):
 def _asset_dict(r,include_content=False):
     if not r:return None
     d={k:r.get(k) for k in ("id","asset_type","title","filename","mime_type","prompt","negative_prompt","original_prompt","upsampled_prompt","model_family","profile_id","profile_name","backend","generation_mode","media_size")}
+    metadata = r.get("generation_metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            metadata = {}
+    d["generation_metadata"] = metadata if isinstance(metadata, dict) else {}
     d.update(created_at=_iso(r.get("created_at")),updated_at=_iso(r.get("updated_at")))
     if include_content:d["media_data"]=bytes(r["media_data"])
     return d
 
 
-def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",negative_prompt="",original_prompt=None,upsampled_prompt="",model_family="sd15",profile_id=None,profile_name=None,backend="cpu",generation_mode=""):
+def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",negative_prompt="",original_prompt=None,upsampled_prompt="",model_family="sd15",profile_id=None,profile_name=None,backend="cpu",generation_mode="",generation_metadata=None):
     if asset_type not in {"image","video"}: raise ValueError("Asset type must be image or video.")
     if not media_data: raise ValueError("Cannot save an empty media file.")
     if len(media_data)>512*1024*1024: raise ValueError("Media files must be 512 MB or smaller to store in the database.")
@@ -699,11 +708,13 @@ def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",nega
     family=str(model_family or "sd15").strip().lower()
     if family not in {"sd15","sdxl","flux2_klein"}: raise ValueError("Model family must be sd15, sdxl or flux2_klein.")
     upsampled_prompt=str(upsampled_prompt or "")
+    metadata = generation_metadata if isinstance(generation_metadata, dict) else {}
+    metadata_json = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), default=str)
     r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,original_prompt,upsampled_prompt,model_family,profile_id,profile_name,
-        backend,generation_mode,media_size,media_data,created_at,updated_at)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now()) RETURNING *""",
+        backend,generation_mode,generation_metadata,media_size,media_data,created_at,updated_at)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,now(),now()) RETURNING *""",
         (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,full_prompt,full_negative_prompt,original_prompt,upsampled_prompt,family,profile_id,profile_name,
-         backend[:32],generation_mode[:32],len(media_data),media_data))
+         backend[:32],generation_mode[:32],metadata_json,len(media_data),media_data))
     return _asset_dict(r)
 
 
