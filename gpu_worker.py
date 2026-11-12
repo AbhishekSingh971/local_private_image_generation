@@ -435,8 +435,8 @@ def remote_generation_job_result(job_id):
 
 @worker.post("/api/remote/generate")
 def remote_generate():
-    prompt = (request.form.get("prompt") or "").strip()
-    negative_prompt = (request.form.get("negative_prompt") or "").strip()
+    prompt = request.form.get("prompt") or ""
+    negative_prompt = request.form.get("negative_prompt") or ""
     try:
         steps = int(request.form.get("steps", "25"))
         strength = float(request.form.get("strength", "0.45"))
