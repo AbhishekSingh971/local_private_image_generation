@@ -2869,11 +2869,33 @@ def generate():
                 output_path.unlink(missing_ok=True)
                 return jsonify(error=f"Could not resize image to the selected output resolution: {exc}"), 500
             try:
+                with Image.open(output_path) as saved_image:
+                    output_width, output_height = saved_image.size
+                    quality_report = assess_image_quality(saved_image).to_dict()
+            except Exception as quality_exc:
+                app.logger.warning("Cloud generated-image quality assessment unavailable: %s", quality_exc)
+                output_width, output_height = width, height
+                quality_report = {"status": "not_assessed", "reasons": [str(quality_exc)[:240]]}
+            try:
+                prompt_token_count = None
+                try:
+                    prompt_token_count = json.loads(response.headers.get("X-Prompt-Token-Count", "null"))
+                except (TypeError, ValueError):
+                    pass
+                generation_mode = "img2img" if init_image is not None else "txt2img"
+                generation_metadata = _generation_metadata(
+                    model_family=model_family, backend="cloud_gpu", seed=seed, steps=steps,
+                    width=width, height=height, output_width=output_width, output_height=output_height,
+                    aspect_ratio=aspect_ratio, generation_mode=generation_mode, strength=strength,
+                    ai_upscale=ai_upscale, upscale_options=upscale_options,
+                    upscale_warning=upscale_warning, quality_report=quality_report,
+                    prompt_token_count=prompt_token_count, profile=profile,
+                )
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                     original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
                     model_family=model_family, profile=profile, backend="cloud_gpu",
-                    generation_mode="img2img" if init_image is not None else "txt2img",
+                    generation_mode=generation_mode, generation_metadata=generation_metadata,
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -2884,7 +2906,7 @@ def generate():
             _set_generation_progress(
                 task_id, asset_type="image", backend="cloud_gpu", status="completed", progress=100,
                 current_step=steps, total_steps=steps, stage="completed",
-                message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
+                message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""),
             )
             return jsonify(
                 status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
@@ -2893,7 +2915,9 @@ def generate():
                 face_profile=profile["name"] if profile else None,
                 backend="cloud_gpu", model_family=model_family,
                 upsampled_prompt=upsampled_prompt,
-                message="Generated on the selected cloud GPU and saved to the database library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
+                generation_metadata=asset.get("generation_metadata", {}),
+                quality_report=quality_report,
+                message="Generated on the selected cloud GPU and saved to the database library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""),
             )
 
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
@@ -2949,7 +2973,7 @@ def generate():
                         prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
                     )
                 from generation_contracts import validate_diffusion_prompt_capacity
-                validate_diffusion_prompt_capacity(
+                prompt_token_count = validate_diffusion_prompt_capacity(
                     pipeline, effective_prompt, effective_negative_prompt or ""
                 )
                 kwargs = {
@@ -2998,17 +3022,29 @@ def generate():
             if "out of memory" in message.lower() or "memory" in message.lower():
                 message = "The selected device ran out of memory. Try fewer steps or switch to another available compute backend."
             return jsonify(error=f"Generation failed: {message}"), 500
-        try:
-            quality_report = assess_image_quality(result).to_dict()
-        except Exception as quality_exc:
-            app.logger.warning("Generated-image quality assessment was unavailable: %s", quality_exc)
-            quality_report = {"status": "not_assessed", "reasons": [str(quality_exc)[:240]]}
         filename = _save_generated_png(result)
         try:
             _resize_image_file(OUTPUT_DIR / filename, output_max_edge)
         except Exception as exc:
             (OUTPUT_DIR / filename).unlink(missing_ok=True)
             return jsonify(error=f"Could not resize image to the selected output resolution: {exc}"), 500
+        try:
+            with Image.open(OUTPUT_DIR / filename) as saved_image:
+                output_width, output_height = saved_image.size
+                quality_report = assess_image_quality(saved_image).to_dict()
+        except Exception as quality_exc:
+            app.logger.warning("Generated-image quality assessment was unavailable: %s", quality_exc)
+            output_width, output_height = result.size
+            quality_report = {"status": "not_assessed", "reasons": [str(quality_exc)[:240]]}
+        generation_mode = "img2img" if init_image is not None else "txt2img"
+        generation_metadata = _generation_metadata(
+            model_family=model_family, backend=backend, seed=seed, steps=steps,
+            width=width, height=height, output_width=output_width, output_height=output_height,
+            aspect_ratio=aspect_ratio, generation_mode=generation_mode, strength=strength,
+            ai_upscale=ai_upscale, upscale_options=upscale_options,
+            upscale_warning=upscale_warning, quality_report=quality_report,
+            prompt_token_count=flux_prompt_token_count or prompt_token_count, profile=profile,
+        )
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="running", progress=97,
             current_step=steps, total_steps=steps, stage="saving", message="Saving image bytes and generation details to the database…",
@@ -3018,7 +3054,7 @@ def generate():
                 "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                 original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
                 model_family=model_family, profile=profile, backend=backend,
-                generation_mode="img2img" if init_image is not None else "txt2img",
+                generation_mode=generation_mode, generation_metadata=generation_metadata,
             )
         except RuntimeError as exc:
             _set_generation_progress(
@@ -3033,7 +3069,7 @@ def generate():
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="completed", progress=100,
             current_step=steps, total_steps=steps, stage="completed",
-            message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
+            message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""),
         )
         return jsonify(
             status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
@@ -3042,7 +3078,9 @@ def generate():
             face_profile=profile["name"] if profile else None,
             backend=backend, model_family=model_family,
             original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
-            message=message + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
+            generation_metadata=asset.get("generation_metadata", {}),
+            quality_report=quality_report,
+            message=message + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""),
         )
     finally:
         generation_lock.release()
