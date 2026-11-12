@@ -2284,7 +2284,7 @@ def api_train_face_profile(profile_id):
         if not cloud_worker_configured():
             return jsonify(error=(
                 "Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN in .env, "
-                "start the configured GHive or Colab worker and its HTTPS tunnel, then restart the app."
+                "start the configured remote GPU worker and its HTTPS endpoint, then restart the app."
             )), 400
         opened_files = []
         try:
