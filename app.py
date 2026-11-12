@@ -44,6 +44,7 @@ from video_quality import evaluate_video_identity
 from model_artifacts import safe_extract_lora_bundle, sha256_bytes
 from private_data_crypto import encryption_configured
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
+from prompt_compiler import build_structured_prompt
 from generation_contracts import preserve_generation_text
 from face_profiles import (
     DATA_DIR,
@@ -2958,17 +2959,17 @@ def api_generation_prompt_preview():
         model_family = resolve_model_family(payload.get("model_family") or "sd15")
         preset = validate_image_preset(payload.get("image_preset") or "standard")
         has_reference = bool(payload.get("has_reference_image"))
+        structured_prompt = build_structured_prompt(prompt, payload)
         if model_family == "flux2_klein":
-            # FLUX.2 Klein receives the user's complete editable prompt directly.
-            # Do not inject a preset or silently rewrite their request.
-            final_prompt, final_negative = prompt, ""
+            # FLUX.2 Klein receives the original prompt plus only explicit user-selected controls.
+            final_prompt, final_negative = structured_prompt, ""
         else:
             final_prompt, final_negative = build_generation_prompts(
-                prompt, negative_prompt, preset, has_reference_image=has_reference
+                structured_prompt, negative_prompt, preset, has_reference_image=has_reference
             )
         return jsonify(
             prompt=final_prompt, negative_prompt=final_negative,
-            original_prompt=prompt, prompt_changed=(final_prompt != prompt),
+            original_prompt=prompt, structured_prompt=structured_prompt, prompt_changed=(final_prompt != prompt),
         )
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
@@ -3088,6 +3089,17 @@ def generate():
         return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
     if generation_profile == "preserve_reference" and init_image is None:
         return jsonify(error="Upload a reference image to use Preserve reference mode."), 400
+    prompt_is_final = _truthy(request.form.get("prompt_is_final"))
+    if not prompt_is_final:
+        structured_prompt = build_structured_prompt(prompt, request.form)
+        if model_family == "flux2_klein":
+            prompt, negative_prompt = structured_prompt, ""
+        else:
+            prompt, negative_prompt = build_generation_prompts(
+                structured_prompt, negative_prompt, image_preset,
+                has_reference_image=init_image is not None,
+            )
+        prompt_is_final = True
 
     _set_generation_progress(
         task_id, asset_type="image", backend=backend, status="running", progress=1,
