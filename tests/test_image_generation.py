@@ -13,13 +13,13 @@ def test_portrait_composition_uses_tall_sd15_canvas():
     assert resolve_image_dimensions("portrait") == (512, 768)
 
 
-def test_sdxl_and_flux3_use_model_specific_native_canvases():
+def test_sdxl_and_flux2_use_model_specific_native_canvases():
     assert resolve_image_dimensions("portrait", "sdxl") == (832, 1216)
-    assert resolve_image_dimensions("portrait", "flux3_klein") == (1024, 1536)
-    assert resolve_image_dimensions("landscape", "flux3_klein") == (1536, 1024)
+    assert resolve_image_dimensions("portrait", "flux2_klein") == (832, 1216)
+    assert resolve_image_dimensions("landscape", "flux2_klein") == (1216, 832)
 
 
-def test_flux3_prompt_is_not_forced_through_sd_photo_preset():
+def test_flux2_prompt_is_not_forced_through_sd_photo_preset():
     prompt = "A 3D sculptural portrait with intricate bronze anatomy and gallery lighting"
     compiled, negative = build_generation_prompts(prompt, "", "standard")
     assert compiled == prompt
