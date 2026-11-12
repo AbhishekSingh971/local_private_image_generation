@@ -280,6 +280,18 @@ Only the photos approved when the training job starts are included. Pending and 
 - Default web UI training values are 800 steps and 512px. Lower to 384px if VRAM is tight. More steps do not automatically produce a better likeness; inspect results and adjust dataset/parameters.
 - The app uses a job ID and status polling for RunPod training so the browser request does not need to remain open for the entire training run.
 
+## Private workspace access gate
+
+The Flask application supports an optional single-workspace password gate. For any public deployment, configure all of the following in the hosting environment:
+
+- `APP_ENV=production`
+- `APP_SECRET_KEY`: a long random secret used to sign sessions
+- Either `APP_ACCESS_PASSWORD` or `APP_ACCESS_PASSWORD_HASH` (prefer the Werkzeug password hash)
+
+If production mode is enabled without both a password and session secret, application routes fail closed with HTTP 503. Unauthenticated browser requests are redirected to sign-in; API and generation requests receive HTTP 401. State-changing requests are restricted to same-origin browser requests. Sign out from the top navigation.
+
+This is a **single shared workspace password**, not a multi-user account system. It does not provide per-user media isolation, roles or billing. Do not expose the app as a multi-tenant service until individual accounts, ownership checks and tenant-scoped database queries are implemented and security-tested. Keep the GPU worker separately protected by its bearer token.
+
 ## Security and privacy
 
 - The browser toggle defaults OFF every time the page loads. OFF means local CPU.
