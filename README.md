@@ -245,7 +245,7 @@ For a production database:
 
 Production requests fail closed if PostgreSQL is configured but the private-data encryption key is missing or plaintext blob rows remain. The check is cached for the process lifetime; restart after the migration.
 
-Keep the encryption key outside the database and backups. Losing it makes encrypted face photos, generated media and LoRA bundles unrecoverable. During key rotation, set the new key as `FACE_DATA_ENCRYPTION_KEY` and the old key as `FACE_DATA_ENCRYPTION_KEY_PREVIOUS` until all data has been re-encrypted. The separate `BACKUP_ENCRYPTION_KEY` protects backup files and must also be stored separately.
+Keep the encryption key outside the database and backups. Losing it makes encrypted face photos, generated media and LoRA bundles unrecoverable. During key rotation, set the new key as `FACE_DATA_ENCRYPTION_KEY` and the old key as `FACE_DATA_ENCRYPTION_KEY_PREVIOUS`, take a fresh encrypted backup, then run `python encrypt_private_data.py --confirm-encryption --rotate-existing`. Remove the previous key only after the migration reports zero plaintext rows and the app can read the stored data. The separate `BACKUP_ENCRYPTION_KEY` protects backup files and must also be stored separately.
 
 ## Encrypted PostgreSQL backups
 
