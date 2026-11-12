@@ -2561,9 +2561,9 @@ def api_generation_prompt_preview():
         model_family = resolve_model_family(payload.get("model_family") or "sd15")
         preset = validate_image_preset(payload.get("image_preset") or "standard")
         has_reference = bool(payload.get("has_reference_image"))
-        if model_family == "flux3_klein":
-            # FLUX 3's own caption upsampler is the model-specific compiler.
-            # Preserve the user's original text for that stage; never add SD presets.
+        if model_family == "flux2_klein":
+            # FLUX.2 Klein receives the user's complete editable prompt directly.
+            # Do not inject a preset or silently rewrite their request.
             final_prompt, final_negative = prompt, ""
         else:
             final_prompt, final_negative = build_generation_prompts(
@@ -2586,7 +2586,7 @@ def generate():
         model_family = resolve_model_family(request.form.get("model_family") or "sd15")
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = float(request.form.get("strength", "0.45"))
-        steps = int(request.form.get("steps", "25"))
+        steps = int(request.form.get("steps", "4" if model_family == "flux2_klein" else "25"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
         image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
@@ -2625,11 +2625,11 @@ def generate():
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt.strip():
         return jsonify(error="Enter a prompt describing the image you want."), 400
-    if model_family == "flux3_klein":
+    if model_family == "flux2_klein":
         if negative_prompt.strip():
-            return jsonify(error="FLUX 3 Klein distilled does not support a negative prompt. Remove it or select SD 1.5 / SDXL."), 400
-        if not 4 <= steps <= 16:
-            return jsonify(error="FLUX 3 Klein supports 4–16 inference steps."), 400
+            return jsonify(error="FLUX.2 Klein 4B distilled does not accept a negative prompt. Clear it or select SD 1.5 / SDXL."), 400
+        if steps != 4:
+            return jsonify(error="FLUX.2 Klein 4B distilled uses a fixed 4-step generation schedule."), 400
     elif not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
         return jsonify(error="Strength must be 0.20–0.95 and steps must be 5–25."), 400
     profile = get_profile(profile_id) if profile_id else None
@@ -2642,15 +2642,15 @@ def generate():
         ), 400
     if (face_angle or face_expression) and not profile_id:
         return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
-    if model_family == "flux3_klein" and backend == "cpu":
-        return jsonify(error="FLUX 3 Klein requires a CUDA GPU. Enable GPU acceleration and select a local or remote GPU worker."), 400
+    if model_family == "flux2_klein" and backend == "cpu":
+        return jsonify(error="FLUX.2 Klein requires a CUDA GPU. Enable GPU acceleration and select a local or remote GPU worker."), 400
     if face_angle:
         prompt += ", head angle: " + angle_prompts[face_angle]
     if face_expression:
         prompt += ", facial expression: " + expression_prompts[face_expression]
     body_model_fallback = False
     upsampled_prompt = ""
-    if model_family == "flux3_klein" and use_global_body_model:
+    if model_family == "flux2_klein" and use_global_body_model:
         use_global_body_model = False
         body_model_fallback = True
     if use_global_body_model:
@@ -2679,7 +2679,7 @@ def generate():
             with Image.open(image_file.stream) as source:
                 init_image = ImageOps.exif_transpose(source).convert("RGB")
                 init_image.load()
-            if model_family != "flux3_klein":
+            if model_family != "flux2_klein":
                 init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
@@ -2723,9 +2723,6 @@ def generate():
                 response = runpod_request(
                     "POST", "/api/remote/generate", data=data, files=files, timeout=(20, 600)
                 )
-                if model_family == "flux3_klein":
-                    from urllib.parse import unquote
-                    upsampled_prompt = unquote(response.headers.get("X-FLUX3-Upsampled-Prompt", ""))
             except RuntimeError as exc:
                 _set_generation_progress(
                     task_id, asset_type="image", backend="cloud_gpu", status="failed", progress=0,
@@ -2780,23 +2777,22 @@ def generate():
                 task_id, asset_type="image", backend=backend, status="running", progress=3,
                 total_steps=steps, stage="loading_model", message="Loading the image model and selected face…",
             )
-            if model_family == "flux3_klein":
-                from flux3_engine import generate_flux3_image
-                model_source = model_configuration("flux3_klein")["source"]
+            if model_family == "flux2_klein":
+                from flux2_engine import generate_flux2_image
+                model_source = model_configuration("flux2_klein")["source"]
                 _set_generation_progress(
                     task_id, asset_type="image", backend=backend, status="running", progress=5,
-                    total_steps=steps, stage="loading_model", message="Loading FLUX 3 Klein and its prompt upsampler…",
+                    total_steps=steps, stage="loading_model", message="Loading FLUX.2 Klein 4B…",
                 )
-                flux_output = generate_flux3_image(
-                    prompt, image=init_image, seed=seed, steps=steps,
+                flux_output = generate_flux2_image(
+                    prompt, image=init_image, seed=seed,
                     width=width, height=height, source=model_source,
                 )
                 result = flux_output["image"]
-                upsampled_prompt = flux_output["upsampled_prompt"]
                 _set_generation_progress(
                     task_id, asset_type="image", backend=backend, status="running", progress=95,
                     current_step=steps, total_steps=steps, stage="finalizing",
-                    message="FLUX 3 generation finished; finalizing the image and expanded model caption…",
+                    message=f"FLUX.2 inference complete · {flux_output['prompt_token_count']} prompt tokens; finalizing image…",
                 )
             else:
                 pipeline = _load_cpu_or_gpu_pipeline(
