@@ -11,6 +11,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from generation_contracts import ensure_token_capacity
+
 _LOG = logging.getLogger(__name__)
 _PIPELINE = None
 _COMPONENTS_MANAGER = None
@@ -97,14 +99,31 @@ def generate_flux3_image(
     import torch
 
     pipeline = load_flux3_pipeline(source, device="cuda")
+    # The distilled ModularPipeline documents an 8192-token prompt-encoder
+    # limit and truncates longer inputs. Preflight with its actual PUP processor
+    # so we can reject oversized prompts instead of letting the model clip them.
+    processor = getattr(pipeline, "prompt_upsampler_processor", None)
+    if processor is None:
+        components = getattr(pipeline, "components", None)
+        if isinstance(components, dict):
+            processor = components.get("prompt_upsampler_processor")
+    if processor is None:
+        raise RuntimeError(
+            "Could not inspect the FLUX prompt-processor token capacity on this Diffusers build. "
+            "Generation was stopped to avoid silently truncating your prompt."
+        )
+    encoded = processor(text=clean_prompt, return_tensors="pt", truncation=False)
+    input_ids = encoded.get("input_ids") if hasattr(encoded, "get") else None
+    if input_ids is None:
+        raise RuntimeError("The FLUX prompt processor did not return input_ids; prompt length could not be verified.")
+    token_count = int(input_ids.shape[-1])
+    ensure_token_capacity(token_count, 8192, "FLUX 3 prompt")
+
     kwargs: dict[str, Any] = {
         "prompt": clean_prompt,
         "generator": torch.Generator(device="cuda").manual_seed(int(seed)),
         "num_inference_steps": int(steps),
         "output": ["images", "prompt"],
-        # The text encoder supports long captions; do not use the short CLIP
-        # context defaults from SD pipelines. Oversized requests should be
-        # rejected by the model/tokenizer rather than clipped by this app.
         "max_sequence_length": 8192,
     }
     if image is not None:
@@ -129,7 +148,9 @@ def generate_flux3_image(
     images = output["images"]
     if not images:
         raise RuntimeError("FLUX 3 Klein returned no image.")
-    expanded_prompt = output.get("prompt") or clean_prompt
+    expanded_prompt = str(output.get("prompt") or "").strip()
+    if not expanded_prompt:
+        raise RuntimeError("FLUX 3 Klein did not return its expanded caption; the output was not accepted as complete.")
     return {
         "image": images[0],
         "upsampled_prompt": str(expanded_prompt),
