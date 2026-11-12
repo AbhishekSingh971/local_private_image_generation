@@ -1316,6 +1316,7 @@
       const generation=asset.generation_metadata||{};
       const sampling=generation.sampling||{};
       const upscaling=generation.upscaling||{};
+      const faceRestoration=generation.face_restoration||{};
       const quality=generation.quality||{};
       const identity=quality.identity_similarity||{};
       const videoIdentity=quality.identity_consistency||{};
@@ -1326,6 +1327,7 @@
         Number.isInteger(sampling.seed)?"Seed "+sampling.seed:"",
         Number.isInteger(sampling.steps)?sampling.steps+" steps":"",
         upscaling.enabled?"AI upscale: "+(upscaling.status||"requested"):"",
+        faceRestoration.enabled?"Face restoration: "+(faceRestoration.status||"requested"):"",
         quality.status&&quality.status!=="not_assessed"?"Quality: "+quality.status:"",
         Number.isFinite(identity.cosine_similarity)?"Identity similarity: "+identity.cosine_similarity.toFixed(3):"",
         Number.isFinite(videoIdentity.mean_cosine_similarity)?"Video identity mean: "+videoIdentity.mean_cosine_similarity.toFixed(3):"",
