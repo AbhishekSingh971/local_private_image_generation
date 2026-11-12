@@ -123,3 +123,11 @@ def test_training_selector_rejects_duplicate_names(tmp_path):
 
     with pytest.raises(ValueError, match="must be unique"):
         select_approved_training_files(tmp_path, ["same.jpg", "same.jpg"], {".jpg"})
+
+
+
+def test_training_selector_rejects_windows_path_traversal(tmp_path):
+    from training_approval import select_approved_training_files
+
+    with pytest.raises(ValueError, match="plain file basenames"):
+        select_approved_training_files(tmp_path, [r"..\\outside.jpg"], {".jpg"})
