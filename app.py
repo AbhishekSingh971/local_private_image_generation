@@ -34,6 +34,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
+from generation_contracts import preserve_generation_text
 from face_profiles import (
     DATA_DIR,
     LORA_DIR,
@@ -410,12 +411,8 @@ def _resolve_compute_backend(form) -> str:
 
 
 def _clean_generation_text(value: str, field_name: str) -> str:
-    """Preserve full user text; HTTP request-size limits protect the service."""
-    text = value if isinstance(value, str) else str(value or "")
-    text = text.strip()
-    if "\\x00" in text:
-        raise ValueError(f"{field_name} contains an unsupported null character.")
-    return text
+    """Preserve the entire prompt; no application-level character truncation."""
+    return preserve_generation_text(value, field_name)
 
 
 def _clean_prompt(value: str, field_name: str, limit: int) -> str:
@@ -2627,10 +2624,10 @@ def generate():
             raise ValueError("Invalid generation task ID. Refresh the page and retry.")
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
-    if not prompt:
+    if not prompt.strip():
         return jsonify(error="Enter a prompt describing the image you want."), 400
     if model_family == "flux3_klein":
-        if negative_prompt:
+        if negative_prompt.strip():
             return jsonify(error="FLUX 3 Klein distilled does not support a negative prompt. Remove it or select SD 1.5 / SDXL."), 400
         if not 4 <= steps <= 16:
             return jsonify(error="FLUX 3 Klein supports 4–16 inference steps."), 400
