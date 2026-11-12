@@ -195,6 +195,20 @@ Model access: the model is published on Hugging Face. Follow the repository's cu
 Model card: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
 Official inference examples: https://github.com/black-forest-labs/flux2
 
+## Face-photo approval before training
+
+Face-photo quality validation and human training approval are separate states:
+
+- Automatic validation records pose/quality observations such as `passed` or `needs_review`.
+- Human review records `pending`, `approved`, or `rejected`.
+- New uploads and replaced/relabeled photos return to `pending`.
+- The Training datasets page exposes Approve, Reject, and Reopen review controls.
+- Profile LoRA training requires at least five explicitly approved photos. Both local and remote worker training receive an exact approved-filename allowlist; the trainer refuses profile training without it.
+- While a profile is training, photo approval, replacement, deletion and caption edits are locked so the running job uses a stable dataset snapshot.
+- Existing ungrouped photos are migrated into a reviewable manual-upload group. The review workflow requires PostgreSQL-backed photo records.
+
+Only the photos approved when the training job starts are included. Pending and rejected photos are never passed to the profile trainer.
+
 ## Training details
 
 - Training script: `train_face_lora.py`
