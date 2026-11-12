@@ -195,6 +195,19 @@ Model access: the model is published on Hugging Face. Follow the repository's cu
 Model card: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
 Official inference examples: https://github.com/black-forest-labs/flux2
 
+## Optional face restoration
+
+The image form includes an optional GFPGAN face-restoration stage after base generation and optional x4 super-resolution. It is deliberately not bundled into the shared requirements because GFPGAN dependencies can constrain PyTorch versions.
+
+To enable it on a local GPU host or remote worker:
+
+1. Install a GFPGAN release compatible with the host's existing PyTorch, TorchVision, CUDA and Python versions (for example, in the GPU worker image rather than a lightweight web-only environment).
+2. Supply a legally usable GFPGAN checkpoint outside the repository.
+3. Set `GFPGAN_MODEL_PATH` on every host that performs restoration.
+4. Enable **AI face restoration** in the image form and adjust fidelity from 0 to 1.
+
+The stage preserves the original canvas dimensions. It is optional and may change identity details; it is not an identity-preservation guarantee. If the package/checkpoint is missing or inference fails, the pre-restoration image is saved and an explicit warning is returned. Compare original and restored results, and use the identity similarity evaluator when configured.
+
 ## AI x4 image upscaling
 
 Image generation has an optional **AI x4 super-resolution** stage. It uses Diffusers' `StableDiffusionUpscalePipeline` with the configurable checkpoint `IMAGE_UPSCALER_MODEL_ID` (default: `stabilityai/stable-diffusion-x4-upscaler`). It is separate from the output-resolution Lanczos resize.
