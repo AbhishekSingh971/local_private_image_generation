@@ -789,7 +789,7 @@ def _protect_private_workspace():
     if not APP_ACCESS_GATE_ENABLED:
         return None
     if not session.get("private_workspace_authenticated"):
-        if request.path.startswith("/api/") or request.is_json:
+        if request.path.startswith("/api/") or request.is_json or request.method not in {"GET", "HEAD"}:
             return jsonify(error="Authentication required. Sign in to the private workspace."), 401
         return redirect(url_for("login", next=request.full_path.rstrip("?")))
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _request_is_same_origin():
