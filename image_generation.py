@@ -1,4 +1,4 @@
-"""Prompt enhancement and size presets for Stable Diffusion 1.5.
+"""Prompt enhancement and size presets for supported diffusion model families.
 
 The user's prompt is authoritative. Explicit full-body framing requests must remain
 active for reference-image generation; img2img strength still controls how strongly
@@ -90,9 +90,14 @@ def resolve_image_dimensions(aspect_ratio: str = "portrait", model_family: str =
             "square": (1024, 1024),
             "landscape": (1216, 832),
         },
+        "flux2_klein": {
+            "portrait": (832, 1216),
+            "square": (1024, 1024),
+            "landscape": (1216, 832),
+        },
     }
     if family not in dimensions:
-        raise ValueError("Image model family must be sd15 or sdxl.")
+        raise ValueError("Image model family must be sd15, sdxl or flux2_klein.")
     try:
         return dimensions[family][key]
     except KeyError as exc:
