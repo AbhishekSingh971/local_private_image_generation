@@ -2249,11 +2249,15 @@ def api_add_face_photos(profile_id):
         if not images:
             return jsonify(error="Choose one or more photos to upload."), 400
         labels = request.form.getlist("labels")
+        if not group_id:
+            group = create_face_dataset_group(
+                profile_id, "Manual uploads " + datetime.now().strftime("%Y-%m-%d %H:%M"),
+                expected_count=min(max(len(images), 1), 30), dataset_type="face_angles",
+            )
+            group_id = group["id"]
         for index, image in enumerate(images):
-            label = None
-            if group_id:
-                label = (labels[index].strip() if index < len(labels) else "") or f"Additional photo {index + 1}"
-            group_type = group.get("dataset_type", "face_angles") if group_id else "face_angles"
+            label = (labels[index].strip() if index < len(labels) else "") or f"Additional photo {index + 1}"
+            group_type = group.get("dataset_type", "face_angles")
             if group_type == "body_type":
                 photo_kind = "body"
             elif group_type == "expressions":
@@ -2268,7 +2272,11 @@ def api_add_face_photos(profile_id):
                 profile_id, image, group_id=group_id, angle_label=label, photo_kind=photo_kind
             )
         if group_id:
-            update_face_dataset_group(group_id, error="")
+            update_face_dataset_group(
+                group_id, status="completed" if group.get("status") == "generating" else None,
+                generated_count=(group.get("generated_count", 0) + len(images)) if group.get("status") == "generating" else None,
+                error="",
+            )
         return jsonify(status="saved", profile=get_profile(profile_id), added=len(images), group_id=group_id)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
