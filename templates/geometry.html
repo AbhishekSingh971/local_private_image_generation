@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Geometry analysis · Private Face Studio{% endblock %}
+{% block page_heading %}Face and body geometry{% endblock %}
+{% block content %}
+<section class="panel geometry-panel" id="geometryPage">
+  <div class="eyebrow">2.5D LANDMARK ANALYSIS</div>
+  <h1>Geometry analysis</h1>
+  <p class="field-help">Extract normalized MediaPipe face-mesh and body-pose landmarks from one image. This is a geometry inspection tool, not FLAME or SMPL-X reconstruction. The uploaded image is processed in memory and is not saved to the library.</p>
+  <label for="geometryImage">Choose an image</label>
+  <input id="geometryImage" type="file" accept="image/png,image/jpeg,image/webp" required>
+  <button id="analyzeGeometry" type="button">Analyze face and body landmarks</button>
+  <div id="geometryStatus" class="status" role="status" aria-live="polite">No image analyzed.</div>
+  <pre id="geometryResult" class="diagnostics-json">Geometry results will appear here.</pre>
+</section>
+{% endblock %}
