@@ -3214,7 +3214,7 @@ def generate_video():
             raise ValueError("Invalid generation task ID. Refresh the page and retry.")
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid video settings."), 400
-    if not prompt:
+    if not prompt.strip():
         return jsonify(error="Enter a video prompt."), 400
     if not 5 <= steps <= 20 or frames not in (8, 16, 24):
         return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
