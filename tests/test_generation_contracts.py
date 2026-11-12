@@ -89,3 +89,37 @@ def test_flux2_chat_template_overflow_is_rejected():
     pipeline.tokenizer_max_length = 3
     with pytest.raises(ValueError, match="FLUX.2 prompt"):
         count_flux2_prompt_tokens(pipeline, "a cat")
+
+
+
+def test_training_selector_includes_only_approved_photos(tmp_path):
+    from training_approval import select_approved_training_files
+
+    (tmp_path / "approved-a.jpg").write_bytes(b"a")
+    (tmp_path / "approved-b.jpg").write_bytes(b"b")
+    (tmp_path / "rejected.jpg").write_bytes(b"x")
+    selected = select_approved_training_files(
+        tmp_path, ["approved-b.jpg", "approved-a.jpg"], {".jpg", ".jpeg"}
+    )
+    assert [path.name for path in selected] == ["approved-a.jpg", "approved-b.jpg"]
+
+
+def test_training_selector_rejects_path_traversal(tmp_path):
+    from training_approval import select_approved_training_files
+
+    with pytest.raises(ValueError, match="plain file basenames"):
+        select_approved_training_files(tmp_path, ["../outside.jpg"], {".jpg"})
+
+
+def test_training_selector_rejects_missing_approved_photo(tmp_path):
+    from training_approval import select_approved_training_files
+
+    with pytest.raises(ValueError, match="missing from the profile dataset"):
+        select_approved_training_files(tmp_path, ["missing.jpg"], {".jpg"})
+
+
+def test_training_selector_rejects_duplicate_names(tmp_path):
+    from training_approval import select_approved_training_files
+
+    with pytest.raises(ValueError, match="must be unique"):
+        select_approved_training_files(tmp_path, ["same.jpg", "same.jpg"], {".jpg"})
