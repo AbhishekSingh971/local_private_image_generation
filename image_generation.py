@@ -91,9 +91,9 @@ def resolve_image_dimensions(aspect_ratio: str = "portrait", model_family: str =
             "landscape": (1216, 832),
         },
         "flux3_klein": {
-            "portrait": (832, 1216),
+            "portrait": (1024, 1536),
             "square": (1024, 1024),
-            "landscape": (1216, 832),
+            "landscape": (1536, 1024),
         },
     }
     if family not in dimensions:
