@@ -90,14 +90,14 @@ def resolve_image_dimensions(aspect_ratio: str = "portrait", model_family: str =
             "square": (1024, 1024),
             "landscape": (1216, 832),
         },
-        "flux3_klein": {
+        "flux2_klein": {
             "portrait": (1024, 1536),
             "square": (1024, 1024),
             "landscape": (1536, 1024),
         },
     }
     if family not in dimensions:
-        raise ValueError("Image model family must be sd15, sdxl or flux3_klein.")
+        raise ValueError("Image model family must be sd15, sdxl or flux2_klein.")
     try:
         return dimensions[family][key]
     except KeyError as exc:
