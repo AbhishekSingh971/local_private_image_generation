@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}System diagnostics · Private Face Studio{% endblock %}
+{% block page_heading %}System diagnostics{% endblock %}
+{% block content %}
+<section class="panel diagnostics-panel" id="diagnosticsPage">
+  <div class="section-heading">
+    <div><div class="eyebrow">OPERATIONS</div><h1>System diagnostics</h1><p class="field-help">Check database, storage, GPU, worker and background-job health. This page does not expose prompts, face photos, profile names or secrets.</p></div>
+    <button type="button" class="secondary-button" id="refreshDiagnostics">Refresh diagnostics</button>
+  </div>
+  <div id="diagnosticsStatus" class="status" role="status" aria-live="polite">Loading diagnostics…</div>
+  <div id="diagnosticsSummary" class="diagnostics-grid"></div>
+  <details><summary>Runtime details</summary><pre id="diagnosticsDetails" class="diagnostics-json">No diagnostics loaded.</pre></details>
+</section>
+{% endblock %}
