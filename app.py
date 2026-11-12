@@ -2387,6 +2387,11 @@ def api_add_generated_photos(profile_id):
 
 
 
+@app.get("/diagnostics")
+def diagnostics_page():
+    return render_template("diagnostics.html", active_page="diagnostics")
+
+
 @app.get("/api/system/diagnostics")
 def system_diagnostics():
     """Sanitized operational diagnostics for authenticated workspace administrators."""
