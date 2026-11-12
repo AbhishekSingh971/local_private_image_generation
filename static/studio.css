@@ -202,3 +202,9 @@ button.danger-button{background:#3c1f2a;border-color:#643345;color:#ffd9df}
 .training-approval-badge.approved{background:#173b34;color:#a4f0cf;border:1px solid #28584e}
 .training-approval-badge.rejected{background:#48272d;color:#ffb8bf;border:1px solid #783b46}
 .dataset-group-photo .photo-validation-details{font-size:10px;line-height:1.4;color:#aebbd1;overflow-wrap:anywhere}
+
+
+.model-version-panel{display:grid;gap:10px;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--panel-soft,rgba(127,127,127,.06))}
+.model-version-item{display:grid;gap:8px;padding:10px;border:1px solid var(--border);border-radius:10px}
+.model-version-summary{display:grid;gap:4px}
+.model-version-summary span{font-size:.78rem;color:var(--muted)}
