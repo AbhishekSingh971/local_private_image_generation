@@ -6,6 +6,8 @@ import json
 import os
 import re
 import subprocess
+import shutil
+import tempfile
 import sys
 import threading
 import time
@@ -35,6 +37,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
+from model_artifacts import safe_extract_lora_bundle, sha256_bytes
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from generation_contracts import preserve_generation_text
 from face_profiles import (
@@ -89,6 +92,9 @@ from studio_db import (
     update_face_photo_approval,
     list_face_photo_records,
     get_face_model_bundle,
+    get_face_model_version,
+    list_face_model_versions,
+    save_face_model_version,
     list_asset_filenames,
     save_face_model_bundle,
     delete_asset,
@@ -669,10 +675,23 @@ def _persist_face_model_bundle(profile_id: str, backend: str, bundle_data: bytes
                 archive.write(item, arcname=item.relative_to(folder).as_posix())
         bundle_data = buffer.getvalue()
         file_count = len(files)
-    return save_face_model_bundle(
-        profile_id, backend, f"{profile_id}-{backend}-lora.zip",
-        bundle_data, int(file_count or 1),
+    filename = f"{profile_id}-{backend}-lora.zip"
+    approved_count = sum(
+        1 for record in list_face_photo_records(profile_id)
+        if record.get("training_approval_status") == "approved"
     )
+    version = save_face_model_version(
+        profile_id, backend, filename, bundle_data, int(file_count or 1),
+        metadata={
+            "model_family": "sd15",
+            "trainer": "train_face_lora.py",
+            "approved_photo_count": approved_count,
+        },
+    )
+    latest = save_face_model_bundle(
+        profile_id, backend, filename, bundle_data, int(file_count or 1),
+    )
+    return {"latest": latest, "version": version}
 
 
 def _approved_profile_training_paths(profile_id: str) -> list[Path]:
@@ -2453,6 +2472,77 @@ def api_train_face_profile(profile_id):
         [path.name for path in approved_paths],
     )
     return jsonify(status="running", backend="local", job_id=job_id, message="Local face training has started."), 202
+
+
+@app.get("/api/face-profiles/<profile_id>/model-versions")
+def api_face_model_versions(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+        if not get_profile(profile_id):
+            return jsonify(error="Face profile not found."), 404
+        backend = (request.args.get("backend") or "").strip().lower() or None
+        versions = list_face_model_versions(profile_id, backend=backend)
+        return jsonify(profile_id=profile_id, versions=versions)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not list face-model versions")
+        return jsonify(error="Face-model version history is unavailable. Check PostgreSQL connectivity."), 503
+
+
+@app.post("/api/face-profiles/<profile_id>/model-versions/<version_id>/restore")
+def api_restore_face_model_version(profile_id, version_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+        profile = get_profile(profile_id)
+        if not profile:
+            return jsonify(error="Face profile not found."), 404
+        if (
+            profile.get("local_training_state") == "running"
+            or profile.get("runpod_training_state") == "running"
+        ):
+            return jsonify(error="Cannot restore a model while face training is running."), 409
+        version = get_face_model_version(profile_id, version_id)
+        if not version:
+            return jsonify(error="Face-model version not found."), 404
+        if version.get("backend") != "local":
+            return jsonify(error="Only local model versions can be restored from this application process. Restore cloud versions through their GPU worker."), 400
+        bundle_data = version.get("bundle_data") or b""
+        if sha256_bytes(bundle_data) != version.get("sha256"):
+            return jsonify(error="Stored model bundle checksum failed. The current model was not changed."), 409
+        temp_root = Path(tempfile.mkdtemp(prefix=f"restore-{profile_id}-", dir=str(LORA_DIR)))
+        staging = temp_root / "staging"
+        backup = temp_root / "previous"
+        target = model_path(profile_id)
+        try:
+            safe_extract_lora_bundle(bundle_data, staging)
+            if target.exists():
+                target.rename(backup)
+            try:
+                staging.rename(target)
+            except Exception:
+                if backup.exists() and not target.exists():
+                    backup.rename(target)
+                raise
+            shutil.rmtree(backup, ignore_errors=True)
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+        update_profile(
+            profile_id, local_model_ready=True,
+            local_training_state="completed", local_training_error=None,
+        )
+        return jsonify(
+            status="restored", profile=get_profile(profile_id),
+            restored_version={
+                "id": version["id"], "version_number": version["version_number"],
+                "sha256": version["sha256"],
+            },
+        )
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not restore face-model version")
+        return jsonify(error="Face-model version restore failed. The previous model was preserved when possible."), 500
 
 
 @app.get("/api/face-profiles/<profile_id>/train-status")
