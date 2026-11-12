@@ -219,21 +219,19 @@
                 const name=document.createElement("strong");name.textContent=(version.backend==="local"?"Local":"Cloud")+" · v"+version.version_number;
                 const detail=document.createElement("span");detail.textContent=new Date(version.created_at).toLocaleString()+" · "+(version.file_count||0)+" files · SHA-256 "+String(version.sha256||"").slice(0,12);
                 summary.append(name,detail);item.appendChild(summary);
-                if(version.backend==="local"){
-                  const restore=document.createElement("button");restore.type="button";restore.className="secondary-button";restore.textContent="Restore this version";
-                  restore.addEventListener("click",async()=>{
-                    if(!confirm("Restore local face model version "+version.version_number+" for "+profile.name+"? The current local LoRA will be replaced."))return;
-                    restore.disabled=true;restore.textContent="Restoring…";
-                    try {
-                      await readJson(await fetch("/api/face-profiles/"+profile.id+"/model-versions/"+version.id+"/restore",{method:"POST"}));
-                      await refreshProfiles();historyPanel.hidden=true;
-                      alert("Face model version "+version.version_number+" restored.");
-                    } catch(error){alert(error.message);restore.disabled=false;restore.textContent="Restore this version";}
-                  });
-                  item.appendChild(restore);
-                } else {
-                  const note=document.createElement("p");note.className="field-help";note.textContent="Cloud version archived. Restore is available through the configured GPU worker only.";item.appendChild(note);
-                }
+                const restore=document.createElement("button");restore.type="button";restore.className="secondary-button";
+                restore.textContent=version.backend==="local"?"Restore local version":"Restore cloud version";
+                restore.addEventListener("click",async()=>{
+                  const target=version.backend==="local"?"local":"cloud GPU";
+                  if(!confirm("Restore "+target+" face model version "+version.version_number+" for "+profile.name+"? The current "+target+" LoRA will be replaced."))return;
+                  restore.disabled=true;restore.textContent="Restoring…";
+                  try {
+                    await readJson(await fetch("/api/face-profiles/"+profile.id+"/model-versions/"+version.id+"/restore",{method:"POST"}));
+                    await refreshProfiles();historyPanel.hidden=true;
+                    alert("Face model version "+version.version_number+" restored to "+target+".");
+                  } catch(error){alert(error.message);restore.disabled=false;restore.textContent=version.backend==="local"?"Restore local version":"Restore cloud version";}
+                });
+                item.appendChild(restore);
                 historyPanel.appendChild(item);
               });
             }
