@@ -313,3 +313,34 @@ def test_video_identity_evaluator_is_optional_without_model(monkeypatch, tmp_pat
     monkeypatch.delenv("FACE_IDENTITY_ONNX_MODEL", raising=False)
     report = evaluate_video_identity(tmp_path / "not-created.mp4", [])
     assert report["status"] == "not_configured"
+
+
+
+def test_structured_prompt_preserves_original_and_appends_only_selected_controls():
+    from prompt_compiler import build_structured_prompt
+
+    original = "A woman standing beside a lake at sunrise."
+    compiled = build_structured_prompt(original, {
+        "style": "cinematic",
+        "lighting": "golden hour",
+        "pose": "standing with hands relaxed at sides",
+    })
+    assert compiled.startswith(original)
+    assert "Visual style: cinematic." in compiled
+    assert "Lighting: golden hour." in compiled
+    assert "Pose: standing with hands relaxed at sides." in compiled
+    assert "Body shape:" not in compiled
+
+
+def test_structured_prompt_rejects_unsupported_select_values():
+    from prompt_compiler import build_structured_prompt
+
+    with pytest.raises(ValueError, match="Unsupported visual style"):
+        build_structured_prompt("Portrait", {"style": "make it amazing"})
+
+
+def test_structured_prompt_does_not_change_prompt_without_controls():
+    from prompt_compiler import build_structured_prompt
+
+    original = "  Keep this exact prompt  "
+    assert build_structured_prompt(original, {}) == original
