@@ -243,3 +243,12 @@ def test_backup_encryption_key_accepts_64_hex_characters():
     from backup_postgres import load_encryption_key
 
     assert load_encryption_key("ab" * 32) == bytes.fromhex("ab" * 32)
+
+
+
+def test_disabled_upscaling_ignores_irrelevant_step_value():
+    from image_upscaling import resolve_upscale_options
+
+    options = resolve_upscale_options(False, "not-used")
+    assert options["enabled"] is False
+    assert options["steps"] == 20
