@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
+from private_data_crypto import decrypt_sensitive_bytes, encrypt_sensitive_bytes, is_encrypted
 from psycopg.rows import dict_row
 from psycopg import sql
 from psycopg.errors import UniqueViolation
@@ -339,7 +340,7 @@ def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", gro
     _run("""INSERT INTO face_photos(id,profile_id,filename,mime_type,byte_size,image_data,group_id,angle_label,photo_kind,
         validation_status,validation_message,training_approval_status,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch,created_at)
         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())""",
-        (photo_id,profile_id,Path(filename).name,mime_type,len(image_data),image_data,group_id,(angle_label or "")[:80] or None,
+        (photo_id,profile_id,Path(filename).name,mime_type,len(image_data),encrypt_sensitive_bytes(image_data),group_id,(angle_label or "")[:80] or None,
          photo_kind,validation_status,(validation_message or "")[:1200] or None,training_approval_status,(training_caption or "")[:1200],
          target_yaw,target_pitch,actual_yaw,actual_pitch))
     return photo_id
@@ -621,6 +622,8 @@ def _photo_dict(r,include_bytes=False):
     keys=("id","profile_id","filename","mime_type","byte_size","group_id","angle_label","photo_kind","validation_status",
           "validation_message","training_approval_status","training_caption","target_yaw","target_pitch","actual_yaw","actual_pitch")
     d={k:r.get(k) for k in keys}
+    if d.get("image_data") is not None:
+        d["image_data"] = decrypt_sensitive_bytes(bytes(d["image_data"]))
     d["validation_status"]=d.get("validation_status") or "not_checked"
     d["training_approval_status"]=d.get("training_approval_status") or "pending"
     d["training_caption"]=d.get("training_caption") or ""
@@ -678,7 +681,7 @@ def save_face_model_bundle(profile_id,backend,filename,bundle_data,file_count):
         VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(profile_id,backend) DO UPDATE SET filename=EXCLUDED.filename,
         file_count=EXCLUDED.file_count,bundle_size=EXCLUDED.bundle_size,bundle_data=EXCLUDED.bundle_data,updated_at=now()
         RETURNING id,profile_id,backend,filename,file_count,bundle_size,updated_at""",
-        (uuid.uuid4().hex,profile_id,backend,name,int(file_count),len(bundle_data),bundle_data))
+        (uuid.uuid4().hex,profile_id,backend,name,int(file_count),len(bundle_data),encrypt_sensitive_bytes(bundle_data)))
     return dict(r,updated_at=_iso(r["updated_at"]))
 
 
@@ -704,7 +707,7 @@ def save_face_model_version(profile_id, backend, filename, bundle_data, file_cou
             ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
             RETURNING id,profile_id,backend,version_number,filename,file_count,bundle_size,sha256,metadata,created_at""",
             (uuid.uuid4().hex,profile_id,backend,version_number,Path(filename).name,int(file_count),
-             len(bundle_data),digest,metadata_json,bundle_data),
+             len(bundle_data),digest,metadata_json,encrypt_sensitive_bytes(bundle_data)),
         )
         row = cur.fetchone()
     return dict(row, created_at=_iso(row["created_at"]))
@@ -746,7 +749,7 @@ def get_face_model_version(profile_id, version_id):
     )
     if not row:
         return None
-    result=dict(row,created_at=_iso(row.get("created_at")),bundle_data=bytes(row["bundle_data"]))
+    result=dict(row,created_at=_iso(row.get("created_at")),bundle_data=decrypt_sensitive_bytes(bytes(row["bundle_data"])))
     if isinstance(result.get("metadata"), str):
         try: result["metadata"]=json.loads(result["metadata"])
         except (TypeError,ValueError): result["metadata"]={}
@@ -756,7 +759,7 @@ def get_face_model_version(profile_id, version_id):
 def get_face_model_bundle(profile_id,backend):
     ensure_schema(); r=_one("SELECT * FROM face_model_artifacts WHERE profile_id=%s AND backend=%s",(profile_id,backend))
     if not r:return None
-    r=dict(r,updated_at=_iso(r["updated_at"]),bundle_data=bytes(r["bundle_data"])); return r
+    r=dict(r,updated_at=_iso(r["updated_at"]),bundle_data=decrypt_sensitive_bytes(bytes(r["bundle_data"]))); return r
 
 
 def _asset_dict(r,include_content=False):
@@ -770,7 +773,7 @@ def _asset_dict(r,include_content=False):
             metadata = {}
     d["generation_metadata"] = metadata if isinstance(metadata, dict) else {}
     d.update(created_at=_iso(r.get("created_at")),updated_at=_iso(r.get("updated_at")))
-    if include_content:d["media_data"]=bytes(r["media_data"])
+    if include_content:d["media_data"]=decrypt_sensitive_bytes(bytes(r["media_data"]))
     return d
 
 
@@ -794,7 +797,7 @@ def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",nega
         backend,generation_mode,generation_metadata,media_size,media_data,created_at,updated_at)
         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,now(),now()) RETURNING *""",
         (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,full_prompt,full_negative_prompt,original_prompt,upsampled_prompt,family,profile_id,profile_name,
-         backend[:32],generation_mode[:32],metadata_json,len(media_data),media_data))
+         backend[:32],generation_mode[:32],metadata_json,len(media_data),encrypt_sensitive_bytes(media_data)))
     return _asset_dict(r)
 
 
