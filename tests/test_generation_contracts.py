@@ -155,3 +155,46 @@ def test_upscale_options_reject_non_integer_steps():
 
     with pytest.raises(ValueError, match="must be an integer"):
         resolve_upscale_options(True, "many")
+
+
+
+def test_model_bundle_safe_extract_restores_lora(tmp_path):
+    import io
+    import zipfile
+    from model_artifacts import safe_extract_lora_bundle, sha256_bytes
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("pytorch_lora_weights.safetensors", b"weights")
+        archive.writestr("adapter_config.json", "{}")
+    payload = buffer.getvalue()
+    destination = tmp_path / "restored"
+    names = safe_extract_lora_bundle(payload, destination)
+    assert "pytorch_lora_weights.safetensors" in names
+    assert (destination / "pytorch_lora_weights.safetensors").read_bytes() == b"weights"
+    assert len(sha256_bytes(payload)) == 64
+
+
+def test_model_bundle_safe_extract_rejects_path_traversal(tmp_path):
+    import io
+    import zipfile
+    from model_artifacts import safe_extract_lora_bundle
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("../outside.txt", "bad")
+        archive.writestr("pytorch_lora_weights.safetensors", b"weights")
+    with pytest.raises(ValueError, match="unsafe file path"):
+        safe_extract_lora_bundle(buffer.getvalue(), tmp_path / "restored")
+
+
+def test_model_bundle_safe_extract_rejects_missing_lora_weights(tmp_path):
+    import io
+    import zipfile
+    from model_artifacts import safe_extract_lora_bundle
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("readme.txt", "not a model")
+    with pytest.raises(ValueError, match="does not contain"):
+        safe_extract_lora_bundle(buffer.getvalue(), tmp_path / "restored")
