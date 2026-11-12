@@ -975,7 +975,7 @@
     if(step){
       step.textContent=Number(data.total_steps)>0
         ? "Denoising step "+Number(data.current_step||0)+" of "+Number(data.total_steps)
-        : (data.backend==="cloud_gpu"||data.backend==="runpod"?"GHive / Colab GPU":"Local compute");
+        : (data.backend==="cloud_gpu"||data.backend==="runpod"?"Remote GPU":"Local compute");
       if(data.status==="completed")step.textContent="All steps finished · Saved to your library";
       if(data.status==="failed")step.textContent="The task ended before completion.";
     }
@@ -1023,6 +1023,51 @@
   });
   const generationForm = $("#generationForm");
   const finalPromptInput = $("#finalPrompt");
+  const modelFamilySelect = $("#imageModelFamily");
+  const negativePromptInput = $("#negativePrompt");
+  const strengthGroup = $("#strengthGroup");
+  const faceProfileInput = $("#faceProfile");
+  const faceAngleGroup = $("#faceAngleGroup");
+  const faceExpressionGroup = $("#faceExpressionGroup");
+  const negativePromptHelp = $("#negativePromptHelp");
+  const modelFamilyHelp = $("#modelFamilyHelp");
+  const upsampledPromptDetails = $("#upsampledPromptDetails");
+  const upsampledPromptPreview = $("#upsampledPromptPreview");
+
+  function updateImageModelControls() {
+    const family = modelFamilySelect?.value || "sd15";
+    const isFlux3 = family === "flux3_klein";
+    const stepsInput = $("#steps");
+    if (stepsInput) {
+      stepsInput.min = isFlux3 ? "4" : "5";
+      stepsInput.max = isFlux3 ? "16" : "25";
+      if (isFlux3) stepsInput.value = "16";
+      else if (Number(stepsInput.value) > 25 || Number(stepsInput.value) < 5) stepsInput.value = "25";
+    }
+    if (negativePromptInput) negativePromptInput.disabled = isFlux3;
+    if (strengthGroup) strengthGroup.hidden = isFlux3;
+    if (faceProfileInput) faceProfileInput.disabled = isFlux3;
+    if (faceAngleGroup) faceAngleGroup.hidden = isFlux3;
+    if (faceExpressionGroup) faceExpressionGroup.hidden = isFlux3;
+    if (negativePromptHelp) negativePromptHelp.hidden = !isFlux3;
+    if (modelFamilyHelp) {
+      if (isFlux3) {
+        modelFamilyHelp.textContent = "FLUX 3 Klein is the advanced model for text-to-image and reference-image editing. It automatically expands your prompt into a detailed caption that is saved separately. It requires a CUDA GPU, Hugging Face access to the gated model, and substantial RAM/VRAM. Existing SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible. The distilled checkpoint has no negative-prompt or denoising-strength parameter.";
+      } else if (family === "sdxl") {
+        modelFamilyHelp.textContent = "SDXL uses a larger native canvas and typically needs more GPU memory. Existing SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible with SDXL.";
+      } else {
+        modelFamilyHelp.textContent = "Stable Diffusion 1.5 is the current identity-training backend. Your existing face/body LoRAs and face-pose ControlNet are compatible with this model family.";
+      }
+    }
+    if (upsampledPromptDetails) upsampledPromptDetails.hidden = true;
+  }
+
+  modelFamilySelect?.addEventListener("change", () => {
+    updateImageModelControls();
+    refreshFinalPromptPreview();
+  });
+  updateImageModelControls();
+
   let promptPreviewRequest = 0;
   let finalNegativePrompt = "";
   async function refreshFinalPromptPreview() {
@@ -1085,6 +1130,11 @@
       const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
       preview.src=data.image_url;preview.hidden=false;placeholder.hidden=true;
       download.href=data.image_url+"?download=1";download.hidden=false;
+      if (upsampledPromptDetails && upsampledPromptPreview) {
+        const expandedCaption = String(data.upsampled_prompt || "");
+        upsampledPromptPreview.textContent = expandedCaption;
+        upsampledPromptDetails.hidden = !expandedCaption;
+      }
       pill.textContent="Saved to library";
       setFinalGenerationProgress("image",true,data.message||"Image generated and saved to the library.");
       if(status)status.textContent=(data.message||"Image generated.")+" Saved as “"+data.title+"”.";
