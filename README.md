@@ -230,6 +230,23 @@ When PostgreSQL is configured, each successful local or cloud face LoRA training
 
 Version history stores model bundles in PostgreSQL and can increase database storage substantially. Configure database capacity and retention/backup policies before large-scale training.
 
+## Application-layer encryption for private database blobs
+
+The application can encrypt face photos, generated images/videos and archived LoRA bundles before writing their BYTEA payloads to PostgreSQL using AES-256-GCM. New writes are encrypted when `FACE_DATA_ENCRYPTION_KEY` is configured. Existing plaintext rows remain readable until migrated.
+
+For a production database:
+
+1. Take an encrypted backup using the backup procedure below.
+2. Generate a separate 32-byte key and set `FACE_DATA_ENCRYPTION_KEY` on the Flask app and any worker that writes to the same database.
+3. Stop application writes / place the app in maintenance mode.
+4. Run `python encrypt_private_data.py --confirm-encryption`.
+5. Confirm the script reports zero remaining plaintext blobs.
+6. Set `APP_ENV=production`, `APP_SECRET_KEY`, and an access password/hash, then restart the app.
+
+Production requests fail closed if PostgreSQL is configured but the private-data encryption key is missing or plaintext blob rows remain. The check is cached for the process lifetime; restart after the migration.
+
+Keep the encryption key outside the database and backups. Losing it makes encrypted face photos, generated media and LoRA bundles unrecoverable. During key rotation, set the new key as `FACE_DATA_ENCRYPTION_KEY` and the old key as `FACE_DATA_ENCRYPTION_KEY_PREVIOUS` until all data has been re-encrypted. The separate `BACKUP_ENCRYPTION_KEY` protects backup files and must also be stored separately.
+
 ## Encrypted PostgreSQL backups
 
 The repository includes `backup_postgres.py`. It creates an AES-256-GCM encrypted custom-format PostgreSQL dump containing saved media, face photos and archived LoRA bundles.
