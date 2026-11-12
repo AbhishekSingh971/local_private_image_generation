@@ -122,7 +122,8 @@ def ensure_schema() -> None:
             """CREATE TABLE IF NOT EXISTS generated_assets (
                 id VARCHAR(32) PRIMARY KEY, asset_type VARCHAR(12) NOT NULL, title VARCHAR(160) NOT NULL,
                 filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL, prompt TEXT NOT NULL DEFAULT '',
-                negative_prompt TEXT NOT NULL DEFAULT '', profile_id VARCHAR(32), profile_name VARCHAR(80),
+                negative_prompt TEXT NOT NULL DEFAULT '', original_prompt TEXT NOT NULL DEFAULT '',
+                model_family VARCHAR(16) NOT NULL DEFAULT 'sd15', profile_id VARCHAR(32), profile_name VARCHAR(80),
                 backend VARCHAR(32) NOT NULL DEFAULT 'cpu', generation_mode VARCHAR(32) NOT NULL DEFAULT '',
                 media_size INTEGER NOT NULL, media_data BYTEA NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
@@ -132,6 +133,8 @@ def ensure_schema() -> None:
                 for statement in statements:
                     cur.execute(statement)
             _ensure_column(conn, "face_profiles", "description", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "generated_assets", "original_prompt", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "generated_assets", "model_family", "VARCHAR(16) NOT NULL DEFAULT 'sd15'")
             for name, definition in (("dataset_type", "VARCHAR(24) NOT NULL DEFAULT 'face_angles'"), ("prompt", "TEXT NOT NULL DEFAULT ''"), ("generated_count", "INTEGER NOT NULL DEFAULT 0")):
                 _ensure_column(conn, "face_dataset_groups", name, definition)
             # Older installations may already have generated_count but no database
@@ -592,13 +595,13 @@ def get_face_model_bundle(profile_id,backend):
 
 def _asset_dict(r,include_content=False):
     if not r:return None
-    d={k:r.get(k) for k in ("id","asset_type","title","filename","mime_type","prompt","negative_prompt","profile_id","profile_name","backend","generation_mode","media_size")}
+    d={k:r.get(k) for k in ("id","asset_type","title","filename","mime_type","prompt","negative_prompt","original_prompt","model_family","profile_id","profile_name","backend","generation_mode","media_size")}
     d.update(created_at=_iso(r.get("created_at")),updated_at=_iso(r.get("updated_at")))
     if include_content:d["media_data"]=bytes(r["media_data"])
     return d
 
 
-def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",negative_prompt="",profile_id=None,profile_name=None,backend="cpu",generation_mode=""):
+def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",negative_prompt="",original_prompt=None,model_family="sd15",profile_id=None,profile_name=None,backend="cpu",generation_mode=""):
     if asset_type not in {"image","video"}: raise ValueError("Asset type must be image or video.")
     if not media_data: raise ValueError("Cannot save an empty media file.")
     if len(media_data)>512*1024*1024: raise ValueError("Media files must be 512 MB or smaller to store in the database.")
@@ -606,10 +609,15 @@ def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",nega
     title=(title or "").strip()[:160] or ("Generated image" if asset_type=="image" else "Generated video")
     # Explicitly set timestamps instead of relying on defaults that may be
     # absent on an existing Supabase table created by an older schema version.
-    r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,profile_id,profile_name,
+    full_prompt=str(prompt or "")
+    full_negative_prompt=str(negative_prompt or "")
+    original_prompt=full_prompt if original_prompt is None else str(original_prompt or "")
+    family=str(model_family or "sd15").strip().lower()
+    if family not in {"sd15","sdxl"}: raise ValueError("Model family must be sd15 or sdxl.")
+    r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,original_prompt,model_family,profile_id,profile_name,
         backend,generation_mode,media_size,media_data,created_at,updated_at)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now()) RETURNING *""",
-        (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,prompt[:1200],negative_prompt[:600],profile_id,profile_name,
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now()) RETURNING *""",
+        (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,full_prompt,full_negative_prompt,original_prompt,family,profile_id,profile_name,
          backend[:32],generation_mode[:32],len(media_data),media_data))
     return _asset_dict(r)
 
@@ -652,8 +660,9 @@ def update_asset(asset_id,fields):
     if "title" in fields:
         fields["title"]=str(fields["title"] or "").strip()
         if not fields["title"] or len(fields["title"])>160: raise ValueError("Title must contain 1–160 characters.")
-    if "prompt" in fields and len(str(fields["prompt"] or ""))>1200: raise ValueError("Prompt must be 1200 characters or fewer.")
-    if "negative_prompt" in fields and len(str(fields["negative_prompt"] or ""))>600: raise ValueError("Negative prompt must be 600 characters or fewer.")
+    for key in ("prompt","negative_prompt"):
+        if key in fields:
+            fields[key]=str(fields[key] or "")
     sets=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in fields)
     r=_one(sql.SQL("UPDATE generated_assets SET {} , updated_at=now() WHERE id=%s RETURNING *").format(sets),tuple(fields.values())+(asset_id,))
     return _asset_dict(r)
