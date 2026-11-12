@@ -295,7 +295,7 @@ def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", gro
         if existing_group:
             group_id = existing_group["id"]
             _run(
-                "UPDATE face_dataset_groups SET generated_count=generated_count+1, updated_at=now() WHERE id=%s",
+                "UPDATE face_dataset_groups SET generated_count=generated_count+1, expected_count=GREATEST(expected_count,generated_count+1), updated_at=now() WHERE id=%s",
                 (group_id,),
             )
         else:
