@@ -628,6 +628,8 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
 
 def _evaluate_profile_identity(profile_id: str, generated_image) -> dict:
     """Compare generated output against only human-approved profile references."""
+    if not os.environ.get("FACE_IDENTITY_ONNX_MODEL", "").strip():
+        return {"status": "not_configured", "reason": "No licensed ArcFace-compatible ONNX model is configured."}
     if not database_url_configured():
         return {"status": "not_assessed", "reason": "PostgreSQL reference photos are unavailable."}
     try:
