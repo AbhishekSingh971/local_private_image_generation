@@ -77,11 +77,24 @@ _ANATOMY_DETAIL = (
 )
 
 
-def resolve_image_dimensions(aspect_ratio: str = "portrait") -> tuple[int, int]:
-    """Return a supported SD 1.5 canvas size for the requested composition."""
+def resolve_image_dimensions(aspect_ratio: str = "portrait", model_family: str = "sd15") -> tuple[int, int]:
+    """Return model-family-appropriate dimensions for the requested composition."""
     key = (aspect_ratio or "portrait").strip().lower()
+    family = (model_family or "sd15").strip().lower()
+    dimensions = {
+        "sd15": IMAGE_DIMENSIONS,
+        # SDXL was trained around a 1024px image area. These aspect-ratio
+        # buckets are multiples of 8 and avoid the old SD 1.5-sized canvas.
+        "sdxl": {
+            "portrait": (832, 1216),
+            "square": (1024, 1024),
+            "landscape": (1216, 832),
+        },
+    }
+    if family not in dimensions:
+        raise ValueError("Image model family must be sd15 or sdxl.")
     try:
-        return IMAGE_DIMENSIONS[key]
+        return dimensions[family][key]
     except KeyError as exc:
         raise ValueError("Image aspect ratio must be portrait, square or landscape.") from exc
 
