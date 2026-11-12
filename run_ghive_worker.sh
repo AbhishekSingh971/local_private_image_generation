@@ -24,13 +24,46 @@ if not torch.cuda.is_available():
 print("CUDA verified:", torch.cuda.get_device_name(0))
 PY
 
-if [[ ! -f models/stable-diffusion-v1-5/model_index.json ]]; then
+# A model_index.json alone does not mean the checkpoint is complete. Older setup
+# runs could leave this marker behind after a gated/failed download, causing the
+# launcher to skip the missing UNet/VAE weights and fail later during LoRA training.
 python - <<'PY'
 import os
+from pathlib import Path
 from huggingface_hub import snapshot_download
-snapshot_download("stable-diffusion-v1-5/stable-diffusion-v1-5", local_dir="models/stable-diffusion-v1-5", token=os.getenv("HF_TOKEN") or None)
+
+model_dir = Path("models/stable-diffusion-v1-5")
+repo_id = os.getenv("SD_MODEL_ID", "").strip() or "stable-diffusion-v1-5/stable-diffusion-v1-5"
+weight_files = {
+    "unet": ("diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"),
+    "vae": ("diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"),
+    "text_encoder": ("model.safetensors", "pytorch_model.bin"),
+}
+required = [model_dir / "model_index.json"]
+for component, names in weight_files.items():
+    required.extend([model_dir / component / "config.json"])
+    required.append(next((model_dir / component / name for name in names if (model_dir / component / name).is_file()), model_dir / component / names[0]))
+
+def missing_files():
+    return [path for path in required if not path.is_file()]
+
+missing = missing_files()
+if missing:
+    print("Stable Diffusion 1.5 checkpoint is incomplete; downloading missing model files...")
+    print("Model repository:", repo_id)
+    snapshot_download(repo_id=repo_id, local_dir=str(model_dir), token=os.getenv("HF_TOKEN") or None)
+    missing = missing_files()
+
+if missing:
+    details = "\\n".join(f"  - {path}" for path in missing)
+    raise SystemExit(
+        "Stable Diffusion 1.5 download is incomplete. Missing required files:\\n"
+        + details
+        + "\\nAccept the model license on Hugging Face and set HF_TOKEN in this GHive terminal, "
+          "then rerun this launcher."
+    )
+print("Stable Diffusion 1.5 checkpoint verified (UNet, VAE, text encoder).")
 PY
-fi
 if [[ ! -f models/animatediff-motion-adapter-v1-5-2/config.json ]]; then
 python - <<'PY'
 import os
