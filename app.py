@@ -48,6 +48,7 @@ from private_data_crypto import encryption_configured
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from prompt_compiler import build_structured_prompt
 from generation_contracts import preserve_generation_text
+from geometry_analysis import analyze_geometry
 from face_profiles import (
     DATA_DIR,
     LORA_DIR,
@@ -2398,6 +2399,23 @@ def api_add_generated_photos(profile_id):
 @app.get("/diagnostics")
 def diagnostics_page():
     return render_template("diagnostics.html", active_page="diagnostics")
+
+
+@app.post("/api/geometry/analyze")
+def api_geometry_analyze():
+    upload = request.files.get("image")
+    if not upload or not upload.filename:
+        return jsonify(error="Upload an image to analyze face and body geometry."), 400
+    try:
+        raw = upload.stream.read(8 * 1024 * 1024 + 1)
+        if not raw or len(raw) > 8 * 1024 * 1024:
+            return jsonify(error="Geometry analysis images must be non-empty and 8 MB or smaller."), 413
+        with Image.open(io.BytesIO(raw)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.load()
+        return jsonify(analysis=analyze_geometry(image))
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
+        return jsonify(error="Upload a valid PNG, JPG or WEBP image."), 400
 
 
 @app.get("/api/system/diagnostics")
