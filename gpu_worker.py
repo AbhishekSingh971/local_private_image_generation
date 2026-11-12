@@ -442,7 +442,8 @@ def remote_generate():
         strength = float(request.form.get("strength", "0.45"))
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
         image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
-        width, height = resolve_image_dimensions(aspect_ratio)
+        model_family = resolve_model_family(request.form.get("model_family") or "sd15")
+        width, height = resolve_image_dimensions(aspect_ratio, model_family)
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = str(request.form.get("use_global_body_model") or "").strip().lower() in {"1", "true", "yes", "on"}
