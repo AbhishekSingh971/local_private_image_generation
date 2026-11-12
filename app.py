@@ -3088,8 +3088,11 @@ def generate():
 
 @app.post("/generate-video")
 def generate_video():
-    prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1000)
-    negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
+    try:
+        prompt = _clean_generation_text(request.form.get("prompt"), "Prompt")
+        negative_prompt = _clean_generation_text(request.form.get("negative_prompt"), "Negative prompt")
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     try:
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         steps = int(request.form.get("steps", "12"))
@@ -3097,6 +3100,7 @@ def generate_video():
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
         backend = _resolve_compute_backend(request.form)
+        seed = resolve_generation_seed(request.form.get("seed"))
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID. Refresh the page and retry.")
@@ -3130,7 +3134,7 @@ def generate_video():
                 task_id, asset_type="video", backend="cloud_gpu", status="running", progress=2,
                 total_steps=steps, stage="connecting", message="Connecting to cloud GPU worker…",
             )
-            data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames), "task_id": task_id}
+            data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames), "seed": str(seed), "task_id": task_id}
             if profile_id:
                 data["face_profile_id"] = profile_id
             try:
@@ -3159,6 +3163,13 @@ def generate_video():
                 asset = _persist_generated_asset(
                     "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                     profile=profile, backend="cloud_gpu", generation_mode="animatediff",
+                    generation_metadata={
+                        "schema_version": 1, "model": {"family": "sd15", "model_id": MODEL_ID},
+                        "video": {"engine": "AnimateDiff", "seed": seed, "steps": steps, "frames": frames, "fps": 8},
+                        "compute": {"backend": "cloud_gpu"},
+                        "identity_profile_id": profile.get("id") if profile else None,
+                        "quality": {"status": "not_assessed", "reasons": []},
+                    },
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -3222,7 +3233,9 @@ def generate_video():
                     message=f"Generating video · step {current} of {scheduler_steps} · {frames} frames",
                 )
                 return callback_kwargs
-            generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+            from generation_contracts import validate_diffusion_prompt_capacity
+            validate_diffusion_prompt_capacity(video_pipe, prompt, negative_prompt)
+            generator = torch.Generator(device="cuda").manual_seed(seed)
             result = video_pipe(
                 prompt=prompt, negative_prompt=negative_prompt or None,
                 num_frames=frames, num_inference_steps=steps,
@@ -3255,6 +3268,13 @@ def generate_video():
             asset = _persist_generated_asset(
                 "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                 profile=profile, backend="local_gpu", generation_mode="animatediff",
+                generation_metadata={
+                    "schema_version": 1, "model": {"family": "sd15", "model_id": MODEL_ID},
+                    "video": {"engine": "AnimateDiff", "seed": seed, "steps": steps, "frames": frames, "fps": 8},
+                    "compute": {"backend": "local_gpu"},
+                    "identity_profile_id": profile.get("id") if profile else None,
+                    "quality": {"status": "not_assessed", "reasons": []},
+                },
             )
         except RuntimeError as exc:
             _set_generation_progress(
