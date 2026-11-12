@@ -1,6 +1,8 @@
 import base64
 from datetime import datetime, timezone
 import gc
+import hmac
+import secrets
 import io
 import json
 import os
@@ -31,7 +33,7 @@ load_dotenv(APP_DIR / ".env")
 import requests
 import importlib
 from importlib import metadata as package_metadata
-from flask import Flask, request, send_from_directory, send_file, jsonify, render_template, redirect, url_for
+from flask import Flask, request, send_from_directory, send_file, jsonify, render_template, redirect, url_for, session
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
@@ -128,6 +130,18 @@ torch = _LazyTorch()
 
 Image.MAX_IMAGE_PIXELS = 40_000_000
 app = Flask(__name__)
+APP_ENV = (os.environ.get("APP_ENV") or "development").strip().lower()
+APP_ACCESS_PASSWORD = os.environ.get("APP_ACCESS_PASSWORD", "")
+APP_ACCESS_PASSWORD_HASH = os.environ.get("APP_ACCESS_PASSWORD_HASH", "")
+APP_ACCESS_GATE_ENABLED = bool(APP_ACCESS_PASSWORD or APP_ACCESS_PASSWORD_HASH)
+APP_SECRET_KEY = os.environ.get("APP_SECRET_KEY") or os.environ.get("SECRET_KEY") or ""
+app.secret_key = APP_SECRET_KEY or secrets.token_hex(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=(APP_ENV == "production"),
+    PERMANENT_SESSION_LIFETIME=60 * 60 * 12,
+)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 MODEL_ID = os.environ.get("SD_MODEL_ID", "").strip() or "stable-diffusion-v1-5/stable-diffusion-v1-5"
 MODEL_PATH_OVERRIDE = os.environ.get("SD_MODEL_PATH", "").strip()
@@ -754,6 +768,80 @@ def _run_local_training(
             LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
 
 
+def _request_is_same_origin() -> bool:
+    origin = (request.headers.get("Origin") or "").strip()
+    if origin:
+        try:
+            return urlparse(origin).netloc.lower() == request.host.lower()
+        except ValueError:
+            return False
+    return (request.headers.get("Sec-Fetch-Site") or "").lower() != "cross-site"
+
+
+@app.before_request
+def _protect_private_workspace():
+    if request.endpoint in {"login", "health", "static"}:
+        return None
+    if APP_ENV == "production" and (not APP_ACCESS_GATE_ENABLED or not APP_SECRET_KEY):
+        return jsonify(
+            error="Production access is disabled until APP_ACCESS_PASSWORD (or APP_ACCESS_PASSWORD_HASH) and APP_SECRET_KEY are configured."
+        ), 503
+    if not APP_ACCESS_GATE_ENABLED:
+        return None
+    if not session.get("private_workspace_authenticated"):
+        if request.path.startswith("/api/") or request.is_json:
+            return jsonify(error="Authentication required. Sign in to the private workspace."), 401
+        return redirect(url_for("login", next=request.full_path.rstrip("?")))
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _request_is_same_origin():
+        return jsonify(error="Cross-origin state-changing requests are not allowed."), 403
+    return None
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not APP_ACCESS_GATE_ENABLED:
+        return redirect(url_for("dashboard"))
+    if APP_ENV == "production" and not APP_SECRET_KEY:
+        return "APP_SECRET_KEY must be configured before sign-in is available.", 503
+    if "login_csrf" not in session:
+        session["login_csrf"] = secrets.token_urlsafe(32)
+    error = None
+    if request.method == "POST":
+        supplied_csrf = request.form.get("csrf_token") or ""
+        if not hmac.compare_digest(supplied_csrf, str(session.get("login_csrf") or "")):
+            error = "The sign-in form expired. Refresh and try again."
+        else:
+            supplied = request.form.get("password") or ""
+            valid = False
+            if APP_ACCESS_PASSWORD_HASH:
+                try:
+                    from werkzeug.security import check_password_hash
+                    valid = check_password_hash(APP_ACCESS_PASSWORD_HASH, supplied)
+                except (ValueError, TypeError):
+                    valid = False
+            elif APP_ACCESS_PASSWORD:
+                valid = hmac.compare_digest(supplied, APP_ACCESS_PASSWORD)
+            if valid:
+                next_path = request.form.get("next") or request.args.get("next") or url_for("dashboard")
+                if not next_path.startswith("/") or next_path.startswith("//"):
+                    next_path = url_for("dashboard")
+                session.clear()
+                session["private_workspace_authenticated"] = True
+                session.permanent = True
+                return redirect(next_path)
+            error = "The password is incorrect."
+    return render_template(
+        "login.html", csrf_token=session["login_csrf"], error=error,
+        next_path=request.args.get("next") or url_for("dashboard"),
+    )
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.errorhandler(413)
 def request_too_large(_error):
     return jsonify(error="Upload too large. Keep the combined request under 64 MB."), 413
@@ -761,7 +849,11 @@ def request_too_large(_error):
 
 @app.context_processor
 def inject_storage_status():
-    return {"storage_status": database_status()}
+    return {
+        "storage_status": database_status(),
+        "access_gate_enabled": APP_ACCESS_GATE_ENABLED,
+        "workspace_authenticated": bool(session.get("private_workspace_authenticated")),
+    }
 
 
 @app.get("/")
