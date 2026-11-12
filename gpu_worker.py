@@ -30,10 +30,10 @@ from image_generation import build_generation_prompts, resolve_generation_seed, 
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from face_profiles import (
     create_profile,
+    dataset_dir,
     dataset_images,
     get_profile,
     model_path,
-    save_profile_image,
     update_profile,
     validate_profile_id,
 )
@@ -224,19 +224,17 @@ def remote_train_profile():
             return jsonify(error="This face profile is already training on the GPU worker."), 409
         create_profile(name, profile_id=profile_id, token=token, description=description)
         approved_filenames = []
+        worker_dataset = dataset_dir(profile_id)
         for upload, image in zip(photo_uploads, images):
+            filename = f"approved_{uuid.uuid4().hex}.jpg"
+            saved_path = worker_dataset / filename
+            image.convert("RGB").save(saved_path, format="JPEG", quality=95, optimize=True)
             caption = caption_by_name.get(Path(upload.filename or "").name, "")
+            caption_path = saved_path.with_name(saved_path.name + ".caption.txt")
             if caption:
-                lowered = caption.lower()
-                if lowered.startswith("body type:"):
-                    photo_kind = "body"
-                elif any(term in lowered for term in ("smile", "laugh", "expression", "surprised", "neutral", "serious")):
-                    photo_kind = "expression"
-                else:
-                    photo_kind = "angle"
-                saved_path = save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
+                caption_path.write_text(caption[:1200], encoding="utf-8")
             else:
-                saved_path = save_profile_image(profile_id, image)
+                caption_path.unlink(missing_ok=True)
             approved_filenames.append(saved_path.name)
         job_id = uuid.uuid4().hex
         update_profile(
