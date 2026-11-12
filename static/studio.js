@@ -1052,16 +1052,23 @@
     }
     if (negativePromptInput) negativePromptInput.disabled = isFlux2;
     if (strengthGroup) strengthGroup.hidden = isFlux2;
-    if (faceProfileInput) faceProfileInput.disabled = isFlux2;
+    const faceControlsEnabled = family === "sd15";
+    if (faceProfileInput) faceProfileInput.disabled = !faceControlsEnabled;
     if (faceAngleGroup) {
-      faceAngleGroup.hidden = isFlux2;
-      faceAngleGroup.querySelector("select")?.setAttribute("disabled", isFlux2 ? "disabled" : "");
-      if (isFlux2) faceAngleGroup.querySelector("select").value = "";
+      faceAngleGroup.hidden = !faceControlsEnabled;
+      const angleField = faceAngleGroup.querySelector("select");
+      if (angleField) {
+        angleField.disabled = !faceControlsEnabled;
+        if (!faceControlsEnabled) angleField.value = "";
+      }
     }
     if (faceExpressionGroup) {
-      faceExpressionGroup.hidden = isFlux2;
-      faceExpressionGroup.querySelector("select")?.setAttribute("disabled", isFlux2 ? "disabled" : "");
-      if (isFlux2) faceExpressionGroup.querySelector("select").value = "";
+      faceExpressionGroup.hidden = !faceControlsEnabled;
+      const expressionField = faceExpressionGroup.querySelector("select");
+      if (expressionField) {
+        expressionField.disabled = !faceControlsEnabled;
+        if (!faceControlsEnabled) expressionField.value = "";
+      }
     }
     if (negativePromptHelp) negativePromptHelp.hidden = !isFlux2;
     if (finalPromptLabel) finalPromptLabel.textContent = isFlux2 ? "Prompt sent to FLUX.2 Klein · editable" : "Final prompt sent to model · editable";
