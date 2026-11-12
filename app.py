@@ -646,7 +646,8 @@ def _run_local_training(
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
     ]
-    args.extend(["--approved-filename", name] for name in approved_filenames)
+    for name in approved_filenames:
+        args.extend(["--approved-filename", name])
     try:
         completed = subprocess.run(
             args, cwd=APP_DIR, capture_output=True, text=True, timeout=8 * 60 * 60,
