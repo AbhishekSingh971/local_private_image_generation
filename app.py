@@ -40,6 +40,7 @@ from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
 from identity_evaluation import evaluate_identity_similarity
+from video_quality import evaluate_video_identity
 from model_artifacts import safe_extract_lora_bundle, sha256_bytes
 from private_data_crypto import encryption_configured
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
@@ -626,26 +627,43 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
         ) from exc
 
 
+def _approved_profile_reference_images(profile_id: str):
+    if not database_url_configured():
+        return []
+    records = list_face_photo_records(profile_id)
+    approved = [
+        record for record in records
+        if record.get("training_approval_status") == "approved" and record.get("image_data")
+    ][:20]
+    images = []
+    for record in approved:
+        with Image.open(io.BytesIO(record["image_data"])) as source:
+            images.append(ImageOps.exif_transpose(source).convert("RGB").copy())
+    return images
+
+
 def _evaluate_profile_identity(profile_id: str, generated_image) -> dict:
     """Compare generated output against only human-approved profile references."""
     if not os.environ.get("FACE_IDENTITY_ONNX_MODEL", "").strip():
         return {"status": "not_configured", "reason": "No licensed ArcFace-compatible ONNX model is configured."}
-    if not database_url_configured():
-        return {"status": "not_assessed", "reason": "PostgreSQL reference photos are unavailable."}
     try:
-        records = list_face_photo_records(profile_id)
-        approved = [
-            record for record in records
-            if record.get("training_approval_status") == "approved" and record.get("image_data")
-        ][:20]
-        reference_images = []
-        for record in approved:
-            with Image.open(io.BytesIO(record["image_data"])) as source:
-                reference_images.append(ImageOps.exif_transpose(source).convert("RGB").copy())
-        return evaluate_identity_similarity(reference_images, generated_image)
-    except Exception as exc:
-        app.logger.warning("Identity similarity evaluation unavailable for profile %s: %s", profile_id, type(exc).__name__)
+        references = _approved_profile_reference_images(profile_id)
+        return evaluate_identity_similarity(references, generated_image)
+    except Exception:
+        app.logger.warning("Identity similarity evaluation unavailable for profile %s", profile_id, exc_info=True)
         return {"status": "not_assessed", "reason": "Could not load approved reference photos for identity comparison."}
+
+
+def _evaluate_profile_video_identity(profile_id: str, video_path: Path) -> dict:
+    if not os.environ.get("FACE_IDENTITY_ONNX_MODEL", "").strip():
+        return {"status": "not_configured", "reason": "No licensed ArcFace-compatible ONNX model is configured."}
+    try:
+        references = _approved_profile_reference_images(profile_id)
+        return evaluate_video_identity(video_path, references)
+    except Exception:
+        app.logger.warning("Video identity consistency evaluation unavailable for profile %s", profile_id, exc_info=True)
+        return {"status": "not_assessed", "reason": "Could not load approved reference photos for video comparison."}
+
 
 
 def _generation_metadata(
@@ -3429,17 +3447,20 @@ def generate_video():
             except Exception as exc:
                 output_path.unlink(missing_ok=True)
                 return jsonify(error=f"Could not resize video to the selected output resolution: {exc}"), 500
+            identity_report = _evaluate_profile_video_identity(profile["id"], output_path) if profile else {"status": "not_assessed"}
+            video_quality = {"status": identity_report.get("status", "not_assessed"), "identity_consistency": identity_report}
+            generation_metadata = {
+                "schema_version": 1, "model": {"family": "sd15", "model_id": MODEL_ID},
+                "video": {"engine": "AnimateDiff", "seed": seed, "steps": steps, "frames": frames, "fps": 8},
+                "compute": {"backend": "cloud_gpu"},
+                "identity_profile_id": profile.get("id") if profile else None,
+                "quality": video_quality,
+            }
             try:
                 asset = _persist_generated_asset(
                     "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                     profile=profile, backend="cloud_gpu", generation_mode="animatediff",
-                    generation_metadata={
-                        "schema_version": 1, "model": {"family": "sd15", "model_id": MODEL_ID},
-                        "video": {"engine": "AnimateDiff", "seed": seed, "steps": steps, "frames": frames, "fps": 8},
-                        "compute": {"backend": "cloud_gpu"},
-                        "identity_profile_id": profile.get("id") if profile else None,
-                        "quality": {"status": "not_assessed", "reasons": []},
-                    },
+                    generation_metadata=generation_metadata,
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -3535,17 +3556,20 @@ def generate_video():
             task_id, asset_type="video", backend="local_gpu", status="running", progress=97,
             current_step=steps, total_steps=steps, stage="saving", message="Saving video bytes and generation details to the database…",
         )
+        identity_report = _evaluate_profile_video_identity(profile["id"], output_path) if profile else {"status": "not_assessed"}
+        video_quality = {"status": identity_report.get("status", "not_assessed"), "identity_consistency": identity_report}
+        generation_metadata = {
+            "schema_version": 1, "model": {"family": "sd15", "model_id": MODEL_ID},
+            "video": {"engine": "AnimateDiff", "seed": seed, "steps": steps, "frames": frames, "fps": 8},
+            "compute": {"backend": "local_gpu"},
+            "identity_profile_id": profile.get("id") if profile else None,
+            "quality": video_quality,
+        }
         try:
             asset = _persist_generated_asset(
                 "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                 profile=profile, backend="local_gpu", generation_mode="animatediff",
-                generation_metadata={
-                    "schema_version": 1, "model": {"family": "sd15", "model_id": MODEL_ID},
-                    "video": {"engine": "AnimateDiff", "seed": seed, "steps": steps, "frames": frames, "fps": 8},
-                    "compute": {"backend": "local_gpu"},
-                    "identity_profile_id": profile.get("id") if profile else None,
-                    "quality": {"status": "not_assessed", "reasons": []},
-                },
+                generation_metadata=generation_metadata,
             )
         except RuntimeError as exc:
             _set_generation_progress(
