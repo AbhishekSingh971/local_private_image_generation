@@ -24,20 +24,94 @@ if not torch.cuda.is_available():
 print("CUDA verified:", torch.cuda.get_device_name(0))
 PY
 
-if [[ ! -f models/stable-diffusion-v1-5/model_index.json ]]; then
+# Download only the Diffusers files used by this app. The upstream SD 1.5
+# repository also contains many duplicate .bin/.ckpt/fp16 variants totalling
+# tens of GB; downloading the entire repository wastes time and disk space.
 python - <<'PY'
 import os
+from pathlib import Path
 from huggingface_hub import snapshot_download
-snapshot_download("stable-diffusion-v1-5/stable-diffusion-v1-5", local_dir="models/stable-diffusion-v1-5", token=os.getenv("HF_TOKEN") or None)
+
+model_dir = Path("models/stable-diffusion-v1-5")
+required = [
+    "model_index.json",
+    "feature_extractor/preprocessor_config.json",
+    "scheduler/scheduler_config.json",
+    "tokenizer/merges.txt",
+    "tokenizer/special_tokens_map.json",
+    "tokenizer/tokenizer_config.json",
+    "tokenizer/vocab.json",
+    "text_encoder/config.json",
+    "text_encoder/model.safetensors",
+    "unet/config.json",
+    "unet/diffusion_pytorch_model.safetensors",
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.safetensors",
+]
+allowed = required.copy()
+keep_weights = {
+    "text_encoder/model.safetensors",
+    "unet/diffusion_pytorch_model.safetensors",
+    "vae/diffusion_pytorch_model.safetensors",
+}
+
+# Remove large files left by an earlier unfiltered/interrupted snapshot.
+# Keep only the three standard SafeTensors weights selected below.
+if model_dir.exists():
+    for path in model_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(model_dir).as_posix()
+        if path.name.endswith(".incomplete") or (
+            path.suffix in {".bin", ".ckpt", ".safetensors"} and rel not in keep_weights
+        ):
+            path.unlink(missing_ok=True)
+
+if not all((model_dir / name).is_file() for name in required):
+    print("Downloading only the required Stable Diffusion 1.5 Diffusers files...")
+    snapshot_download(
+        repo_id="stable-diffusion-v1-5/stable-diffusion-v1-5",
+        local_dir=str(model_dir),
+        allow_patterns=allowed,
+        token=os.getenv("HF_TOKEN") or None,
+    )
+else:
+    print("Stable Diffusion 1.5 model files are already complete.")
+
+missing = [name for name in required if not (model_dir / name).is_file()]
+if missing:
+    raise SystemExit("Stable Diffusion model is incomplete: " + ", ".join(missing))
+print("Stable Diffusion 1.5 model files verified.")
+
+motion_dir = Path("models/animatediff-motion-adapter-v1-5-2")
+motion_required = ["config.json", "diffusion_pytorch_model.safetensors"]
+if motion_dir.exists():
+    for path in motion_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(motion_dir).as_posix()
+        if path.name.endswith(".incomplete") or (
+            path.suffix in {".bin", ".ckpt", ".safetensors"}
+            and rel not in {"diffusion_pytorch_model.safetensors"}
+        ):
+            path.unlink(missing_ok=True)
+
+if not all((motion_dir / name).is_file() for name in motion_required):
+    print("Downloading the required AnimateDiff motion adapter files...")
+    snapshot_download(
+        repo_id="guoyww/animatediff-motion-adapter-v1-5-2",
+        local_dir=str(motion_dir),
+        allow_patterns=motion_required,
+        token=os.getenv("HF_TOKEN") or None,
+    )
+else:
+    print("AnimateDiff motion adapter files are already complete.")
+
+missing = [name for name in motion_required if not (motion_dir / name).is_file()]
+if missing:
+    raise SystemExit("AnimateDiff adapter is incomplete: " + ", ".join(missing))
+print("AnimateDiff motion adapter files verified.")
 PY
-fi
-if [[ ! -f models/animatediff-motion-adapter-v1-5-2/config.json ]]; then
-python - <<'PY'
-import os
-from huggingface_hub import snapshot_download
-snapshot_download("guoyww/animatediff-motion-adapter-v1-5-2", local_dir="models/animatediff-motion-adapter-v1-5-2", token=os.getenv("HF_TOKEN") or None)
-PY
-fi
 
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
