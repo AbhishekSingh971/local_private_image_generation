@@ -2820,6 +2820,10 @@ def generate():
                     effective_prompt, effective_negative_prompt = build_generation_prompts(
                         prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
                     )
+                from generation_contracts import validate_diffusion_prompt_capacity
+                validate_diffusion_prompt_capacity(
+                    pipeline, effective_prompt, effective_negative_prompt or ""
+                )
                 kwargs = {
                     "prompt": effective_prompt,
                     "negative_prompt": effective_negative_prompt or None,
