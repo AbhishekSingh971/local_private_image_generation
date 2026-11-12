@@ -2461,12 +2461,13 @@ def _load_cpu_or_gpu_pipeline(
 
     if profile_id and not supports_face_lora(family):
         raise ValueError(
-            "The selected face LoRA was trained for Stable Diffusion 1.5 and cannot be loaded into SDXL. "
-            "Choose Stable Diffusion 1.5 for this trained identity, or generate with SDXL without that adapter."
+            "The selected face LoRA was trained for Stable Diffusion 1.5 and is incompatible with the selected model family. "
+            "Choose Stable Diffusion 1.5 for this trained identity, or generate with the selected base model without that adapter."
         )
     if use_global_body_model and family != "sd15":
         raise ValueError(
-            "The shared body LoRA was trained for Stable Diffusion 1.5. SDXL uses its own compatible adapter family."
+            "The shared body LoRA was trained for Stable Diffusion 1.5 and is unavailable for the selected model family. "
+            "The selected base model can generate normal anatomy without this optional adapter."
         )
     if family == "sdxl" and mode == "pose_img2img":
         raise ValueError(
