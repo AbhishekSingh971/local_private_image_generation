@@ -224,6 +224,10 @@ python gpu_acceptance.py --model-family flux2_klein --reference-image path/to/re
 
 Run this on the target worker after installing its CUDA-compatible PyTorch build and accepting any required model access terms. Keep the generated PNG and JSON report private if they contain user-provided reference imagery or prompts. CPU CI compiles this script but does not download models or claim that GPU acceptance has passed.
 
+## Video identity consistency
+
+When the optional ONNX identity evaluator is configured, generated AnimateDiff videos are sampled at up to eight evenly spaced frames. Each detectable face is compared with the profile's approved reference-photo centroid. The saved video metadata records mean/minimum/maximum cosine similarity, standard deviation, sampled-frame count and per-frame results. This is a diagnostic signal only; it does not guarantee temporal identity stability. Video generation remains available when the evaluator is not configured.
+
 ## Face identity consistency evaluation
 
 An optional evaluator can compare a generated face against the profile's **human-approved** reference photos. Configure `FACE_IDENTITY_ONNX_MODEL` with a user-supplied, appropriately licensed ArcFace-compatible ONNX model that accepts a normalized NCHW 112 × 112 face tensor. Install `onnxruntime` separately to enable it; no biometric model weights are bundled or downloaded by this repository. Set `FACE_IDENTITY_MODEL_VERSION` so scores can be compared across releases.
