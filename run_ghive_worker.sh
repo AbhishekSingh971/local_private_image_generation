@@ -62,9 +62,7 @@ if model_dir.exists():
         if not path.is_file():
             continue
         rel = path.relative_to(model_dir).as_posix()
-        if path.name.endswith(".incomplete") or (
-            path.suffix in {".bin", ".ckpt", ".safetensors"} and rel not in keep_weights
-        ):
+        if path.suffix in {".bin", ".ckpt", ".safetensors"} and rel not in keep_weights:
             path.unlink(missing_ok=True)
 
 if not all((model_dir / name).is_file() for name in required):
@@ -90,10 +88,8 @@ if motion_dir.exists():
         if not path.is_file():
             continue
         rel = path.relative_to(motion_dir).as_posix()
-        if path.name.endswith(".incomplete") or (
-            path.suffix in {".bin", ".ckpt", ".safetensors"}
-            and rel not in {"diffusion_pytorch_model.safetensors"}
-        ):
+        if path.suffix in {".bin", ".ckpt", ".safetensors"}
+            and rel not in {"diffusion_pytorch_model.safetensors"}:
             path.unlink(missing_ok=True)
 
 if not all((motion_dir / name).is_file() for name in motion_required):
