@@ -1306,6 +1306,7 @@
       const sampling=generation.sampling||{};
       const upscaling=generation.upscaling||{};
       const quality=generation.quality||{};
+      const identity=quality.identity_similarity||{};
       const metadataLabels=[
         asset.backend||"unknown backend",
         asset.model_family||generation.model?.family||"Base model",
@@ -1314,6 +1315,7 @@
         Number.isInteger(sampling.steps)?sampling.steps+" steps":"",
         upscaling.enabled?"AI upscale: "+(upscaling.status||"requested"):"",
         quality.status&&quality.status!=="not_assessed"?"Quality: "+quality.status:"",
+        Number.isFinite(identity.cosine_similarity)?"Identity similarity: "+identity.cosine_similarity.toFixed(3):"",
         asset.created_at?new Date(asset.created_at).toLocaleString():"Saved",
         formatBytes(asset.media_size||0),
       ].filter(Boolean);
