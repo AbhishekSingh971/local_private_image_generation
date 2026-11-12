@@ -83,6 +83,7 @@ def upscale_image(
     steps: int = DEFAULT_STEPS,
     source: str | Path | None = None,
     cancelled=None,
+    progress_callback=None,
 ):
     """Generatively upscale an image by approximately 4x on a CUDA device."""
     from PIL import Image
@@ -109,6 +110,12 @@ def upscale_image(
         if cancelled and cancelled():
             raise RuntimeError("AI upscaling was cancelled before inference.")
         generator = torch.Generator(device="cuda").manual_seed(int(seed))
+        def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+            if cancelled and cancelled():
+                raise RuntimeError("AI upscaling was cancelled by the user.")
+            if progress_callback:
+                progress_callback(step_index + 1, options["steps"])
+            return callback_kwargs
         with torch.inference_mode():
             result = pipeline(
                 prompt=str(prompt),
@@ -117,6 +124,7 @@ def upscale_image(
                 guidance_scale=7.5,
                 negative_prompt=str(negative_prompt or "") or None,
                 generator=generator,
+                callback_on_step_end=on_step_end,
             )
         if cancelled and cancelled():
             raise RuntimeError("AI upscaling was cancelled after inference.")
