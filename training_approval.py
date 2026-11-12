@@ -19,7 +19,7 @@ def select_approved_training_files(
     for value in names:
         name = str(value or "")
         path = Path(name)
-        if not name or path.name != name or name in {".", ".."}:
+        if not name or path.name != name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
             raise ValueError("Approved training photo filenames must be plain file basenames.")
         if path.suffix.lower() not in allowed_extensions:
             raise ValueError(f"Unsupported approved training photo extension: {path.suffix or '(none)'}")
