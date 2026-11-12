@@ -2558,14 +2558,13 @@ def api_generation_prompt_preview():
     try:
         prompt = _clean_generation_text(payload.get("prompt"), "Prompt")
         negative_prompt = _clean_generation_text(payload.get("negative_prompt"), "Negative prompt")
-        resolve_model_family(payload.get("model_family") or "sd15")
         model_family = resolve_model_family(payload.get("model_family") or "sd15")
         preset = validate_image_preset(payload.get("image_preset") or "standard")
         has_reference = bool(payload.get("has_reference_image"))
         if model_family == "flux3_klein":
             # FLUX 3's own caption upsampler is the model-specific compiler.
             # Preserve the user's original text for that stage; never add SD presets.
-            final_prompt, final_negative = prompt, negative_prompt
+            final_prompt, final_negative = prompt, ""
         else:
             final_prompt, final_negative = build_generation_prompts(
                 prompt, negative_prompt, preset, has_reference_image=has_reference
@@ -2680,7 +2679,8 @@ def generate():
             with Image.open(image_file.stream) as source:
                 init_image = ImageOps.exif_transpose(source).convert("RGB")
                 init_image.load()
-            init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
+            if model_family != "flux3_klein":
+                init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
     if generation_profile == "preserve_reference" and init_image is None:
