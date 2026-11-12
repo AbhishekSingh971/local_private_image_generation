@@ -28,6 +28,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 import app as local_engine
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
+from face_restoration import resolve_face_restoration_options, restore_faces
 from generation_contracts import preserve_generation_text
 from model_artifacts import safe_extract_lora_bundle, sha256_bytes
 import shutil
@@ -519,6 +520,10 @@ def remote_generate():
             request.form.get("ai_upscale"), request.form.get("upscale_steps") or 20
         )
         ai_upscale = upscale_options["enabled"]
+        face_restore_options = resolve_face_restoration_options(
+            request.form.get("face_restore"), request.form.get("face_restore_weight") or 0.5
+        )
+        face_restore_enabled = face_restore_options["enabled"]
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
@@ -681,6 +686,22 @@ def remote_generate():
                     raise RemoteGenerationCancelled("Generation cancelled during AI upscaling.") from upscale_exc
                 worker.logger.exception("AI upscaling failed; returning the base generated image")
                 upscale_warning = "AI upscaling failed; the original generated image was returned. " + str(upscale_exc)[:300]
+        face_restore_warning = ""
+        face_restore_status = "not_requested"
+        if face_restore_enabled:
+            _set_generation_progress(
+                task_id, asset_type="image", status="running", progress=94,
+                current_step=0, total_steps=1, stage="face_restoration",
+                message="Applying optional face restoration on the remote GPU…",
+            )
+            try:
+                restored = restore_faces(result, weight=face_restore_options["weight"])
+                result = restored["image"]
+                face_restore_status = restored["status"]
+            except Exception as restore_exc:
+                worker.logger.exception("Face restoration failed; returning the pre-restoration image")
+                face_restore_status = "failed_fallback"
+                face_restore_warning = "Face restoration failed; the pre-restoration image was returned. " + str(restore_exc)[:300]
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
         result.save(output, format="PNG")
@@ -690,6 +711,9 @@ def remote_generate():
         if upscale_warning:
             response.headers["X-Upscale-Warning"] = upscale_warning.replace("\\r", " ").replace("\\n", " ").encode("ascii", "replace").decode("ascii")[:500]
         response.headers["X-Upscale-Status"] = "completed" if ai_upscale and not upscale_warning else ("failed_fallback" if upscale_warning else "not_requested")
+        if face_restore_warning:
+            response.headers["X-Face-Restoration-Warning"] = face_restore_warning.replace("\\r", " ").replace("\\n", " ").encode("ascii", "replace").decode("ascii")[:500]
+        response.headers["X-Face-Restoration-Status"] = face_restore_status
         response.headers["X-Prompt-Token-Count"] = json.dumps(prompt_token_count, separators=(",", ":"))
         return response
     except RemoteGenerationCancelled:
