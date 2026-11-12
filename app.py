@@ -2244,6 +2244,8 @@ def api_add_face_photos(profile_id):
         if not get_profile(profile_id):
             return jsonify(error="Face profile not found."), 404
         group_id = (request.form.get("group_id") or "").strip() or None
+        if not database_url_configured():
+            return jsonify(error="Face-photo review and training approval require the configured PostgreSQL database. Configure DATABASE_URL before uploading training photos."), 503
         if group_id:
             group = get_face_dataset_group(group_id)
             if not group or group["profile_id"] != profile_id:
