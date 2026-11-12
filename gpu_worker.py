@@ -27,6 +27,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_upscaling import resolve_upscale_options, upscale_image
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from face_profiles import (
     create_profile,
@@ -462,6 +463,10 @@ def remote_generate():
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = str(request.form.get("use_global_body_model") or "").strip().lower() in {"1", "true", "yes", "on"}
+        upscale_options = resolve_upscale_options(
+            request.form.get("ai_upscale"), request.form.get("upscale_steps") or 20
+        )
+        ai_upscale = upscale_options["enabled"]
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
@@ -594,6 +599,17 @@ def remote_generate():
                 if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
                     kwargs["ip_adapter_image"] = image
             result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+        if ai_upscale:
+            _set_generation_progress(
+                task_id, asset_type="image", status="running", progress=93,
+                current_step=0, total_steps=upscale_options["steps"], stage="upscaling",
+                message="Running optional AI x4 super-resolution on the remote GPU…",
+            )
+            result = upscale_image(
+                result, prompt, negative_prompt=negative_prompt, seed=seed,
+                steps=upscale_options["steps"],
+                cancelled=lambda: _remote_generation_cancelled(task_id),
+            )
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
         result.save(output, format="PNG")
