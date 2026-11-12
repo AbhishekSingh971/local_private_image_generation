@@ -3,7 +3,7 @@
 {% block page_heading %}Training datasets{% endblock %}
 {% block content %}
 <div class="page-intro">
-  <div><div class="eyebrow">GROUPED TRAINING DATA</div><h1>Training datasets</h1><p>Review separate face-angle, facial-expression, and shared body-type datasets. Active generation jobs keep running while you navigate. Photos that fail automatic pose validation are marked Needs review.</p></div>
+  <div><div class="eyebrow">GROUPED TRAINING DATA</div><h1>Training datasets</h1><p>Review separate face-angle, facial-expression, and shared body-type datasets. Automatic pose validation and human training approval are separate. Only photos you explicitly approve are included in face LoRA training; pending and rejected photos are excluded.</p></div>
   <a class="button-link" href="{{ url_for('faces_page') }}">Add training photos +</a>
 </div>
 <div class="library-toolbar panel">
