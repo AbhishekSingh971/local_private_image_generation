@@ -452,7 +452,7 @@ def remote_generate():
             raise ValueError("Invalid generation task ID.")
     except (ValueError, TypeError, KeyError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
-    if not prompt:
+    if not prompt.strip():
         return jsonify(error="Prompt is required."), 400
     if model_family == "flux2_klein":
         if negative_prompt.strip():
