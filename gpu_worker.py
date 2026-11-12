@@ -175,6 +175,13 @@ def _training_job(profile_id, job_id, steps, resolution, approved_filenames):
             local_model_ready=False,
         )
         task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error}
+    for filename in approved_filenames:
+        safe_name = Path(filename).name
+        if safe_name != filename or not safe_name.startswith("approved_"):
+            continue
+        image_path = dataset_dir(profile_id) / safe_name
+        image_path.unlink(missing_ok=True)
+        image_path.with_name(image_path.name + ".caption.txt").unlink(missing_ok=True)
     with TASKS_LOCK:
         task["finished_at"] = time.time()
         TASKS[job_id] = task
