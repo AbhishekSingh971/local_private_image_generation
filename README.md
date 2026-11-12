@@ -1,6 +1,6 @@
 # Private Face Studio
 
-A local-first Windows/Flask application for image generation, separate face-identity LoRA training, image editing, and private media-library management. It supports local CUDA and a provider-neutral authenticated remote CUDA GPU worker. Google Colab (removed) is not supported.
+A local-first Windows/Flask application for image generation, separate face-identity LoRA training, image editing, and private media-library management. It supports local CUDA and a provider-neutral authenticated remote CUDA GPU worker. Google  is not supported.
 
 ## Features
 
@@ -178,19 +178,22 @@ Keep `.env` private. Do not commit it or paste a real token into an issue/chat. 
 
 The worker stores the uploaded face datasets and generated LoRAs on the Pod's filesystem under the project directory. Put the repository and its `data/` and `models/` directories on a persistent volume if you need them to survive a Pod replacement. Back up important profiles and LoRA weights before terminating a Pod.
 
-## Advanced image model: FLUX 3 Image Klein
+## Advanced image model: FLUX.2 Klein 4B
 
-The generation page offers three model families:
+The image generator supports three model families:
 
-- **Stable Diffusion 1.5** remains the identity-training backend. Existing face and body LoRAs and the configured face-pose ControlNet are SD 1.5-specific.
-- **Stable Diffusion XL 1.0** is an experimental base-model option. It does not load the current SD 1.5 identity adapters.
-- **FLUX 3 Image Klein (distilled)** is the advanced text-to-image and reference-image editing backend. It uses the Diffusers modular pipeline and automatically expands the user's prompt into a longer scene caption. The app stores the original prompt, compiled prompt, and FLUX-expanded caption separately.
+- **Stable Diffusion 1.5** remains the trained-face backend. Existing face/body LoRAs and the current face-pose ControlNet are specific to this family.
+- **Stable Diffusion XL 1.0** is an experimental base-model option. It does not load the existing SD 1.5 identity adapters.
+- **FLUX.2 Klein 4B (distilled)** is the advanced generation and reference-image editing option. It uses the dedicated `Flux2KleinPipeline`, supports text-to-image and reference-image editing, and is intended for consumer GPUs. The model card estimates around 13 GB VRAM; benchmark on the actual worker before production rollout.
 
-FLUX 3 Klein distilled supports 4–16 inference steps and reference-image editing, but does not accept a negative prompt or an SD-style denoising-strength value. The UI disables those controls when this model is selected. It does not yet load this project's SD 1.5 face/body LoRAs or face-pose ControlNet. Choose SD 1.5 when you need an already-trained face identity.
+FLUX.2 Klein 4B is Apache-2.0 licensed. The distilled model is designed for a 4-step workflow. It does not accept a negative-prompt string or a denoising-strength parameter. The UI disables those controls when FLUX.2 is selected. The image model's text context has a 512-token limit; the application checks the tokenizer count and rejects overflow instead of silently truncating the user's prompt.
 
-The model uses a large text encoder and prompt upsampler in addition to the image transformer. The application uses Diffusers component CPU offloading, but actual memory use and speed must be benchmarked on the target GPU. A supported CUDA device, adequate host RAM/disk cache, and Hugging Face access to the gated model repository are required. Accept the model repository's access terms before first download.
+The current SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible with FLUX.2 Klein. Choose SD 1.5 to use an already-trained face identity. A future FLUX.2 Base identity-training path must be implemented and evaluated separately before claiming cross-model face identity support.
 
-**License:** FLUX 3 Image Klein is released under the FLUX Kommunity License v1.0, not Apache 2.0. It allows non-commercial use and a conditional commercial-output exception for qualifying users under US$5M gross annualized revenue, subject to the complete license. Review the full terms and obtain the appropriate license before building a paid generation service around this model.
+Model access: the model is published on Hugging Face. Follow the repository's current access instructions and configure any required credentials in the application and GPU-worker environment. Never commit access tokens or model weights to Git.
+
+Model card: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
+Official inference examples: https://github.com/black-forest-labs/flux2
 
 ## Training details
 
