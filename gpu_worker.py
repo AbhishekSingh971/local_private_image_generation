@@ -490,6 +490,8 @@ def remote_generate():
             return jsonify(error="Reference image is not a valid PNG, JPG or WEBP image."), 400
     pose_uploaded = request.files.get("pose_control_image")
     if pose_uploaded and pose_uploaded.filename:
+        if model_family != "sd15":
+            return jsonify(error="The configured face-pose ControlNet is SD 1.5-only. Select SD 1.5 for pose-guided generation."), 400
         try:
             with Image.open(pose_uploaded.stream) as source:
                 pose_control_image = ImageOps.exif_transpose(source).convert("RGB")
@@ -506,7 +508,8 @@ def remote_generate():
     try:
         mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
         pipeline = local_engine._load_cpu_or_gpu_pipeline(
-            mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model
+            mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
+            model_family=model_family,
         )
         _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the cloud GPU…")
         def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
