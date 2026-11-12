@@ -34,7 +34,7 @@ def load_encryption_key(value: str | None = None) -> bytes:
         else:
             key = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
     except (ValueError, TypeError) as exc:
-        raise RuntimeError("BACKUP_ENCRYPTION_KEY must be 64 hex characters or URL-safe base64 for 32 bytes.") from exc
+        raise RuntimeError("BACKUP_ENCRYPTION_KEY must decode to exactly 32 bytes (64 hex characters or URL-safe base64).") from exc
     if len(key) != 32:
         raise RuntimeError("BACKUP_ENCRYPTION_KEY must decode to exactly 32 bytes.")
     return key
