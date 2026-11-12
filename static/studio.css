@@ -198,4 +198,7 @@ button.danger-button{background:#3c1f2a;border-color:#643345;color:#ffd9df}
 .photo-validation-badge.passed{background:#173b34;color:#a4f0cf;border:1px solid #28584e}
 .photo-validation-badge.needs-review{background:#4a3417;color:#ffda97;border:1px solid #745225}
 .photo-validation-badge.not-applicable,.photo-validation-badge.not-checked{background:#263247;color:#c2cde2;border:1px solid #3b4a64}
+.training-approval-badge.pending{background:#443619;color:#ffe0a3;border:1px solid #80612b}
+.training-approval-badge.approved{background:#173b34;color:#a4f0cf;border:1px solid #28584e}
+.training-approval-badge.rejected{background:#48272d;color:#ffb8bf;border:1px solid #783b46}
 .dataset-group-photo .photo-validation-details{font-size:10px;line-height:1.4;color:#aebbd1;overflow-wrap:anywhere}
