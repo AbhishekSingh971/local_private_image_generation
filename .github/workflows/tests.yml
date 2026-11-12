@@ -33,7 +33,7 @@ jobs:
 
       - name: Compile changed Python modules
         run: |
-          python -m compileall -q app.py gpu_worker.py image_generation.py model_registry.py generation_contracts.py training_approval.py flux2_engine.py image_upscaling.py model_artifacts.py private_data_crypto.py identity_evaluation.py pose_validation.py backup_postgres.py encrypt_private_data.py gpu_acceptance.py studio_db.py
+          python -m compileall -q app.py gpu_worker.py image_generation.py model_registry.py generation_contracts.py training_approval.py flux2_engine.py image_upscaling.py model_artifacts.py private_data_crypto.py identity_evaluation.py video_quality.py pose_validation.py backup_postgres.py encrypt_private_data.py gpu_acceptance.py studio_db.py
 
       - name: Check browser JavaScript syntax
         run: node --check static/studio.js
