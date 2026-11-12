@@ -28,6 +28,7 @@ load_dotenv(APP_DIR / ".env")
 
 import requests
 import importlib
+from importlib import metadata as package_metadata
 from flask import Flask, request, send_from_directory, send_file, jsonify, render_template, redirect, url_for
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -571,7 +572,7 @@ def _safe_profile_count():
         return 0
 
 
-def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode, original_prompt=None, upsampled_prompt="", model_family="sd15"):
+def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode, original_prompt=None, upsampled_prompt="", model_family="sd15", generation_metadata=None):
     folder = OUTPUT_DIR if asset_type == "image" else VIDEO_OUTPUT_DIR
     path = folder / Path(filename).name
     try:
@@ -590,12 +591,65 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
             profile_name=profile["name"] if profile else None,
             backend=backend,
             generation_mode=generation_mode,
+            generation_metadata=generation_metadata or {},
         )
     except Exception as exc:
         app.logger.exception("Could not persist generated media to the database")
         raise RuntimeError(
             "The media was generated but could not be saved to the database. Check DATABASE_URL and database permissions. The local output copy remains in " + str(path)
         ) from exc
+
+
+def _generation_metadata(
+    *, model_family, backend, seed, steps, width, height, output_width, output_height,
+    aspect_ratio, generation_mode, strength, ai_upscale, upscale_options,
+    upscale_warning="", quality_report=None, prompt_token_count=None, profile=None,
+):
+    """Capture enough provenance to reproduce or compare a generated asset."""
+    config = model_configuration(model_family)
+    try:
+        diffusers_version = package_metadata.version("diffusers")
+    except package_metadata.PackageNotFoundError:
+        diffusers_version = None
+    upscale_status = (
+        "failed_fallback" if upscale_warning else
+        "completed" if ai_upscale else "not_requested"
+    )
+    return {
+        "schema_version": 1,
+        "model": {
+            "family": model_family,
+            "model_id": config.get("model_id"),
+            "source": str(config.get("source") or ""),
+            "diffusers_version": diffusers_version,
+        },
+        "compute": {"backend": backend},
+        "sampling": {
+            "seed": int(seed),
+            "steps": int(steps),
+            "guidance_scale": 1.0 if model_family == "flux2_klein" else 7.5,
+            "strength": float(strength) if generation_mode == "img2img" else None,
+        },
+        "canvas": {
+            "aspect_ratio": aspect_ratio,
+            "requested_width": int(width),
+            "requested_height": int(height),
+            "output_width": int(output_width),
+            "output_height": int(output_height),
+        },
+        "generation_mode": generation_mode,
+        "identity_profile_id": profile.get("id") if profile else None,
+        "prompt_token_count": prompt_token_count,
+        "prompt_contract_version": 1,
+        "upscaling": {
+            "enabled": bool(ai_upscale),
+            "status": upscale_status,
+            "model_id": upscale_options.get("model_id") if ai_upscale else None,
+            "steps": upscale_options.get("steps") if ai_upscale else None,
+            "warning": upscale_warning[:500] if upscale_warning else None,
+        },
+        "quality": quality_report or {"status": "not_assessed", "reasons": []},
+    }
 
 
 def _persist_face_model_bundle(profile_id: str, backend: str, bundle_data: bytes | None = None, file_count: int | None = None):
