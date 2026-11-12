@@ -20,6 +20,7 @@
         <div class="nav-label nav-label-spaced">YOUR LIBRARY</div>
         <a class="nav-link {{ 'active' if active_page == 'images' else '' }}" href="{{ url_for('library_images_page') }}"><span>▦</span> Generated images</a>
         <a class="nav-link {{ 'active' if active_page == 'videos' else '' }}" href="{{ url_for('library_videos_page') }}"><span>▣</span> Generated videos</a>
+        <a class="nav-link {{ 'active' if active_page == 'geometry' else '' }}" href="{{ url_for('geometry_page') }}"><span>◇</span> Geometry tools</a>
         <a class="nav-link {{ 'active' if active_page == 'diagnostics' else '' }}" href="{{ url_for('diagnostics_page') }}"><span>◉</span> Diagnostics</a>
       </nav>
       <div class="sidebar-foot">
