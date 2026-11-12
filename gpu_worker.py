@@ -438,7 +438,7 @@ def remote_generate():
     prompt = request.form.get("prompt") or ""
     negative_prompt = request.form.get("negative_prompt") or ""
     try:
-        steps = int(request.form.get("steps", "25"))
+        steps = int(request.form.get("steps", "4" if (request.form.get("model_family") or "sd15").strip().lower() == "flux2_klein" else "25"))
         strength = float(request.form.get("strength", "0.45"))
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
         image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
@@ -454,11 +454,11 @@ def remote_generate():
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt:
         return jsonify(error="Prompt is required."), 400
-    if model_family == "flux3_klein":
-        if negative_prompt:
-            return jsonify(error="FLUX 3 Klein distilled does not support negative prompts."), 400
-        if not 4 <= steps <= 16:
-            return jsonify(error="FLUX 3 Klein supports 4–16 inference steps."), 400
+    if model_family == "flux2_klein":
+        if negative_prompt.strip():
+            return jsonify(error="FLUX.2 Klein 4B distilled does not accept a negative prompt."), 400
+        if steps != 4:
+            return jsonify(error="FLUX.2 Klein 4B distilled uses a fixed 4-step generation schedule."), 400
     elif not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
         return jsonify(error="Invalid step count or image strength."), 400
     if not torch.cuda.is_available():
@@ -512,26 +512,25 @@ def remote_generate():
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
         upsampled_prompt = ""
-        if model_family == "flux3_klein":
+        if model_family == "flux2_klein":
             if pose_control_image is not None:
-                return jsonify(error="FLUX 3 Klein uses reference-image editing rather than the SD 1.5 face-pose ControlNet path."), 400
+                return jsonify(error="FLUX.2 Klein uses reference-image editing rather than the SD 1.5 face-pose ControlNet path."), 400
             if _remote_generation_cancelled(task_id):
                 raise RemoteGenerationCancelled("Generation cancelled by the user.")
-            from flux3_engine import generate_flux3_image
+            from flux2_engine import generate_flux2_image
             _set_generation_progress(
                 task_id, asset_type="image", status="running", progress=5,
                 total_steps=steps, stage="loading_model",
-                message="Loading FLUX 3 Klein and its prompt upsampler on the remote GPU…",
+                message="Loading FLUX.2 Klein 4B on the remote GPU…",
             )
-            flux_output = generate_flux3_image(
-                prompt, image=image, seed=seed, steps=steps,
+            flux_output = generate_flux2_image(
+                prompt, image=image, seed=seed,
                 width=width, height=height,
-                source=model_configuration("flux3_klein")["source"],
+                source=model_configuration("flux2_klein")["source"],
             )
             result = flux_output["image"]
-            upsampled_prompt = flux_output["upsampled_prompt"]
             if _remote_generation_cancelled(task_id):
-                raise RemoteGenerationCancelled("Generation cancelled after FLUX 3 inference completed.")
+                raise RemoteGenerationCancelled("Generation cancellation was requested; FLUX.2 inference has completed.")
         else:
             mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
             pipeline = local_engine._load_cpu_or_gpu_pipeline(
@@ -581,9 +580,6 @@ def remote_generate():
         output.seek(0)
         _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on the cloud GPU.")
         response = send_file(output, mimetype="image/png", download_name="generated.png")
-        if upsampled_prompt:
-            from urllib.parse import quote
-            response.headers["X-FLUX3-Upsampled-Prompt"] = quote(upsampled_prompt, safe="")
         return response
     except RemoteGenerationCancelled:
         _set_generation_progress(
