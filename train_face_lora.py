@@ -84,6 +84,10 @@ def parse_args():
         description="Train a reusable face LoRA from data/face_dataset using the local SD 1.5 model."
     )
     parser.add_argument("--profile-id", default=None, help="Persistent face profile ID; uses that profile's dataset.")
+    parser.add_argument(
+        "--approved-filename", action="append", default=[],
+        help="Filename explicitly approved by a human reviewer; required for profile training and may be repeated.",
+    )
     parser.add_argument("--output-name", default=None)
     parser.add_argument("--token", default="sks")
     parser.add_argument("--class-name", default="person")
@@ -126,10 +130,17 @@ def main():
         PROFILE_DATASET_ROOT / args.profile_id / "dataset"
         if args.profile_id else LEGACY_DATASET_DIR
     )
+    approved_names = {Path(name).name for name in args.approved_filename if Path(name).name == name}
+    if args.profile_id and len(approved_names) < 5:
+        raise SystemExit("Profile training requires at least 5 explicitly approved photo filenames.")
     files = sorted(
         p for p in dataset_dir.glob("*")
-        if p.is_file() and p.suffix.lower() in EXTENSIONS
+        if p.is_file()
+        and p.suffix.lower() in EXTENSIONS
+        and (not args.profile_id or p.name in approved_names)
     ) if dataset_dir.is_dir() else []
+    if args.profile_id and len(files) != len(approved_names):
+        raise SystemExit("One or more approved training photos are missing from the profile dataset. Re-review and retry.")
     if len(files) < 5:
         raise SystemExit(
             f"Found {len(files)} face photos in {dataset_dir}. Add at least 5 good photos; 15–30 varied photos "
