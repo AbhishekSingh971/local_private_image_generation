@@ -18,7 +18,8 @@ _CANONICAL_5 = None
 
 
 def _model_path(value=None):
-    return Path(value or os.environ.get("FACE_IDENTITY_ONNX_MODEL") or "").expanduser()
+    raw = str(value or os.environ.get("FACE_IDENTITY_ONNX_MODEL") or "").strip()
+    return Path(raw).expanduser() if raw else None
 
 
 def _load_session(model_path):
@@ -54,7 +55,11 @@ def _aligned_face(image):
     rgb = np.asarray(ImageOps.exif_transpose(image).convert("RGB"))
     if rgb.ndim != 3 or min(rgb.shape[:2]) < 64:
         raise ValueError("Reference or generated face image is too small.")
-    with mp.solutions.face_mesh.FaceMesh(
+    from pose_validation import _face_mesh_api
+    mesh_api = _face_mesh_api(mp)
+    if mesh_api is None:
+        raise RuntimeError("MediaPipe Face Mesh is unavailable in this environment.")
+    with mesh_api.FaceMesh(
         static_image_mode=True, max_num_faces=2, refine_landmarks=False,
         min_detection_confidence=0.55,
     ) as detector:
@@ -105,7 +110,7 @@ def _embedding(image, session):
 def evaluate_identity_similarity(reference_images, generated_image, *, model_path=None) -> dict:
     """Compare a generated face to a centroid of at least two consented references."""
     configured = _model_path(model_path)
-    if not str(configured):
+    if configured is None:
         return {
             "status": "not_configured",
             "reason": "Set FACE_IDENTITY_ONNX_MODEL to a licensed ArcFace-compatible 112 × 112 ONNX model.",
