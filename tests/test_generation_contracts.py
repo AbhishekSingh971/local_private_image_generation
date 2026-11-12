@@ -304,3 +304,12 @@ def test_identity_evaluation_is_optional_without_model(monkeypatch):
         Image.new("RGB", (112, 112)),
     )
     assert report["status"] == "not_configured"
+
+
+
+def test_video_identity_evaluator_is_optional_without_model(monkeypatch, tmp_path):
+    from video_quality import evaluate_video_identity
+
+    monkeypatch.delenv("FACE_IDENTITY_ONNX_MODEL", raising=False)
+    report = evaluate_video_identity(tmp_path / "not-created.mp4", [])
+    assert report["status"] == "not_configured"
