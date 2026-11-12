@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from generation_contracts import ensure_token_capacity
+from generation_contracts import count_flux2_prompt_tokens
 
 _PIPELINE = None
 _PIPELINE_SOURCE = None
@@ -73,22 +73,8 @@ def load_flux2_pipeline(source: str | Path | None = None, *, device: str = "cuda
 
 
 def _prompt_token_count(pipeline, prompt: str) -> int:
-    """Count with the model tokenizer before inference; never let it silently clip."""
-    tokenizer = getattr(pipeline, "tokenizer", None)
-    if tokenizer is None or not callable(tokenizer):
-        raise RuntimeError(
-            "Could not inspect the FLUX.2 prompt tokenizer on this Diffusers build. "
-            "Generation was stopped to avoid silently truncating your prompt."
-        )
-    encoded = tokenizer(prompt, add_special_tokens=True, truncation=False)
-    input_ids = encoded.get("input_ids") if hasattr(encoded, "get") else None
-    if input_ids is None:
-        raise RuntimeError("FLUX.2 tokenizer did not return input_ids; prompt length could not be verified.")
-    if input_ids and isinstance(input_ids[0], list):
-        count = len(input_ids[0])
-    else:
-        count = len(input_ids)
-    return ensure_token_capacity(count, MAX_PROMPT_TOKENS, "FLUX.2 prompt")
+    """Count the exact Qwen chat-template input used by Diffusers before truncation."""
+    return count_flux2_prompt_tokens(pipeline, prompt)
 
 
 def generate_flux2_image(
