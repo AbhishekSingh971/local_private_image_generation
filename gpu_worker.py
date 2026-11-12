@@ -29,6 +29,9 @@ import app as local_engine
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
 from generation_contracts import preserve_generation_text
+from model_artifacts import safe_extract_lora_bundle, sha256_bytes
+import shutil
+import tempfile
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from face_profiles import (
     create_profile,
@@ -41,7 +44,7 @@ from face_profiles import (
 )
 
 worker = Flask("remote_gpu_worker")
-worker.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
+worker.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
 TOKEN = os.environ.get("REMOTE_API_TOKEN", "").strip()
 TASKS = {}
 TASKS_LOCK = threading.RLock()
@@ -264,6 +267,54 @@ def remote_train_profile():
         return jsonify(error=str(exc)), 400
     except RuntimeError as exc:
         return jsonify(error=str(exc)), 500
+
+
+@worker.post("/api/remote/models/<profile_id>/restore")
+def remote_restore_model_version(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile is not present on this GPU worker. Sync the profile before restoring a model."), 404
+    if profile.get("local_training_state") == "running":
+        return jsonify(error="Cannot restore a model while face LoRA training is running."), 409
+    upload = request.files.get("bundle")
+    if not upload:
+        return jsonify(error="A model bundle is required."), 400
+    bundle_data = upload.stream.read(512 * 1024 * 1024 + 1)
+    if not bundle_data or len(bundle_data) > 512 * 1024 * 1024:
+        return jsonify(error="Model bundle must be non-empty and no larger than 512 MB."), 413
+    expected_hash = (request.form.get("sha256") or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_hash) or sha256_bytes(bundle_data) != expected_hash:
+        return jsonify(error="Model bundle checksum is invalid."), 409
+    target = model_path(profile_id)
+    temp_root = Path(tempfile.mkdtemp(prefix=f"restore-{profile_id}-", dir=str(target.parent)))
+    staging, backup = temp_root / "staging", temp_root / "previous"
+    try:
+        safe_extract_lora_bundle(bundle_data, staging)
+        if target.exists():
+            target.rename(backup)
+        try:
+            staging.rename(target)
+        except Exception:
+            if backup.exists() and not target.exists():
+                backup.rename(target)
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
+        update_profile(
+            profile_id, local_model_ready=True,
+            local_training_state="completed", local_training_error=None,
+        )
+        return jsonify(status="restored", profile_id=profile_id, sha256=expected_hash)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        worker.logger.exception("Could not restore remote face model version")
+        return jsonify(error="Remote face model restore failed. The previous model was preserved when possible."), 500
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 @worker.get("/api/remote/jobs/<job_id>")
