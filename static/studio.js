@@ -1036,6 +1036,10 @@
   const finalPromptLabel = $("#finalPromptLabel");
   const finalPromptHelp = $("#finalPromptHelp");
   const aspectRatioSelect = $("#aspectRatio");
+  const imagePresetSelect = $("#imagePreset");
+  const generationProfileSelect = $("#generationProfile");
+  const strengthInput = $("#strength");
+  const strengthNumberInput = $("#strengthNumber");
 
   function updateImageModelControls() {
     const family = modelFamilySelect?.value || "sd15";
@@ -1054,6 +1058,10 @@
     }
     if (negativePromptInput) negativePromptInput.disabled = isFlux2;
     if (strengthGroup) strengthGroup.hidden = isFlux2;
+    if (strengthInput) strengthInput.disabled = isFlux2;
+    if (strengthNumberInput) strengthNumberInput.disabled = isFlux2;
+    if (imagePresetSelect) imagePresetSelect.disabled = isFlux2;
+    if (generationProfileSelect) generationProfileSelect.disabled = isFlux2;
     const faceControlsEnabled = family === "sd15";
     if (faceProfileInput) faceProfileInput.disabled = !faceControlsEnabled;
     if (globalBodyModelInput) {
@@ -1084,7 +1092,7 @@
     if (negativePromptHelp) negativePromptHelp.hidden = !isFlux2;
     if (finalPromptLabel) finalPromptLabel.textContent = isFlux2 ? "Prompt sent to FLUX.2 Klein · editable" : "Final prompt sent to model · editable";
     if (finalPromptHelp) finalPromptHelp.textContent = isFlux2
-      ? "Your full text is sent directly to FLUX.2 Klein without automatic caption rewriting. The app checks the tokenizer's 512-token limit and rejects an oversized prompt rather than shortening it."
+      ? "Your full text is sent directly to FLUX.2 Klein without automatic caption rewriting. The app checks the exact Qwen chat-template input against the 512-token limit and rejects overflow rather than shortening it. Image preset, generation profile and denoising strength are disabled because this distilled pipeline does not expose those controls."
       : "Review or edit the compiled prompt before generating. The original prompt and compiled prompt are stored separately.";
     if (aspectRatioSelect) {
       const labels = family === "flux2_klein"
