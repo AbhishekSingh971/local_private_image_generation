@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import threading
 import uuid
@@ -120,6 +121,13 @@ def ensure_schema() -> None:
                 backend VARCHAR(16) NOT NULL, filename VARCHAR(255) NOT NULL, file_count INTEGER NOT NULL,
                 bundle_size INTEGER NOT NULL, bundle_data BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 CONSTRAINT uq_face_model_profile_backend UNIQUE(profile_id, backend))""",
+            """CREATE TABLE IF NOT EXISTS face_model_versions (
+                id VARCHAR(32) PRIMARY KEY, profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+                backend VARCHAR(16) NOT NULL, version_number INTEGER NOT NULL, filename VARCHAR(255) NOT NULL,
+                file_count INTEGER NOT NULL, bundle_size INTEGER NOT NULL, sha256 VARCHAR(64) NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb, bundle_data BYTEA NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT uq_face_model_version UNIQUE(profile_id,backend,version_number))""",
             """CREATE TABLE IF NOT EXISTS generated_assets (
                 id VARCHAR(32) PRIMARY KEY, asset_type VARCHAR(12) NOT NULL, title VARCHAR(160) NOT NULL,
                 filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL, prompt TEXT NOT NULL DEFAULT '',
@@ -168,6 +176,7 @@ def ensure_schema() -> None:
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_profile_id ON face_dataset_jobs(profile_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_status ON face_dataset_jobs(status)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_model_artifacts_profile_id ON face_model_artifacts(profile_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_face_model_versions_profile_id ON face_model_versions(profile_id,backend,version_number DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_asset_type ON generated_assets(asset_type)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_profile_id ON generated_assets(profile_id)")
                 # Group legacy ungrouped profile photos so they appear in the review UI.
@@ -671,6 +680,77 @@ def save_face_model_bundle(profile_id,backend,filename,bundle_data,file_count):
         RETURNING id,profile_id,backend,filename,file_count,bundle_size,updated_at""",
         (uuid.uuid4().hex,profile_id,backend,name,int(file_count),len(bundle_data),bundle_data))
     return dict(r,updated_at=_iso(r["updated_at"]))
+
+
+def save_face_model_version(profile_id, backend, filename, bundle_data, file_count, metadata=None):
+    """Append an immutable, checksummed LoRA artifact version."""
+    if backend not in {"local", "runpod"}:
+        raise ValueError("Face model backend must be local or runpod.")
+    if not bundle_data or len(bundle_data) > 512 * 1024 * 1024:
+        raise ValueError("Face model bundle must be non-empty and no larger than 512 MB.")
+    ensure_schema()
+    digest = hashlib.sha256(bundle_data).hexdigest()
+    metadata_json = json.dumps(metadata if isinstance(metadata, dict) else {}, separators=(",", ":"), default=str)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"{profile_id}:{backend}",))
+        cur.execute(
+            "SELECT COALESCE(MAX(version_number),0)+1 AS next_version FROM face_model_versions WHERE profile_id=%s AND backend=%s",
+            (profile_id, backend),
+        )
+        version_number = int(cur.fetchone()["next_version"])
+        cur.execute(
+            """INSERT INTO face_model_versions(
+                id,profile_id,backend,version_number,filename,file_count,bundle_size,sha256,metadata,bundle_data
+            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+            RETURNING id,profile_id,backend,version_number,filename,file_count,bundle_size,sha256,metadata,created_at""",
+            (uuid.uuid4().hex,profile_id,backend,version_number,Path(filename).name,int(file_count),
+             len(bundle_data),digest,metadata_json,bundle_data),
+        )
+        row = cur.fetchone()
+    return dict(row, created_at=_iso(row["created_at"]))
+
+
+def list_face_model_versions(profile_id, backend=None, limit=50):
+    ensure_schema()
+    if backend is not None and backend not in {"local", "runpod"}:
+        raise ValueError("Face model backend must be local or runpod.")
+    if backend:
+        rows = _all(
+            """SELECT id,profile_id,backend,version_number,filename,file_count,bundle_size,sha256,metadata,created_at
+               FROM face_model_versions WHERE profile_id=%s AND backend=%s
+               ORDER BY version_number DESC LIMIT %s""",
+            (profile_id,backend,max(1,min(int(limit),100))),
+        )
+    else:
+        rows = _all(
+            """SELECT id,profile_id,backend,version_number,filename,file_count,bundle_size,sha256,metadata,created_at
+               FROM face_model_versions WHERE profile_id=%s
+               ORDER BY created_at DESC LIMIT %s""",
+            (profile_id,max(1,min(int(limit),100))),
+        )
+    result=[]
+    for row in rows:
+        item=dict(row,created_at=_iso(row.get("created_at")))
+        if isinstance(item.get("metadata"), str):
+            try: item["metadata"]=json.loads(item["metadata"])
+            except (TypeError,ValueError): item["metadata"]={}
+        result.append(item)
+    return result
+
+
+def get_face_model_version(profile_id, version_id):
+    ensure_schema()
+    row = _one(
+        "SELECT * FROM face_model_versions WHERE profile_id=%s AND id=%s",
+        (profile_id,version_id),
+    )
+    if not row:
+        return None
+    result=dict(row,created_at=_iso(row.get("created_at")),bundle_data=bytes(row["bundle_data"]))
+    if isinstance(result.get("metadata"), str):
+        try: result["metadata"]=json.loads(result["metadata"])
+        except (TypeError,ValueError): result["metadata"]={}
+    return result
 
 
 def get_face_model_bundle(profile_id,backend):
