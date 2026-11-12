@@ -37,7 +37,7 @@ from face_profiles import (
     validate_profile_id,
 )
 
-worker = Flask("runpod_gpu_worker")
+worker = Flask("remote_gpu_worker")
 worker.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 TOKEN = os.environ.get("REMOTE_API_TOKEN", "").strip()
 TASKS = {}
