@@ -1027,6 +1027,8 @@
   const negativePromptInput = $("#negativePrompt");
   const strengthGroup = $("#strengthGroup");
   const faceProfileInput = $("#faceProfile");
+  const globalBodyModelInput = $("#useGlobalBodyModel");
+  const globalBodyModelStatus = $("#globalBodyGenerationStatus");
   const faceAngleGroup = $("#faceAngleGroup");
   const faceExpressionGroup = $("#faceExpressionGroup");
   const negativePromptHelp = $("#negativePromptHelp");
@@ -1054,6 +1056,15 @@
     if (strengthGroup) strengthGroup.hidden = isFlux2;
     const faceControlsEnabled = family === "sd15";
     if (faceProfileInput) faceProfileInput.disabled = !faceControlsEnabled;
+    if (globalBodyModelInput) {
+      globalBodyModelInput.disabled = !faceControlsEnabled;
+      if (!faceControlsEnabled) globalBodyModelInput.checked = false;
+    }
+    if (globalBodyModelStatus) {
+      globalBodyModelStatus.textContent = faceControlsEnabled
+        ? "Optional SD 1.5 adapter. Generate body samples and train the shared model before applying it."
+        : "This model uses its built-in anatomy. The SD 1.5 body adapter is unavailable here and is not required.";
+    }
     if (faceAngleGroup) {
       faceAngleGroup.hidden = !faceControlsEnabled;
       const angleField = faceAngleGroup.querySelector("select");
