@@ -195,6 +195,20 @@ Model access: the model is published on Hugging Face. Follow the repository's cu
 Model card: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
 Official inference examples: https://github.com/black-forest-labs/flux2
 
+## AI x4 image upscaling
+
+Image generation has an optional **AI x4 super-resolution** stage. It uses Diffusers' `StableDiffusionUpscalePipeline` with the configurable checkpoint `IMAGE_UPSCALER_MODEL_ID` (default: `stabilityai/stable-diffusion-x4-upscaler`). It is separate from the output-resolution Lanczos resize.
+
+- Leave it disabled for the fastest generation and lowest GPU memory use.
+- Enable it in the image-generation form to run the upscaler after the base model.
+- It requires CUDA and downloads/loads a separate checkpoint on first use.
+- Configure `IMAGE_UPSCALER_MODEL_ID` and `HF_TOKEN` on both the web process (for local GPU) and the remote worker when applicable.
+- Upscaling uses 10–30 inference steps (default 20). Larger inputs are first reduced to a maximum 768-pixel long edge before the x4 stage to limit memory use.
+- Super-resolution is generative and may alter identity details. Compare the result with the original; do not use it as an identity-preservation guarantee.
+- If the upscaler fails, the request reports the error rather than silently claiming an enhanced result.
+
+The output-resolution selector remains a final pixel resize and is not AI upscaling.
+
 ## GPU acceptance benchmark
 
 Before enabling a model for production traffic, run the real-GPU acceptance script on the actual CUDA worker. It generates a test image and writes a JSON report containing model ID, GPU/VRAM, elapsed time, peak allocated/reserved memory, requested/output dimensions, seed and prompt-token measurements. It does not upload or use face datasets.
