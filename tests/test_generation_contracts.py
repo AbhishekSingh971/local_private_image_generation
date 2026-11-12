@@ -252,3 +252,42 @@ def test_disabled_upscaling_ignores_irrelevant_step_value():
     options = resolve_upscale_options(False, "not-used")
     assert options["enabled"] is False
     assert options["steps"] == 20
+
+
+
+def test_private_data_encryption_round_trip_and_key_rotation(monkeypatch):
+    from private_data_crypto import decrypt_sensitive_bytes, encrypt_sensitive_bytes, is_encrypted
+
+    old_key = "11" * 32
+    new_key = "22" * 32
+    monkeypatch.setenv("FACE_DATA_ENCRYPTION_KEY", old_key)
+    payload = b"private face photo bytes"
+    encrypted = encrypt_sensitive_bytes(payload)
+    assert is_encrypted(encrypted)
+    assert decrypt_sensitive_bytes(encrypted) == payload
+    monkeypatch.setenv("FACE_DATA_ENCRYPTION_KEY", new_key)
+    monkeypatch.setenv("FACE_DATA_ENCRYPTION_KEY_PREVIOUS", old_key)
+    assert decrypt_sensitive_bytes(encrypted) == payload
+    reencrypted = encrypt_sensitive_bytes(payload)
+    assert decrypt_sensitive_bytes(reencrypted) == payload
+    assert reencrypted != encrypted
+
+
+def test_private_data_encryption_requires_key_to_decrypt(monkeypatch):
+    from private_data_crypto import decrypt_sensitive_bytes, encrypt_sensitive_bytes
+
+    monkeypatch.setenv("FACE_DATA_ENCRYPTION_KEY", "33" * 32)
+    encrypted = encrypt_sensitive_bytes(b"secret")
+    monkeypatch.delenv("FACE_DATA_ENCRYPTION_KEY")
+    with pytest.raises(RuntimeError, match="Could not decrypt private data"):
+        decrypt_sensitive_bytes(encrypted)
+
+
+def test_private_data_encryption_is_backward_compatible_without_key(monkeypatch):
+    from private_data_crypto import decrypt_sensitive_bytes, encrypt_sensitive_bytes, is_encrypted
+
+    monkeypatch.delenv("FACE_DATA_ENCRYPTION_KEY", raising=False)
+    raw = b"legacy plaintext data"
+    assert encrypt_sensitive_bytes(raw) == raw
+    assert decrypt_sensitive_bytes(raw) == raw
+    assert not is_encrypted(raw)
