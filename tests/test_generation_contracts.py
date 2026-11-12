@@ -291,3 +291,16 @@ def test_private_data_encryption_is_backward_compatible_without_key(monkeypatch)
     assert encrypt_sensitive_bytes(raw) == raw
     assert decrypt_sensitive_bytes(raw) == raw
     assert not is_encrypted(raw)
+
+
+
+def test_identity_evaluation_is_optional_without_model(monkeypatch):
+    from PIL import Image
+    from identity_evaluation import evaluate_identity_similarity
+
+    monkeypatch.delenv("FACE_IDENTITY_ONNX_MODEL", raising=False)
+    report = evaluate_identity_similarity(
+        [Image.new("RGB", (112, 112)), Image.new("RGB", (112, 112))],
+        Image.new("RGB", (112, 112)),
+    )
+    assert report["status"] == "not_configured"
