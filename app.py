@@ -2401,6 +2401,11 @@ def diagnostics_page():
     return render_template("diagnostics.html", active_page="diagnostics")
 
 
+@app.get("/geometry")
+def geometry_page():
+    return render_template("geometry.html", active_page="geometry")
+
+
 @app.post("/api/geometry/analyze")
 def api_geometry_analyze():
     upload = request.files.get("image")
