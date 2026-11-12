@@ -3079,7 +3079,7 @@ def generate():
             backend=backend, model_family=model_family,
             original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
             generation_metadata=asset.get("generation_metadata", {}),
-            quality_report=quality_report,
+            quality_report=quality_report, seed=seed,
             message=message + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else ""),
         )
     finally:
@@ -3183,7 +3183,8 @@ def generate_video():
             )
             return jsonify(
                 status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
-                asset_id=asset["id"], title=asset["title"],
+                asset_id=asset["id"], title=asset["title"], seed=seed,
+                generation_metadata=asset.get("generation_metadata", {}),
                 face_profile=profile["name"] if profile else None, backend="cloud_gpu",
                 message="Generated on the selected cloud GPU and saved to the database library.",
             )
@@ -3288,7 +3289,8 @@ def generate_video():
         )
         return jsonify(
             status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
-            asset_id=asset["id"], title=asset["title"],
+            asset_id=asset["id"], title=asset["title"], seed=seed,
+            generation_metadata=asset.get("generation_metadata", {}),
             face_profile=profile["name"] if profile else None, backend="local_gpu",
             message="Generated locally on the System GPU and saved to the database library.",
         )
