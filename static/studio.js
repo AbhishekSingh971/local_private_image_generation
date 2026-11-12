@@ -42,7 +42,7 @@
     }
     if (key === "cloud_gpu" || key === "runpod") {
       const gpu = options.cloud_gpu || {};
-      return "GHive / Colab GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
+      return "Remote GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
     }
     return "Local CPU (fallback)";
   }
@@ -60,13 +60,13 @@
     if (selected === "local_gpu") {
       gpuStatus.textContent = "GPU acceleration is ON. Image generation will run on the detected System GPU: " + (computeAvailability?.local_gpu?.name || "CUDA GPU") + ".";
     } else if (selected === "cloud_gpu" || selected === "runpod") {
-      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected remote GPU: " + (computeAvailability?.cloud_gpu?.name || "GHive / Colab GPU") + ". Requests are sent securely from the app to your configured worker.";
+      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected remote GPU: " + (computeAvailability?.cloud_gpu?.name || "configured remote GPU") + ". Requests are sent securely from the app to your configured worker.";
     } else if (requested === "auto") {
       gpuStatus.textContent = "GPU acceleration is ON, but no usable GPU is available. Auto mode is falling back to local CPU; image generation may be very slow. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
     } else {
       gpuStatus.textContent = "CPU fallback selected explicitly. Generation will run on the local CPU, not a GPU.";
     }
-    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " GHive / Colab GPU unavailable: " + computeAvailability.cloud_error;
+    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " Remote GPU unavailable: " + computeAvailability.cloud_error;
   }
   function renderComputeOptions(options) {
     computeAvailability = options;
@@ -774,14 +774,14 @@
     try {
       globalBodyStatusCache=await readJson(await fetch("/api/global-body/status",{cache:"no-store"}));
       const info=globalBodyStatusCache;
-      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · GHive / Colab GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
+      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · Remote GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
       if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", remote GPU: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
       const requestedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
       const selectedBackend=requestedBackend==="auto"?(computeAvailability?.auto_backend||"auto"):requestedBackend;
       const backendReady=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?info.runpod_model_ready:(selectedBackend==="auto"?false:info.local_model_ready);
       const generationBodyCheckbox=$("#useGlobalBodyModel");
-      if(generationBodyCheckbox){generationBodyCheckbox.disabled=!backendReady;if(!backendReady)generationBodyCheckbox.checked=false;}
-      if(editBodyCheckbox){editBodyCheckbox.disabled=!backendReady;if(editBodyCheckbox.disabled)editBodyCheckbox.checked=false;}
+      if(generationBodyCheckbox){generationBodyCheckbox.disabled=false;}
+      if(editBodyCheckbox){editBodyCheckbox.disabled=false;}
       const trainBodyButton=$("#trainGlobalBodyButton");
       if(trainBodyButton)trainBodyButton.disabled=Number(info.image_count||0)<5;
       return info;
@@ -803,7 +803,6 @@
     const title=(titleInput?.value||"").trim()||("Shared body type · "+new Date().toLocaleString());
     const bodyPrompt=(promptInput?.value||"").trim();
     if(!bodyPrompt){if(status)status.textContent="Describe the adult body type or figure before generating samples.";return;}
-    if(bodyPrompt.length>1000){if(status)status.textContent="The body prompt must be 1000 characters or fewer.";return;}
     generateBodyDatasetButton.disabled=true;
     const originalText=generateBodyDatasetButton.textContent;
     generateBodyDatasetButton.textContent="Generating body samples…";
@@ -1036,6 +1035,7 @@
         method: "POST", headers: {"Content-Type":"application/json"},
         body: JSON.stringify({
           prompt,
+          model_family: $("#imageModelFamily")?.value || "sd15",
           negative_prompt: $("#negativePrompt")?.value || "",
           image_preset: $("#imagePreset")?.value || "standard",
           has_reference_image: Boolean($("#referenceImage")?.files?.length)
@@ -1056,7 +1056,7 @@
       }
     }
   }
-  ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage"].forEach(selector => {
+  ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage", "#imageModelFamily"].forEach(selector => {
     $(selector)?.addEventListener("input", refreshFinalPromptPreview);
     $(selector)?.addEventListener("change", refreshFinalPromptPreview);
   });
@@ -1076,6 +1076,7 @@
     // the latest form values and the worker receives each enhancement exactly once.
     await refreshFinalPromptPreview();
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
+    formData.set("original_prompt", $("#prompt")?.value || "");
     formData.set("prompt", finalPromptInput?.value || $("#prompt")?.value || "");
     formData.set("negative_prompt", finalNegativePrompt || $("#negativePrompt")?.value || "");
     formData.set("prompt_is_final", "true");
@@ -1509,7 +1510,7 @@
     try{
       const data=await readJson(await fetch("/health"));
       const gpu=data.local_gpu||{};
-      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"GHive / Colab GPU worker is configured; enable GPU acceleration to check availability.":"GHive / Colab GPU worker is not configured; local CPU remains available.");
+      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"A remote GPU worker is configured; enable GPU acceleration to check availability.":"No remote GPU worker is configured; local CPU remains available.");
     }catch(error){if(gpuStatus)gpuStatus.textContent=error.message;}
   }
   loadStatus();
