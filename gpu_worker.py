@@ -454,13 +454,6 @@ def remote_generate():
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
     if not prompt:
         return jsonify(error="Prompt is required."), 400
-    if len(prompt) > 1200:
-        return jsonify(error=f"Prompt is {len(prompt)} characters; the worker limit is 1200."), 400
-    # The local UI enhances the user's negative prompt with realism/anatomy
-    # constraints before forwarding it. Allow that combined value without
-    # repeatedly modifying the user's editable text.
-    if len(negative_prompt) > 1200:
-        return jsonify(error=f"Enhanced negative prompt is {len(negative_prompt)} characters; the worker limit is 1200."), 400
     if not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
         return jsonify(error="Invalid step count or image strength."), 400
     if not torch.cuda.is_available():
