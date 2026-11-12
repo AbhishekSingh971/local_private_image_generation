@@ -1787,6 +1787,12 @@ def api_delete_face_dataset_group(group_id):
         return jsonify(error="Dataset group not found."), 404
     if existing_group.get("status") == "generating":
         return jsonify(error="This dataset group is still generating. Wait for it to finish before deleting it."), 409
+    profile = get_profile(existing_group["profile_id"])
+    if profile and (
+        profile.get("local_training_state") == "running"
+        or profile.get("runpod_training_state") == "running"
+    ):
+        return jsonify(error="Face-model training is running. Dataset groups are locked until the training snapshot finishes."), 409
     try:
         photo_records = list_face_dataset_group_photo_records(group_id)
         staged = _stage_profile_dataset_files(
