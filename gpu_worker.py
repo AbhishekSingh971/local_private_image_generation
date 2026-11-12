@@ -505,7 +505,8 @@ def remote_generate():
             with Image.open(uploaded.stream) as source:
                 image = ImageOps.exif_transpose(source).convert("RGB")
                 image.load()
-            image = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
+            if model_family != "flux2_klein":
+                image = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
             return jsonify(error="Reference image is not a valid PNG, JPG or WEBP image."), 400
     pose_uploaded = request.files.get("pose_control_image")
