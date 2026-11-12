@@ -130,4 +130,4 @@ def test_training_selector_rejects_windows_path_traversal(tmp_path):
     from training_approval import select_approved_training_files
 
     with pytest.raises(ValueError, match="plain file basenames"):
-        select_approved_training_files(tmp_path, [r"..\\outside.jpg"], {".jpg"})
+        select_approved_training_files(tmp_path, [r"..\outside.jpg"], {".jpg"})
