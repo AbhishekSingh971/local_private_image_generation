@@ -224,6 +224,14 @@ python gpu_acceptance.py --model-family flux2_klein --reference-image path/to/re
 
 Run this on the target worker after installing its CUDA-compatible PyTorch build and accepting any required model access terms. Keep the generated PNG and JSON report private if they contain user-provided reference imagery or prompts. CPU CI compiles this script but does not download models or claim that GPU acceptance has passed.
 
+## Face identity consistency evaluation
+
+An optional evaluator can compare a generated face against the profile's **human-approved** reference photos. Configure `FACE_IDENTITY_ONNX_MODEL` with a user-supplied, appropriately licensed ArcFace-compatible ONNX model that accepts a normalized NCHW 112 × 112 face tensor. Install `onnxruntime` separately to enable it; no biometric model weights are bundled or downloaded by this repository. Set `FACE_IDENTITY_MODEL_VERSION` so scores can be compared across releases.
+
+The evaluator aligns one detected face with MediaPipe landmarks, creates normalized embeddings, compares the generated embedding to the approved-reference centroid and stores cosine similarity in the asset's quality metadata. It does not identify a person, prove identity, or apply an automatic pass threshold. Calibrate thresholds on a private, consented benchmark and retain human review. Only use photos of adults who have explicitly consented to this processing, and verify the evaluator model's commercial-use license before deployment.
+
+Without the optional ONNX model, the app still records technical image quality and face geometry but labels identity similarity as not configured.
+
 ## Model version history and rollback
 
 When PostgreSQL is configured, each successful local or cloud face LoRA training run is archived as an immutable version with a SHA-256 checksum, backend, file count and training metadata. The latest artifact remains available for the existing worker flow. The Face Models profile card exposes **Model versions**; local and cloud versions can be restored after checksum verification. Cloud rollback sends the archived bundle to the authenticated GPU worker.
