@@ -2637,8 +2637,8 @@ def generate():
         return jsonify(error="Face profile not found."), 404
     if profile_id and not supports_face_lora(model_family):
         return jsonify(
-            error="This face profile has an SD 1.5 LoRA. SDXL adapters are model-family-specific; "
-                  "choose Stable Diffusion 1.5 for this identity or generate with SDXL without the trained face."
+            error="This face profile has an SD 1.5 LoRA and cannot be loaded by the selected model family. "
+                  "Choose Stable Diffusion 1.5 to use this trained identity, or continue with the selected base model without it."
         ), 400
     if (face_angle or face_expression) and not profile_id:
         return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
