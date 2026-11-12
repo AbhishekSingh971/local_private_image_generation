@@ -571,7 +571,7 @@ def _safe_profile_count():
         return 0
 
 
-def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode):
+def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode, original_prompt=None, model_family="sd15"):
     folder = OUTPUT_DIR if asset_type == "image" else VIDEO_OUTPUT_DIR
     path = folder / Path(filename).name
     try:
@@ -583,6 +583,8 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
             media_data=path.read_bytes(),
             prompt=prompt,
             negative_prompt=negative_prompt,
+            original_prompt=original_prompt if original_prompt is not None else prompt,
+            model_family=model_family,
             profile_id=profile["id"] if profile else None,
             profile_name=profile["name"] if profile else None,
             backend=backend,
@@ -2727,6 +2729,7 @@ def generate():
             try:
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
+                    original_prompt=original_prompt, model_family=model_family,
                     profile=profile, backend="cloud_gpu", generation_mode="img2img" if init_image is not None else "txt2img",
                 )
             except RuntimeError as exc:
@@ -2820,6 +2823,7 @@ def generate():
         try:
             asset = _persist_generated_asset(
                 "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
+                original_prompt=original_prompt, model_family=model_family,
                 profile=profile, backend=backend, generation_mode="img2img" if init_image is not None else "txt2img",
             )
         except RuntimeError as exc:
@@ -2834,14 +2838,17 @@ def generate():
             message = "Generated locally on this computer's CPU and saved to the database library."
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="completed", progress=100,
-            current_step=steps, total_steps=steps, stage="completed", message="Image saved to the library.",
+            current_step=steps, total_steps=steps, stage="completed",
+            message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
         )
         return jsonify(
             status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
             asset_id=asset["id"], title=asset["title"],
             mode="img2img" if init_image is not None else "txt2img",
             face_profile=profile["name"] if profile else None,
-            backend=backend, message=message,
+            backend=backend, model_family=model_family,
+            original_prompt=original_prompt,
+            message=message + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
         )
     finally:
         generation_lock.release()
