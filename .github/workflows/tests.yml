@@ -32,7 +32,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/studio_test
+      CI_POSTGRES_TEST_URL: postgresql://postgres:postgres@localhost:5432/studio_test
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

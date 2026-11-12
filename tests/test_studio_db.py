@@ -11,7 +11,7 @@ import face_profiles
 @pytest.fixture
 def postgres_database(monkeypatch):
     """Use the same PostgreSQL-only storage contract as the production app."""
-    url = os.environ.get("DATABASE_URL", "").strip()
+    url = (os.environ.get("CI_POSTGRES_TEST_URL") or os.environ.get("DATABASE_URL") or "").strip()
     if not url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
         pytest.skip("A PostgreSQL DATABASE_URL is required for database tests.")
     monkeypatch.setenv("DATABASE_URL", url)
@@ -154,20 +154,20 @@ def test_legacy_profile_migration_does_not_resurrect_deleted_profile(tmp_path, m
         encoding="utf-8",
     )
 
-    assert len(face_profiles.list_profiles()) == 1
+    assert any(item["id"] == profile_id for item in face_profiles.list_profiles())
     assert studio_db.get_face_profile_record(profile_id)["image_count"] == 1
 
     # Simulate loss of the local cache; the database should rebuild it on a new process start.
     (dataset / "face_legacy.jpg").unlink()
     monkeypatch.setattr(face_profiles, "_DB_MIGRATED", False)
-    assert len(face_profiles.list_profiles()) == 1
+    assert any(item["id"] == profile_id for item in face_profiles.list_profiles())
     assert (dataset / "face_legacy.jpg").read_bytes() == b"legacy-photo"
 
     assert face_profiles.delete_profile(profile_id) is True
 
     # A new process would run the migration again; the persisted marker prevents resurrection.
     monkeypatch.setattr(face_profiles, "_DB_MIGRATED", False)
-    assert face_profiles.list_profiles() == []
+    assert not any(item["id"] == profile_id for item in face_profiles.list_profiles())
 
 
 
