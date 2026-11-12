@@ -195,6 +195,21 @@ Model access: the model is published on Hugging Face. Follow the repository's cu
 Model card: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
 Official inference examples: https://github.com/black-forest-labs/flux2
 
+## GPU acceptance benchmark
+
+Before enabling a model for production traffic, run the real-GPU acceptance script on the actual CUDA worker. It generates a test image and writes a JSON report containing model ID, GPU/VRAM, elapsed time, peak allocated/reserved memory, requested/output dimensions, seed and prompt-token measurements. It does not upload or use face datasets.
+
+Examples:
+
+```bash
+python gpu_acceptance.py --model-family flux2_klein --seed 12345
+python gpu_acceptance.py --model-family sd15 --seed 12345
+python gpu_acceptance.py --model-family sdxl --seed 12345
+python gpu_acceptance.py --model-family flux2_klein --reference-image path/to/reference.jpg --seed 12345
+```
+
+Run this on the target worker after installing its CUDA-compatible PyTorch build and accepting any required model access terms. Keep the generated PNG and JSON report private if they contain user-provided reference imagery or prompts. CPU CI compiles this script but does not download models or claim that GPU acceptance has passed.
+
 ## Face-photo approval before training
 
 Face-photo quality validation and human training approval are separate states:
