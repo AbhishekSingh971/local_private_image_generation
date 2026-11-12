@@ -109,10 +109,11 @@ def generate_flux3_image(
     }
     if image is not None:
         kwargs["image"] = image
-    if width is not None:
-        kwargs["width"] = int(width)
-    if height is not None:
-        kwargs["height"] = int(height)
+    else:
+        if width is not None:
+            kwargs["width"] = int(width)
+        if height is not None:
+            kwargs["height"] = int(height)
 
     # FLUX 3 Klein distilled has no negative_prompt or per-image strength input.
     # A separate lock prevents two HTTP threads from concurrently moving its
