@@ -344,3 +344,19 @@ def test_structured_prompt_does_not_change_prompt_without_controls():
 
     original = "  Keep this exact prompt  "
     assert build_structured_prompt(original, {}) == original
+
+
+
+def test_face_restoration_options_are_opt_in():
+    from face_restoration import resolve_face_restoration_options
+
+    options = resolve_face_restoration_options(False, "invalid")
+    assert options["enabled"] is False
+    assert options["model_path"] is None
+
+
+def test_face_restoration_options_validate_fidelity():
+    from face_restoration import resolve_face_restoration_options
+
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        resolve_face_restoration_options(True, 1.5)
