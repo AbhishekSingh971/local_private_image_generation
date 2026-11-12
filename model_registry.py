@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-SUPPORTED_MODEL_FAMILIES = ("sd15", "sdxl", "flux3_klein")
+SUPPORTED_MODEL_FAMILIES = ("sd15", "sdxl", "flux2_klein")
 
 _MODEL_CONFIG = {
     "sd15": {
@@ -33,20 +33,21 @@ _MODEL_CONFIG = {
         "supports_pose_control": False,
         "minimum_recommended_vram_gb": 12,
     },
-    "flux3_klein": {
-        "label": "FLUX 3 Image Klein (distilled)",
-        "default_model_id": "black-forest-labs/flux-3-image-klein",
-        "model_id_env": "FLUX3_KLEIN_MODEL_ID",
-        "model_path_env": "FLUX3_KLEIN_MODEL_PATH",
-        "default_local_path": Path(__file__).resolve().parent / "models" / "flux-3-image-klein",
+    "flux2_klein": {
+        "label": "FLUX.2 Klein 4B (distilled)",
+        "default_model_id": "black-forest-labs/FLUX.2-klein-4B",
+        "model_id_env": "FLUX2_KLEIN_MODEL_ID",
+        "model_path_env": "FLUX2_KLEIN_MODEL_PATH",
+        "default_local_path": Path(__file__).resolve().parent / "models" / "flux2-klein-4b",
         "supports_face_lora": False,
         "supports_body_lora": False,
         "supports_pose_control": False,
         "supports_negative_prompt": False,
         "supports_image_strength": False,
-        "supports_prompt_upsampling": True,
-        "minimum_recommended_vram_gb": 24,
-        "license": "FLUX Kommunity License v1.0; commercial use is conditional",
+        "supports_prompt_upsampling": False,
+        "recommended_vram_gb": 13,
+        "license": "Apache-2.0",
+        "distilled_steps": 4,
     },
 }
 
