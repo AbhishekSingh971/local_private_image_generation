@@ -1034,32 +1034,43 @@
   const finalPromptLabel = $("#finalPromptLabel");
   const finalPromptHelp = $("#finalPromptHelp");
   const aspectRatioSelect = $("#aspectRatio");
-  const upsampledPromptDetails = $("#upsampledPromptDetails");
-  const upsampledPromptPreview = $("#upsampledPromptPreview");
 
   function updateImageModelControls() {
     const family = modelFamilySelect?.value || "sd15";
-    const isFlux3 = family === "flux3_klein";
+    const isFlux2 = family === "flux2_klein";
     const stepsInput = $("#steps");
     if (stepsInput) {
-      stepsInput.min = isFlux3 ? "4" : "5";
-      stepsInput.max = isFlux3 ? "16" : "25";
-      if (isFlux3) stepsInput.value = "16";
-      else if (Number(stepsInput.value) > 25 || Number(stepsInput.value) < 5) stepsInput.value = "25";
+      stepsInput.min = isFlux2 ? "4" : "5";
+      stepsInput.max = isFlux2 ? "4" : "25";
+      if (isFlux2) {
+        stepsInput.value = "4";
+        stepsInput.disabled = true;
+      } else {
+        stepsInput.disabled = false;
+        if (Number(stepsInput.value) > 25 || Number(stepsInput.value) < 5) stepsInput.value = "25";
+      }
     }
-    if (negativePromptInput) negativePromptInput.disabled = isFlux3;
-    if (strengthGroup) strengthGroup.hidden = isFlux3;
-    if (faceProfileInput) faceProfileInput.disabled = isFlux3;
-    if (faceAngleGroup) faceAngleGroup.hidden = isFlux3;
-    if (faceExpressionGroup) faceExpressionGroup.hidden = isFlux3;
-    if (negativePromptHelp) negativePromptHelp.hidden = !isFlux3;
-    if (finalPromptLabel) finalPromptLabel.textContent = isFlux3 ? "Prompt sent to FLUX 3 captioner · editable" : "Final prompt sent to model · editable";
-    if (finalPromptHelp) finalPromptHelp.textContent = isFlux3
-      ? "FLUX 3 expands this instruction into a detailed model caption during generation. You can inspect the exact expanded caption after the image is generated; the original text remains saved separately."
+    if (negativePromptInput) negativePromptInput.disabled = isFlux2;
+    if (strengthGroup) strengthGroup.hidden = isFlux2;
+    if (faceProfileInput) faceProfileInput.disabled = isFlux2;
+    if (faceAngleGroup) {
+      faceAngleGroup.hidden = isFlux2;
+      faceAngleGroup.querySelector("select")?.setAttribute("disabled", isFlux2 ? "disabled" : "");
+      if (isFlux2) faceAngleGroup.querySelector("select").value = "";
+    }
+    if (faceExpressionGroup) {
+      faceExpressionGroup.hidden = isFlux2;
+      faceExpressionGroup.querySelector("select")?.setAttribute("disabled", isFlux2 ? "disabled" : "");
+      if (isFlux2) faceExpressionGroup.querySelector("select").value = "";
+    }
+    if (negativePromptHelp) negativePromptHelp.hidden = !isFlux2;
+    if (finalPromptLabel) finalPromptLabel.textContent = isFlux2 ? "Prompt sent to FLUX.2 Klein · editable" : "Final prompt sent to model · editable";
+    if (finalPromptHelp) finalPromptHelp.textContent = isFlux2
+      ? "Your full text is sent directly to FLUX.2 Klein without automatic caption rewriting. The app checks the tokenizer's 512-token limit and rejects an oversized prompt rather than shortening it."
       : "Review or edit the compiled prompt before generating. The original prompt and compiled prompt are stored separately.";
     if (aspectRatioSelect) {
-      const labels = family === "flux3_klein"
-        ? ["Portrait 2:3 · 1024 × 1536", "Square · 1024 × 1024", "Landscape 3:2 · 1536 × 1024"]
+      const labels = family === "flux2_klein"
+        ? ["Portrait 2:3 · 832 × 1216", "Square · 1024 × 1024", "Landscape 3:2 · 1216 × 832"]
         : family === "sdxl"
           ? ["Portrait 2:3 · 832 × 1216", "Square · 1024 × 1024", "Landscape 3:2 · 1216 × 832"]
           : ["Portrait 2:3 · 512 × 768", "Square · 512 × 512", "Landscape 3:2 · 768 × 512"];
@@ -1068,15 +1079,14 @@
       });
     }
     if (modelFamilyHelp) {
-      if (isFlux3) {
-        modelFamilyHelp.textContent = "FLUX 3 Image Klein is the advanced text-to-image and reference-editing backend. It requires a CUDA GPU, accepted access to the gated Hugging Face model, and substantial host/GPU memory. Its built-in caption upsampler can rephrase your request; the exact expanded caption is returned and stored separately for inspection. Existing SD 1.5 face/body LoRAs and the SD 1.5 pose ControlNet are not compatible. The distilled checkpoint has no negative-prompt or denoising-strength input.";
+      if (isFlux2) {
+        modelFamilyHelp.textContent = "FLUX.2 Klein 4B is the advanced Apache-2.0 text-to-image and reference-image editing backend. It is designed for consumer GPUs (around 13 GB VRAM with suitable settings). The distilled checkpoint uses 4 steps. Your prompt is passed directly without automatic caption rewriting; prompts exceeding its 512-token text context are rejected. Existing SD 1.5 face/body LoRAs and the SD 1.5 face-pose ControlNet are not compatible. It does not accept a negative prompt or denoising-strength control.";
       } else if (family === "sdxl") {
         modelFamilyHelp.textContent = "SDXL uses a larger native canvas and typically needs more GPU memory. Existing SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible with SDXL.";
       } else {
         modelFamilyHelp.textContent = "Stable Diffusion 1.5 is the current identity-training backend. Your existing face/body LoRAs and face-pose ControlNet are compatible with this model family.";
       }
     }
-    if (upsampledPromptDetails) upsampledPromptDetails.hidden = true;
   }
 
   modelFamilySelect?.addEventListener("change", () => {
@@ -1140,18 +1150,13 @@
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
     formData.set("original_prompt", $("#prompt")?.value || "");
     formData.set("prompt", finalPromptInput?.value || $("#prompt")?.value || "");
-    formData.set("negative_prompt", modelFamilySelect?.value === "flux3_klein" ? "" : (finalNegativePrompt || $("#negativePrompt")?.value || ""));
+    formData.set("negative_prompt", modelFamilySelect?.value === "flux2_klein" ? "" : (finalNegativePrompt || $("#negativePrompt")?.value || ""));
     formData.set("prompt_is_final", "true");
     const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
       const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
       preview.src=data.image_url;preview.hidden=false;placeholder.hidden=true;
       download.href=data.image_url+"?download=1";download.hidden=false;
-      if (upsampledPromptDetails && upsampledPromptPreview) {
-        const expandedCaption = String(data.upsampled_prompt || "");
-        upsampledPromptPreview.textContent = expandedCaption;
-        upsampledPromptDetails.hidden = !expandedCaption;
-      }
       pill.textContent="Saved to library";
       setFinalGenerationProgress("image",true,data.message||"Image generated and saved to the library.");
       if(status)status.textContent=(data.message||"Image generated.")+" Saved as “"+data.title+"”.";
