@@ -2783,43 +2783,62 @@ def generate():
                 task_id, asset_type="image", backend=backend, status="running", progress=3,
                 total_steps=steps, stage="loading_model", message="Loading the image model and selected face…",
             )
-            pipeline = _load_cpu_or_gpu_pipeline(
-                mode, profile_id, backend, use_global_body_model=use_global_body_model,
-                model_family=model_family,
-            )
-            generator_device = "cuda" if backend == "local_gpu" else "cpu"
-            _set_generation_progress(
-                task_id, asset_type="image", backend=backend, status="running", progress=5,
-                total_steps=steps, stage="denoising", message="Starting image denoising steps…",
-            )
-            def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
-                scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
-                current = min(step_index + 1, scheduler_steps)
-                percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+            if model_family == "flux3_klein":
+                from flux3_engine import generate_flux3_image
+                model_source = model_configuration("flux3_klein")["source"]
                 _set_generation_progress(
-                    task_id, asset_type="image", backend=backend, status="running", progress=percent,
-                    current_step=current, total_steps=scheduler_steps, stage="denoising",
-                    message=f"Generating image · step {current} of {scheduler_steps}",
+                    task_id, asset_type="image", backend=backend, status="running", progress=5,
+                    total_steps=steps, stage="loading_model", message="Loading FLUX 3 Klein and its prompt upsampler…",
                 )
-                return callback_kwargs
-            if _truthy(request.form.get("prompt_is_final")):
-                effective_prompt, effective_negative_prompt = prompt, negative_prompt
+                flux_output = generate_flux3_image(
+                    prompt, image=init_image, seed=seed, steps=steps,
+                    width=width, height=height, source=model_source,
+                )
+                result = flux_output["image"]
+                upsampled_prompt = flux_output["upsampled_prompt"]
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="running", progress=95,
+                    current_step=steps, total_steps=steps, stage="finalizing",
+                    message="FLUX 3 generation finished; finalizing the image and expanded model caption…",
+                )
             else:
-                effective_prompt, effective_negative_prompt = build_generation_prompts(
-                    prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
+                pipeline = _load_cpu_or_gpu_pipeline(
+                    mode, profile_id, backend, use_global_body_model=use_global_body_model,
+                    model_family=model_family,
                 )
-            kwargs = {
-                "prompt": effective_prompt,
-                "negative_prompt": effective_negative_prompt or None,
-                "width": width,
-                "height": height,
-                "num_inference_steps": steps,
-                "guidance_scale": 7.5,
-                "generator": torch.Generator(device=generator_device).manual_seed(seed),
-            }
-            if init_image is not None:
-                kwargs.update(image=init_image, strength=strength)
-            result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+                generator_device = "cuda" if backend == "local_gpu" else "cpu"
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="running", progress=5,
+                    total_steps=steps, stage="denoising", message="Starting image denoising steps…",
+                )
+                def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+                    scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
+                    current = min(step_index + 1, scheduler_steps)
+                    percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+                    _set_generation_progress(
+                        task_id, asset_type="image", backend=backend, status="running", progress=percent,
+                        current_step=current, total_steps=scheduler_steps, stage="denoising",
+                        message=f"Generating image · step {current} of {scheduler_steps}",
+                    )
+                    return callback_kwargs
+                if _truthy(request.form.get("prompt_is_final")):
+                    effective_prompt, effective_negative_prompt = prompt, negative_prompt
+                else:
+                    effective_prompt, effective_negative_prompt = build_generation_prompts(
+                        prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
+                    )
+                kwargs = {
+                    "prompt": effective_prompt,
+                    "negative_prompt": effective_negative_prompt or None,
+                    "width": width,
+                    "height": height,
+                    "num_inference_steps": steps,
+                    "guidance_scale": 7.5,
+                    "generator": torch.Generator(device=generator_device).manual_seed(seed),
+                }
+                if init_image is not None:
+                    kwargs.update(image=init_image, strength=strength)
+                result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=95,
                 current_step=steps, total_steps=steps, stage="finalizing", message="Finalizing the generated image…",
@@ -2846,8 +2865,9 @@ def generate():
         try:
             asset = _persist_generated_asset(
                 "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
-                original_prompt=original_prompt, model_family=model_family,
-                profile=profile, backend=backend, generation_mode="img2img" if init_image is not None else "txt2img",
+                original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
+                model_family=model_family, profile=profile, backend=backend,
+                generation_mode="img2img" if init_image is not None else "txt2img",
             )
         except RuntimeError as exc:
             _set_generation_progress(
@@ -2870,7 +2890,7 @@ def generate():
             mode="img2img" if init_image is not None else "txt2img",
             face_profile=profile["name"] if profile else None,
             backend=backend, model_family=model_family,
-            original_prompt=original_prompt,
+            original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
             message=message + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else ""),
         )
     finally:
