@@ -794,9 +794,18 @@ def private_data_encryption_status():
                 FROM {table}""",
             (b"PFDB1",),
         )
+        sample = _one(
+            f"SELECT {column} FROM {table} WHERE substring({column} from 1 for 5) = %s LIMIT 1",
+            (b"PFDB1",),
+        )
+        if sample:
+            # Verify that the configured active/previous key can decrypt real data,
+            # not merely that blobs carry the expected format marker.
+            decrypt_sensitive_bytes(bytes(sample[column]))
         result[f"{table}.{column}"] = {
             "total": int(row["total"]),
             "plaintext": int(row["plaintext"]),
+            "key_verified": bool(sample) or int(row["total"]) == 0,
         }
     return result
 
