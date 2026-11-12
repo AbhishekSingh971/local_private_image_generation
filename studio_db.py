@@ -740,7 +740,7 @@ def list_face_model_versions(profile_id, backend=None, limit=50):
     return result
 
 
-def encrypt_existing_private_data(batch_size=5):
+def encrypt_existing_private_data(batch_size=5, reencrypt=False):
     """Encrypt legacy plaintext BYTEA blobs in place; run while the app is in maintenance mode."""
     if not encryption_configured():
         raise RuntimeError("Set FACE_DATA_ENCRYPTION_KEY before encrypting existing private data.")
@@ -767,7 +767,9 @@ def encrypt_existing_private_data(batch_size=5):
                     last_id = row["id"]
                     payload = bytes(row[column])
                     if is_encrypted(payload):
-                        continue
+                        if not reencrypt:
+                            continue
+                        payload = decrypt_sensitive_bytes(payload)
                     cur.execute(
                         f"UPDATE {table} SET {column}=%s WHERE id=%s",
                         (encrypt_sensitive_bytes(payload), row["id"]),
