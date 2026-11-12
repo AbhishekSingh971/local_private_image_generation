@@ -2763,6 +2763,9 @@ def generate():
             total_steps=steps, stage="busy", message="Another generation is already running.",
         )
         return jsonify(error="Another generation is running. Please wait."), 429
+    upscale_warning = ""
+    quality_report = None
+    flux_prompt_token_count = None
     try:
         if backend == "cloud_gpu":
             if profile_id and not profile.get("runpod_model_ready"):
@@ -2802,6 +2805,7 @@ def generate():
                 task_id, asset_type="image", backend="cloud_gpu", status="running", progress=96,
                 total_steps=steps, stage="saving", message="Cloud GPU generation finished; saving image to the library…",
             )
+            upscale_warning = response.headers.get("X-Upscale-Warning", "")
             filename = f"{uuid.uuid4().hex}.png"
             output_path = OUTPUT_DIR / filename
             output_path.write_bytes(response.content)
@@ -2858,6 +2862,7 @@ def generate():
                     width=width, height=height, source=model_source,
                 )
                 result = flux_output["image"]
+                flux_prompt_token_count = flux_output.get("prompt_token_count")
                 _set_generation_progress(
                     task_id, asset_type="image", backend=backend, status="running", progress=95,
                     current_step=steps, total_steps=steps, stage="finalizing",
@@ -2911,10 +2916,21 @@ def generate():
                     current_step=0, total_steps=upscale_options["steps"], stage="upscaling",
                     message="Running optional AI x4 super-resolution…",
                 )
-                result = upscale_image(
-                    result, prompt, negative_prompt=negative_prompt, seed=seed,
-                    steps=upscale_options["steps"],
-                )
+                def on_upscale_step(current, total):
+                    percent = min(94, 93 + round(current / max(total, 1)))
+                    _set_generation_progress(
+                        task_id, asset_type="image", backend=backend, status="running", progress=percent,
+                        current_step=current, total_steps=total, stage="upscaling",
+                        message=f"AI x4 super-resolution · step {current} of {total}",
+                    )
+                try:
+                    result = upscale_image(
+                        result, prompt, negative_prompt=negative_prompt, seed=seed,
+                        steps=upscale_options["steps"], progress_callback=on_upscale_step,
+                    )
+                except Exception as upscale_exc:
+                    app.logger.exception("AI upscaling failed; preserving the base generated image")
+                    upscale_warning = "AI upscaling failed; the original generated image was saved. " + str(upscale_exc)[:300]
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=95,
                 current_step=steps, total_steps=steps, stage="finalizing", message="Finalizing the generated image…",
@@ -2928,6 +2944,11 @@ def generate():
             if "out of memory" in message.lower() or "memory" in message.lower():
                 message = "The selected device ran out of memory. Try fewer steps or switch to another available compute backend."
             return jsonify(error=f"Generation failed: {message}"), 500
+        try:
+            quality_report = assess_image_quality(result).to_dict()
+        except Exception as quality_exc:
+            app.logger.warning("Generated-image quality assessment was unavailable: %s", quality_exc)
+            quality_report = {"status": "not_assessed", "reasons": [str(quality_exc)[:240]]}
         filename = _save_generated_png(result)
         try:
             _resize_image_file(OUTPUT_DIR / filename, output_max_edge)
