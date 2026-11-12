@@ -205,7 +205,7 @@ Image generation has an optional **AI x4 super-resolution** stage. It uses Diffu
 - Configure `IMAGE_UPSCALER_MODEL_ID` and `HF_TOKEN` on both the web process (for local GPU) and the remote worker when applicable.
 - Upscaling uses 10–30 inference steps (default 20). Larger inputs are first reduced to a maximum 768-pixel long edge before the x4 stage to limit memory use.
 - Super-resolution is generative and may alter identity details. Compare the result with the original; do not use it as an identity-preservation guarantee.
-- If the upscaler fails, the request reports the error rather than silently claiming an enhanced result.
+- If the upscaler fails, the base generated image is retained and saved, and the API/UI reports an explicit warning rather than claiming the image was enhanced.
 
 The output-resolution selector remains a final pixel resize and is not AI upscaling.
 
