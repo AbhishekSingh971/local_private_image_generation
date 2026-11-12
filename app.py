@@ -84,6 +84,8 @@ from studio_db import (
     create_face_dataset_job,
     list_face_dataset_jobs,
     update_face_photo_validation,
+    update_face_photo_approval,
+    list_face_photo_records,
     get_face_model_bundle,
     list_asset_filenames,
     save_face_model_bundle,
@@ -618,7 +620,20 @@ def _persist_face_model_bundle(profile_id: str, backend: str, bundle_data: bytes
     )
 
 
-def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: str) -> None:
+def _approved_profile_training_paths(profile_id: str) -> list[Path]:
+    """Return only database-backed photos explicitly approved by a human reviewer."""
+    records = list_face_photo_records(profile_id)
+    approved_names = {
+        Path(str(record.get("filename") or "")).name
+        for record in records
+        if record.get("training_approval_status") == "approved"
+    }
+    return [path for path in dataset_images(profile_id) if path.name in approved_names]
+
+
+def _run_local_training(
+    profile_id: str, steps: int, resolution: int, job_id: str, approved_filenames: list[str]
+) -> None:
     profile = get_profile(profile_id)
     if not profile:
         return
@@ -631,6 +646,7 @@ def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: st
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
     ]
+    args.extend(["--approved-filename", name] for name in approved_filenames)
     try:
         completed = subprocess.run(
             args, cwd=APP_DIR, capture_output=True, text=True, timeout=8 * 60 * 60,
@@ -1815,18 +1831,27 @@ def api_face_photo_detail(photo_id):
 
     if request.method == "PATCH":
         payload = request.get_json(silent=True) or {}
-        if "angle_label" not in payload:
-            return jsonify(error="Supply an angle_label to update the photo label."), 400
+        if not ({"angle_label", "training_approval_status"} & set(payload)):
+            return jsonify(error="Supply angle_label and/or training_approval_status."), 400
         try:
-            next_label = str(payload.get("angle_label") or "").strip()
-            photo = update_face_photo(photo_id, angle_label=next_label, training_caption=next_label)
-            if not photo:
-                return jsonify(error="Training photo not found."), 404
-            caption_path = dataset_dir(metadata["profile_id"]) / (Path(metadata["filename"]).name + ".caption.txt")
-            if metadata.get("photo_kind") in {"angle", "expression", "body"}:
-                caption_path.write_text(next_label[:1200], encoding="utf-8")
-            else:
-                caption_path.unlink(missing_ok=True)
+            photo = metadata
+            if "angle_label" in payload:
+                next_label = str(payload.get("angle_label") or "").strip()
+                photo = update_face_photo(photo_id, angle_label=next_label, training_caption=next_label)
+                if not photo:
+                    return jsonify(error="Training photo not found."), 404
+                caption_path = dataset_dir(metadata["profile_id"]) / (Path(metadata["filename"]).name + ".caption.txt")
+                if metadata.get("photo_kind") in {"angle", "expression", "body"}:
+                    caption_path.write_text(next_label[:1200], encoding="utf-8")
+                else:
+                    caption_path.unlink(missing_ok=True)
+            if "training_approval_status" in payload:
+                approval = update_face_photo_approval(
+                    photo_id, approval_status=str(payload.get("training_approval_status") or "").strip().lower()
+                )
+                if not approval:
+                    return jsonify(error="Training photo not found."), 404
+                photo = dict(photo, training_approval_status=approval["training_approval_status"])
             return jsonify(status="updated", photo=photo)
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
@@ -2257,8 +2282,16 @@ def api_train_face_profile(profile_id):
     profile = get_profile(profile_id)
     if not profile:
         return jsonify(error="Face profile not found."), 404
-    if profile["image_count"] < 5:
-        return jsonify(error=f"Add at least 5 clear photos to this face profile first. Currently: {profile['image_count']}. "), 400
+    try:
+        approved_paths = _approved_profile_training_paths(profile_id)
+    except Exception:
+        app.logger.exception("Could not load human-approved face training photos")
+        return jsonify(error="Could not verify photo approvals. Check the database connection before training."), 503
+    if len(approved_paths) < 5:
+        return jsonify(
+            error=f"At least 5 photos must be explicitly approved for training. Approved: {len(approved_paths)}. "
+                  "Review the photos in Training datasets and approve the usable images first."
+        ), 400
     try:
         steps = int(request.form.get("steps", "800"))
         resolution = int(request.form.get("resolution", "512"))
@@ -2285,7 +2318,7 @@ def api_train_face_profile(profile_id):
             )), 400
         opened_files = []
         try:
-            dataset_paths = dataset_images(profile_id)
+            dataset_paths = approved_paths
             files = []
             for path in dataset_paths:
                 handle = path.open("rb")
@@ -2337,7 +2370,10 @@ def api_train_face_profile(profile_id):
     )
     with LOCAL_TRAIN_JOBS_LOCK:
         LOCAL_TRAIN_JOBS[job_id] = {"status": "running", "profile_id": profile_id}
-    TRAINING_POOL.submit(_run_local_training, profile_id, steps, resolution, job_id)
+    TRAINING_POOL.submit(
+        _run_local_training, profile_id, steps, resolution, job_id,
+        [path.name for path in approved_paths],
+    )
     return jsonify(status="running", backend="local", job_id=job_id, message="Local face training has started."), 202
 
 
