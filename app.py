@@ -40,6 +40,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
+from face_restoration import resolve_face_restoration_options, restore_faces
 from identity_evaluation import evaluate_identity_similarity
 from video_quality import evaluate_video_identity
 from model_artifacts import safe_extract_lora_bundle, sha256_bytes
@@ -672,6 +673,7 @@ def _generation_metadata(
     *, model_family, backend, seed, steps, width, height, output_width, output_height,
     aspect_ratio, generation_mode, strength, ai_upscale, upscale_options,
     upscale_warning="", quality_report=None, prompt_token_count=None, profile=None,
+    face_restore_options=None, face_restore_warning="",
 ):
     """Capture enough provenance to reproduce or compare a generated asset."""
     config = model_configuration(model_family)
@@ -717,6 +719,12 @@ def _generation_metadata(
             "warning": upscale_warning[:500] if upscale_warning else None,
         },
         "quality": quality_report or {"status": "not_assessed", "reasons": []},
+        "face_restoration": {
+            "enabled": bool((face_restore_options or {}).get("enabled")),
+            "status": "failed_fallback" if face_restore_warning else ("completed_or_no_face" if (face_restore_options or {}).get("enabled") else "not_requested"),
+            "weight": (face_restore_options or {}).get("weight") if (face_restore_options or {}).get("enabled") else None,
+            "warning": face_restore_warning[:500] if face_restore_warning else None,
+        },
     }
 
 
@@ -3075,6 +3083,10 @@ def generate():
             request.form.get("ai_upscale"), request.form.get("upscale_steps") or 20
         )
         ai_upscale = upscale_options["enabled"]
+        face_restore_options = resolve_face_restoration_options(
+            request.form.get("face_restore"), request.form.get("face_restore_weight") or 0.5
+        )
+        face_restore_enabled = face_restore_options["enabled"]
         face_angle = (request.form.get("face_angle") or "").strip().lower()
         face_expression = (request.form.get("face_expression") or "").strip().lower()
         angle_prompts = {
@@ -3185,6 +3197,8 @@ def generate():
         )
         return jsonify(error="Another generation is running. Please wait."), 429
     upscale_warning = ""
+    face_restore_warning = ""
+    face_restore_status = "not_requested"
     quality_report = None
     flux_prompt_token_count = None
     try:
@@ -3203,6 +3217,8 @@ def generate():
                 "prompt_is_final": "true", "model_family": model_family,
                 "ai_upscale": "true" if ai_upscale else "false",
                 "upscale_steps": str(upscale_options["steps"]),
+                "face_restore": "true" if face_restore_enabled else "false",
+                "face_restore_weight": str(face_restore_options["weight"]),
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
@@ -3227,6 +3243,8 @@ def generate():
                 total_steps=steps, stage="saving", message="Cloud GPU generation finished; saving image to the library…",
             )
             upscale_warning = response.headers.get("X-Upscale-Warning", "")
+            face_restore_warning = response.headers.get("X-Face-Restoration-Warning", "")
+            face_restore_status = response.headers.get("X-Face-Restoration-Status", "not_requested")
             filename = f"{uuid.uuid4().hex}.png"
             output_path = OUTPUT_DIR / filename
             output_path.write_bytes(response.content)
@@ -3260,6 +3278,7 @@ def generate():
                     ai_upscale=ai_upscale, upscale_options=upscale_options,
                     upscale_warning=upscale_warning, quality_report=quality_report,
                     prompt_token_count=prompt_token_count, profile=profile,
+                    face_restore_options=face_restore_options, face_restore_warning=face_restore_warning,
                 )
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
@@ -3379,6 +3398,20 @@ def generate():
                 except Exception as upscale_exc:
                     app.logger.exception("AI upscaling failed; preserving the base generated image")
                     upscale_warning = "AI upscaling failed; the original generated image was saved. " + str(upscale_exc)[:300]
+            if face_restore_enabled:
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="running", progress=94,
+                    current_step=0, total_steps=1, stage="face_restoration",
+                    message="Applying optional face restoration…",
+                )
+                try:
+                    restored = restore_faces(result, weight=face_restore_options["weight"])
+                    result = restored["image"]
+                    face_restore_status = restored["status"]
+                except Exception as restore_exc:
+                    app.logger.exception("Face restoration failed; preserving the pre-restoration image")
+                    face_restore_status = "failed_fallback"
+                    face_restore_warning = "Face restoration failed; the pre-restoration image was saved. " + str(restore_exc)[:300]
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=95,
                 current_step=steps, total_steps=steps, stage="finalizing", message="Finalizing the generated image…",
@@ -3417,6 +3450,7 @@ def generate():
             ai_upscale=ai_upscale, upscale_options=upscale_options,
             upscale_warning=upscale_warning, quality_report=quality_report,
             prompt_token_count=flux_prompt_token_count or prompt_token_count, profile=profile,
+            face_restore_options=face_restore_options, face_restore_warning=face_restore_warning,
         )
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="running", progress=97,
