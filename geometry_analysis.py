@@ -38,6 +38,11 @@ def analyze_geometry(image) -> dict:
         body_landmarks = []
         body_count = 0
         pose_api = getattr(getattr(mp, "solutions", None), "pose", None)
+        if pose_api is None:
+            try:
+                from mediapipe.python.solutions import pose as pose_api
+            except Exception:
+                pose_api = None
         if pose_api is not None:
             with pose_api.Pose(
                 static_image_mode=True, model_complexity=1,
