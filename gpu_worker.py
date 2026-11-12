@@ -635,7 +635,7 @@ def remote_generate():
         _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on the cloud GPU.")
         response = send_file(output, mimetype="image/png", download_name="generated.png")
         if upscale_warning:
-            response.headers["X-Upscale-Warning"] = upscale_warning.replace("\\n", " ")[:500]
+            response.headers["X-Upscale-Warning"] = upscale_warning.replace("\\r", " ").replace("\\n", " ").encode("ascii", "replace").decode("ascii")[:500]
         response.headers["X-Upscale-Status"] = "completed" if ai_upscale and not upscale_warning else ("failed_fallback" if upscale_warning else "not_requested")
         response.headers["X-Prompt-Token-Count"] = json.dumps(prompt_token_count, separators=(",", ":"))
         return response
