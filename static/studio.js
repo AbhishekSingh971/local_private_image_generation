@@ -1578,8 +1578,12 @@
           const validation=document.createElement("span");
           const validationStatus=photo.validation_status||"not_checked";
           validation.className="photo-validation-badge "+validationStatus.replace(/_/g,"-");
-          validation.textContent=validationStatus==="passed"?"Pose verified":validationStatus==="needs_review"?"Needs review":validationStatus==="not_applicable"?"Source photo":"Not checked";
+          validation.textContent=validationStatus==="passed"?"Pose target met":validationStatus==="needs_review"?"Pose needs review":validationStatus==="not_applicable"?"Source photo":"Pose unverified";
           if(photo.validation_message)validation.title=photo.validation_message;
+          const identityValidation=document.createElement("span");
+          identityValidation.className="photo-validation-badge not-checked identity-validation-badge";
+          identityValidation.textContent="Identity unverified";
+          identityValidation.title="No identity-similarity score is recorded for this dataset photo. Pose validation and technical image checks do not establish identity. Review the image visually before approving it for training.";
           const validationDetail=document.createElement("span");validationDetail.className="photo-validation-details";
           if(photo.validation_message)validationDetail.textContent=photo.validation_message;
           else if(Number.isFinite(Number(photo.actual_yaw)))validationDetail.textContent="Estimated yaw "+Number(photo.actual_yaw).toFixed(0)+"°, pitch "+Number(photo.actual_pitch||0).toFixed(0)+"°.";
@@ -1636,7 +1640,7 @@
           });
           const editWithPrompt=document.createElement("button");editWithPrompt.type="button";editWithPrompt.className="secondary-button";editWithPrompt.textContent="Edit with prompt";editWithPrompt.disabled=busy;editWithPrompt.addEventListener("click",()=>openTrainingPhotoEdit(photo,group));
           photoActions.append(approvePhoto,rejectPhoto,reopenPhoto,editWithPrompt,renamePhoto,replacePhoto,deletePhoto);
-          figure.append(image,label,validation,approvalBadge);
+          figure.append(image,label,validation,identityValidation,approvalBadge);
           if(validationDetail.textContent)figure.append(validationDetail);
           figure.append(photoActions,replaceInput);photos.appendChild(figure);
         });
