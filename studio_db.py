@@ -283,6 +283,29 @@ def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", gro
     if validation_status not in {"not_checked","passed","needs_review","not_applicable"}: raise ValueError("Invalid photo validation status.")
     if training_approval_status not in {"pending","approved","rejected"}: raise ValueError("Invalid training approval status.")
     ensure_schema()
+    # Legacy and direct profile uploads without a named group still need a visible
+    # review surface. Reuse one completed manual-upload group per profile.
+    if not group_id:
+        existing_group = _one(
+            """SELECT id FROM face_dataset_groups
+               WHERE profile_id=%s AND title='Manual uploads' AND dataset_type='face_angles'
+               ORDER BY created_at DESC LIMIT 1""",
+            (profile_id,),
+        )
+        if existing_group:
+            group_id = existing_group["id"]
+            _run(
+                "UPDATE face_dataset_groups SET generated_count=generated_count+1, updated_at=now() WHERE id=%s",
+                (group_id,),
+            )
+        else:
+            group_id = uuid.uuid4().hex
+            _run(
+                """INSERT INTO face_dataset_groups(
+                    id,profile_id,title,dataset_type,prompt,status,expected_count,generated_count
+                ) VALUES(%s,%s,'Manual uploads','face_angles','','completed',1,1)""",
+                (group_id, profile_id),
+            )
     # CREATE TABLE IF NOT EXISTS does not restore defaults on an existing table.
     # Repair this required timestamp even when ensure_schema() is cached.
     _repair_face_photo_schema()
