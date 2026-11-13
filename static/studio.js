@@ -1152,7 +1152,9 @@
     if(!promptInput || !currentSceneRetryHint)return;
     const existing=promptInput.value.trim();
     if(!existing.includes(currentSceneRetryHint)){
-      promptInput.value=(existing ? existing+"\n" : "")+"Visual correction: "+currentSceneRetryHint;
+      promptInput.value=(existing ? existing+"\n" : "")
+        +"Visual correction request: "+currentSceneRetryHint
+        +". Change only this identified issue and keep every other requested and unrequested scene detail consistent.";
     }
     promptInput.focus();
   });
@@ -1197,6 +1199,10 @@
     if(status)status.textContent=useGpuAcceleration?.checked?"Sending this image task to the selected GPU worker…":"Loading the model and generating locally. CPU inference may be slow.";
     const preview=$("#resultPreview");const placeholder=$("#resultPlaceholder");const download=$("#downloadImage");const pill=$("#imageSavedPill");
     preview.hidden=true;placeholder.hidden=false;download.hidden=true;
+    currentSceneRetryHint="";
+    if(applySceneRetryHintButton)applySceneRetryHintButton.hidden=true;
+    const sceneSummary=$("#sceneValidationSummary");
+    if(sceneSummary)sceneSummary.textContent="Visual scene review will appear after generation.";
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
     const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
