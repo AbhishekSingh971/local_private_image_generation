@@ -36,3 +36,37 @@ def select_compute_backend(
     if choice == "cloud_gpu" and not cloud_gpu_available:
         raise ValueError("Cloud GPU is not currently available. Check the worker URL/token and confirm the runtime is running.")
     return choice
+
+def select_generation_backend(
+    gpu_enabled: bool,
+    requested: str | None,
+    *,
+    cloud_gpu_available: bool,
+) -> str:
+    """Route image/video generation to GHive first, otherwise local CPU.
+
+    The local integrated GPU is intentionally not considered here. Local
+    fallback is CPU-only and must use an already-present local SD 1.5 model.
+    """
+    if not gpu_enabled:
+        return "cpu"
+
+    choice = (requested or "auto").strip().lower()
+    if choice == "auto":
+        return "cloud_gpu" if cloud_gpu_available else "cpu"
+    if choice == "cpu":
+        return "cpu"
+    if choice in {"cloud_gpu", "runpod"}:
+        if not cloud_gpu_available:
+            raise ValueError(
+                "GHive GPU is not currently available. Start the GHive worker "
+                "or switch to local CPU for image generation."
+            )
+        return "cloud_gpu"
+    if choice == "local_gpu":
+        raise ValueError(
+            "Image and video generation use the GHive GPU or local CPU. "
+            "System GPU selection is not enabled for these workflows."
+        )
+    raise ValueError("Generation backend must be auto, cpu, or cloud_gpu.")
+
