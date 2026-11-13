@@ -180,3 +180,13 @@ def test_local_validation_does_not_forward_through_proxy_or_redirect(monkeypatch
     assert captured["allow_redirects"] is False
     assert report["status"] == "unavailable"
     assert "redirect" in report["reason"].lower()
+
+
+def test_selected_identity_without_reference_must_remain_unverified():
+    prompt = build_scene_validation_prompt(
+        "A portrait of the trained person",
+        has_reference_image=False,
+        has_trained_identity=True,
+    )
+    assert "no identity reference is visible" in prompt
+    assert "Do not claim identity consistency" in prompt
