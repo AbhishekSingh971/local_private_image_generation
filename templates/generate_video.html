@@ -8,7 +8,7 @@
     <form id="videoForm">
       <label for="videoProfile">Face identity</label><select id="videoProfile" name="face_profile_id"><option value="">Base model (no trained face)</option></select>
       <label for="videoPrompt">Video prompt</label><textarea id="videoPrompt" name="prompt" rows="4" required placeholder="A person slowly turns toward the camera, natural expression, cinematic lighting..."></textarea>
-      <label for="videoNegative">Negative prompt <span class="optional">optional</span></label><textarea id="videoNegative" name="negative_prompt" rows="2" placeholder="flicker, distorted face, blurry, unstable background"></textarea>
+      <p class="field-help">Describe the scene and motion in one prompt. Internal temporal-stability safeguards are applied automatically.</p>
       <label for="videoOutputResolution">Output resolution</label><select id="videoOutputResolution" name="output_resolution"><option value="native" selected>Native · fastest, model resolution</option><option value="hd">HD · 1280 px long edge (resize)</option><option value="1080p">Full HD / 1080p equivalent · 1920 px long edge (resize)</option><option value="4k">4K equivalent · 3840 px long edge (resize)</option></select>
       <p class="field-help">HD/1080p/4K resize rendered video frames with FFmpeg. This increases pixel dimensions, not generated detail; 4K encoding can take substantially longer and create larger files.</p>
       <div class="twocol">
