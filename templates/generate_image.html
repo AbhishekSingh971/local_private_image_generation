@@ -71,6 +71,7 @@
     <div class="result-heading"><div><div class="eyebrow">LATEST RESULT</div><h2>Your image</h2></div><span class="pill" id="imageSavedPill">Not generated</span></div>
     <div class="preview result-preview"><img id="resultPreview" alt="Generated photo" hidden><div id="resultPlaceholder" class="placeholder"><div class="empty-icon">✧</div>Your generated photo will appear here.</div></div>
     <p id="sceneValidationSummary" class="field-help" role="status" aria-live="polite">Visual scene review will appear here after generation. Without a configured local vision model, object integrity requires manual review.</p>
+    <button id="applySceneRetryHint" class="secondary-button" type="button" hidden>Add suggested correction to prompt</button>
     <div class="result-actions"><a id="downloadImage" class="button-link" href="#" download hidden>Download image ↓</a><a class="button-link secondary-link" href="{{ url_for('library_images_page') }}">Browse image library →</a></div>
     
     <p class="field-help">Image bytes and details are saved to your database; a local output copy is kept for training and backup workflows.</p>
