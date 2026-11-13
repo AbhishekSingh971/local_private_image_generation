@@ -1383,6 +1383,9 @@
       formData.set("task_id",repairTaskId);
       formData.set("mask_image",new File([maskBlob],"regional-mask.png",{type:"image/png"}));
       const accepted=await readJson(await fetch("/api/assets/"+currentImageAssetId+"/regional-inpaint-async",{method:"POST",body:formData}));
+      if(accepted.task_id!==repairTaskId){
+        throw new Error("The server returned a different repair task ID; no result was applied.");
+      }
       let data=null;
       const repairDeadline=Date.now()+Math.max(300000,Number(window.REGIONAL_REPAIR_TIMEOUT_MS||2400000));
       while(Date.now()<repairDeadline){
