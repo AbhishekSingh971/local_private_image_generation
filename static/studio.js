@@ -1145,8 +1145,22 @@
   });
   updateImageModelControls();
 
+  let currentSceneRetryHint = "";
+  const applySceneRetryHintButton=$("#applySceneRetryHint");
+  applySceneRetryHintButton?.addEventListener("click",()=>{
+    const promptInput=$("#prompt");
+    if(!promptInput || !currentSceneRetryHint)return;
+    const existing=promptInput.value.trim();
+    if(!existing.includes(currentSceneRetryHint)){
+      promptInput.value=(existing ? existing+"\n" : "")+"Visual correction: "+currentSceneRetryHint;
+    }
+    promptInput.focus();
+  });
+
   function renderSceneValidation(report) {
     const target=$("#sceneValidationSummary");
+    currentSceneRetryHint=report?.targeted_retry_hint || "";
+    if(applySceneRetryHintButton)applySceneRetryHintButton.hidden=!currentSceneRetryHint;
     if(!target)return;
     if(!report){
       target.textContent="Visual scene review was not returned. Check the saved generation metadata.";
