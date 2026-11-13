@@ -145,9 +145,13 @@ def _whole_object_removed(prompt: str, subject_pattern: re.Pattern[str]) -> bool
         subject = subject_pattern.search(tail)
         if not subject:
             continue
+        before_subject = tail[:subject.start()]
         after_subject = tail[subject.end():]
-        # "Remove the clock hands" removes a component, not the clock itself.
-        if _COMPONENT_WORDS.match(after_subject.strip()):
+        # Both "remove the clock hands" and "remove the hands from the clock"
+        # target a component, not the entire object.
+        if _COMPONENT_WORDS.search(before_subject):
+            continue
+        if _COMPONENT_WORDS.match(after_subject.strip().lstrip("'’")):
             continue
         return True
     return False
