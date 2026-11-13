@@ -21,6 +21,7 @@ A local-first Windows/Flask application for image generation, separate face-iden
 - A backend selector for local System GPU, a configured authenticated remote GPU worker, and CPU for compatible workloads. Auto prefers a usable local CUDA GPU, then the remote worker, then CPU for models that support it.
 - Authenticated provider-neutral cloud worker endpoints for face training, photo generation, video generation and status polling.
 - Local output copies saved under `data/outputs/` and `data/videos/`.
+- Optional local visual scene review after image generation. When a vision-capable Ollama model is configured on loopback, it compares generated output with the user's request and optional reference, then reports possible instruction mismatches, malformed objects and targeted correction suggestions. The review is advisory and never deletes an image or starts an automatic retry.
 
 Use your own face or images of a person who has given permission. A LoRA adapter is not a guarantee of perfect identity consistency, and identity may drift between video frames.
 
@@ -194,6 +195,25 @@ Model access: the model is published on Hugging Face. Follow the repository's cu
 
 Model card: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
 Official inference examples: https://github.com/black-forest-labs/flux2
+
+## Local visual scene review (optional)
+
+Image generation always keeps the original output. To add a second, visual inspection pass, run Ollama on the same machine as the Flask app and configure a vision-capable model that Ollama can run.
+
+1. Install and start Ollama locally, then download a vision model supported by your machine. Model names and memory requirements vary; choose a model your hardware can actually run.
+2. Set these private .env values:
+   ```dotenv
+   SCENE_VISION_MODEL=your-local-vision-model-tag
+   SCENE_VISION_URL=http://127.0.0.1:11434/api/generate
+   SCENE_VISION_TIMEOUT_SECONDS=40
+   ```
+3. Restart the Flask app. Generate a small test image and review the new **Visual scene review** result beneath the preview.
+
+The validator resizes images before sending them to Ollama and accepts only loopback URLs (127.0.0.1, localhost or ::1). It rejects remote hosts so reference photos and generated media are not silently forwarded to an external vision API. Leave SCENE_VISION_MODEL blank to keep this feature disabled.
+
+The reviewer checks the original request, whether requested edits appear to have been applied, obvious unintended changes, and visible object/anatomy integrity. For reference editing, it receives the reference first and the generated result second. It returns a confidence estimate, short issue list and (when possible) a bounded correction hint. Model judgments can be wrong: a pass is advisory, not proof of identity, anatomy or object correctness. The normal technical image-quality and optional identity checks remain separate.
+
+**Retry behavior:** this first stage does not automatically regenerate or overwrite a result. A full-image rerender can damage details the user did not ask to change, and the current pipeline does not yet create reliable object-part masks for true regional inpainting. A suggested correction is therefore saved/displayed as a recommendation only. A later masked-inpainting stage should use a localized mask, preserve the rest of the frame, and require a separate user action before saving a replacement.
 
 ## Optional face restoration
 
