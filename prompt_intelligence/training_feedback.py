@@ -22,13 +22,17 @@ def evaluate_training_run(
 ) -> EvaluationReport:
     state = (status or "").strip().lower()
     values: list[float] = []
+    invalid_loss_seen = False
     for raw in losses or ():
         try:
             value = float(raw)
         except (TypeError, ValueError):
+            invalid_loss_seen = True
             continue
         if math.isfinite(value) and value >= 0:
             values.append(value)
+        else:
+            invalid_loss_seen = True
 
     scores: dict[str, float] = {}
     sources: dict[str, str] = {}
@@ -46,8 +50,10 @@ def evaluate_training_run(
     else:
         # A bounded diagnostic score: a falling loss is weak evidence of optimization,
         # not evidence that the resulting LoRA generalizes or preserves identity.
-        scores["training_stability"] = 0.25 if all(math.isfinite(v) for v in values) else -0.5
+        scores["training_stability"] = -0.5 if invalid_loss_seen else 0.25
         sources["training_stability"] = "training_log"
+        if invalid_loss_seen:
+            penalties.append("Non-finite or invalid loss observations were detected in the training log.")
         if len(values) >= 2:
             first = sum(values[: max(1, len(values) // 4)]) / max(1, len(values) // 4)
             last_values = values[-max(1, len(values) // 4):]
