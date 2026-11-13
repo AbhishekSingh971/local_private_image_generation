@@ -101,7 +101,7 @@ _OBJECT_RULES = (
 )
 
 _WHOLE_OBJECT_REMOVAL = re.compile(
-    r"\b(?:remove|delete|erase|take\s+out|hide|without)\b[\w\s-]{0,24}",
+    r"\b(?:remove|delete|erase|take\s+out|hide|without)\b",
     re.I,
 )
 _COMPONENT_WORDS = re.compile(
