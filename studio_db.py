@@ -866,7 +866,10 @@ def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",nega
     metadata_json = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), default=str)
     r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,original_prompt,upsampled_prompt,model_family,profile_id,profile_name,
         backend,generation_mode,generation_metadata,media_size,media_data,created_at,updated_at)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,now(),now()) RETURNING *""",
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,now(),now())
+        RETURNING id,asset_type,title,filename,mime_type,prompt,negative_prompt,original_prompt,
+                  upsampled_prompt,model_family,profile_id,profile_name,backend,generation_mode,
+                  generation_metadata,media_size,created_at,updated_at""",
         (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,full_prompt,full_negative_prompt,original_prompt,upsampled_prompt,family,profile_id,profile_name,
          backend[:32],generation_mode[:32],metadata_json,len(media_data),encrypt_sensitive_bytes(media_data)))
     return _asset_dict(r)
@@ -895,12 +898,23 @@ def count_assets(asset_type=None,search=""):
 def list_assets(asset_type=None,limit=200,offset=0,search="",sort="newest"):
     ensure_schema(); where,vals=_asset_where(asset_type,search)
     order="created_at ASC,id ASC" if sort=="oldest" else ("lower(title) ASC,created_at DESC" if sort=="title" else "created_at DESC,id DESC")
-    rows=_all("SELECT * FROM generated_assets"+where+" ORDER BY "+order+" LIMIT %s OFFSET %s",vals+(max(1,min(int(limit),500)),max(0,int(offset))))
+    # Never fetch media_data for a gallery listing. A page may contain dozens of
+    # large BYTEA objects; selecting them here can exhaust small web-instance RAM.
+    columns = ("id,asset_type,title,filename,mime_type,prompt,negative_prompt,original_prompt,"
+               "upsampled_prompt,model_family,profile_id,profile_name,backend,generation_mode,"
+               "generation_metadata,media_size,created_at,updated_at")
+    rows=_all("SELECT "+columns+" FROM generated_assets"+where+" ORDER BY "+order+" LIMIT %s OFFSET %s",vals+(max(1,min(int(limit),100)),max(0,int(offset))))
     return [_asset_dict(r) for r in rows]
 
 
 def get_asset(asset_id,include_content=False):
-    ensure_schema(); return _asset_dict(_one("SELECT * FROM generated_assets WHERE id=%s",(asset_id,)),include_content)
+    ensure_schema()
+    columns = ("id,asset_type,title,filename,mime_type,prompt,negative_prompt,original_prompt,"
+               "upsampled_prompt,model_family,profile_id,profile_name,backend,generation_mode,"
+               "generation_metadata,media_size,created_at,updated_at")
+    if include_content:
+        columns += ",media_data"
+    return _asset_dict(_one("SELECT "+columns+" FROM generated_assets WHERE id=%s",(asset_id,)),include_content)
 
 
 def update_asset(asset_id,fields):
