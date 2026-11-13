@@ -218,7 +218,7 @@ The reviewer checks the original request, whether requested edits appear to have
 
 ## Regional image repair (SD 1.5)
 
-The image-generation result page includes a **Repair only a selected area** tool for SD 1.5 images. Paint over the part that is malformed (the browser shows the selection in red), describe what should replace it, and submit the repair to the System GPU or connected cloud GPU.
+The image-generation result page includes a **Repair only a selected area** tool for SD 1.5 images. Paint over the part that is malformed (the browser shows the selection in red), describe what should replace it, and submit the repair to the System GPU or connected cloud GPU. Repair runs as a background job; the page polls progress and applies the saved result when it finishes, so the browser does not need to hold the inference request open.
 
 The application uses a dedicated inpainting checkpoint rather than the ordinary text-to-image checkpoint. The default model is `stable-diffusion-v1-5/stable-diffusion-inpainting`, which is specifically fine-tuned for inpainting. It is downloaded by Diffusers on first use. See the [Hugging Face inpainting model and pipeline documentation](https://huggingface.co/docs/diffusers/main/en/api/pipelines/stable_diffusion/inpaint).
 
