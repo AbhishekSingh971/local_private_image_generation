@@ -126,6 +126,25 @@ def merge_inpainted_crop(
     return output
 
 
+def build_regional_inpaint_prompts(prompt: str, negative_prompt: str = "") -> tuple[str, str]:
+    """Compose local edit guidance without changing the source image's visual style."""
+    prompt = str(prompt or "").strip()
+    negative_prompt = str(negative_prompt or "").strip()
+    safe_prompt = (
+        "A localized image edit that matches the source image's existing visual style, "
+        "materials, camera perspective, lighting and color grading. Replace only the white "
+        "masked area according to the requested correction. Keep the unmasked surroundings "
+        "and all unrelated scene details consistent with the source. Do not add unrelated objects. "
+        + prompt
+    )
+    default_negative = (
+        "unintended extra objects, duplicate parts, broken geometry, malformed anatomy, "
+        "detached components, blur, low detail, visual artifacts"
+    )
+    safe_negative = ", ".join(part for part in (default_negative, negative_prompt) if part)
+    return safe_prompt, safe_negative
+
+
 def _inpaint_source():
     local_path = (os.environ.get("INPAINT_MODEL_PATH") or "").strip()
     if local_path:
@@ -216,17 +235,7 @@ def run_sd15_regional_inpainting(
                     "The repair was stopped rather than silently dropping identity conditioning: " + str(exc)[:240]
                 ) from exc
 
-        safe_prompt = (
-            "A localized photorealistic image edit. Replace only the white masked area as requested. "
-            "Keep the surrounding scene, camera perspective, materials, lighting, shadows and color grading "
-            "consistent with the unmasked image. Do not add unrelated objects. "
-            + prompt
-        )
-        safe_negative = ", ".join(part for part in (
-            "changed background, changed camera angle, changed lighting, duplicate objects, "
-            "unintended extra parts, broken geometry, malformed anatomy, blur, artifacts",
-            str(negative_prompt or "").strip(),
-        ) if part)
+        safe_prompt, safe_negative = build_regional_inpaint_prompts(prompt, negative_prompt)
         total_steps = steps
         def on_step_end(_active_pipeline, step_index, _timestep, callback_kwargs):
             if progress_callback:
