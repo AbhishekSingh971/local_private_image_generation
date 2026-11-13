@@ -31,10 +31,10 @@ def _local_endpoint_error(endpoint: str) -> str | None:
     try:
         parsed = urlparse(endpoint)
         hostname = (parsed.hostname or "").lower()
-        if parsed.scheme != "http":
-            return "Scene vision endpoint must use HTTP on the local machine."
         if hostname not in {"127.0.0.1", "localhost", "::1"}:
             return "Scene vision endpoint must resolve to localhost (127.0.0.1, ::1 or localhost)."
+        if parsed.scheme != "http":
+            return "Scene vision endpoint must use HTTP on the local machine."
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             return "Scene vision endpoint must not contain credentials, query parameters or fragments."
         if not parsed.port:
