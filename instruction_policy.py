@@ -28,13 +28,35 @@ _CHANGE_PATTERNS = {
 }
 
 
-def _requests_attribute_change(prompt: str, attribute_pattern: re.Pattern[str]) -> bool:
-    """Require a nearby edit/action verb; merely describing an existing detail is not an edit."""
+def _requests_attribute_change(
+    prompt: str,
+    attribute_pattern: re.Pattern[str],
+    *,
+    category: str = "",
+) -> bool:
+    """Require a nearby edit verb; merely describing an existing detail is not an edit."""
     for match in attribute_pattern.finditer(prompt):
         prefix = prompt[max(0, match.start() - 100):match.start()]
-        # Do not let an action in a previous sentence/list item affect this attribute.
-        clause = re.split(r"[,.;!?]\s*", prefix)[-1]
-        if _CHANGE_ACTION.search(clause):
+        # Keep clauses separate so "change the background but keep the outfit"
+        # does not accidentally classify the outfit as a requested change.
+        clause = re.split(
+            r"[,.;!?]\s*|\b(?:but|while|except|keep|preserve|leave)\b",
+            prefix,
+            flags=re.I,
+        )[-1]
+        if re.search(
+            r"\b(?:do\s+not|don't|never|avoid)\s+"
+            r"(?:change|replace|alter|modify|remove|delete|erase)\b",
+            clause,
+            re.I,
+        ):
+            continue
+        if category == "identity":
+            if re.search(r"\b(?:change|replace|alter|swap|different|new)\b", clause, re.I):
+                return True
+            if re.search(r"\bmake\b[^,.;!?]{0,60}\b(?:look\s+like|into)\b", clause, re.I):
+                return True
+        elif _CHANGE_ACTION.search(clause):
             return True
     return False
 
@@ -157,7 +179,7 @@ def build_instruction_guidance(
 
     changed = {
         name for name, pattern in _CHANGE_PATTERNS.items()
-        if _requests_attribute_change(source, pattern)
+        if _requests_attribute_change(source, pattern, category=name)
     }
     guidance: list[str] = []
 
