@@ -339,11 +339,13 @@ def test_structured_prompt_rejects_unsupported_select_values():
         build_structured_prompt("Portrait", {"style": "make it amazing"})
 
 
-def test_structured_prompt_does_not_change_prompt_without_controls():
+def test_structured_prompt_preserves_original_and_adds_default_integrity_guidance():
     from prompt_compiler import build_structured_prompt
 
     original = "  Keep this exact prompt  "
-    assert build_structured_prompt(original, {}) == original
+    compiled = build_structured_prompt(original, {})
+    assert compiled.startswith(original)
+    assert "Instruction-aware guidance:" in compiled
 
 
 
