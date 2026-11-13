@@ -355,6 +355,49 @@ def cloud_worker_generate_image_async(*, data, files, task_id, cancelled=None):
     )
 
 
+
+def cloud_worker_regional_inpaint_async(*, data, files, task_id, progress_callback=None):
+    """Submit regional inpainting as a worker job and poll without a long proxy request."""
+    response = cloud_worker_request(
+        "POST", "/api/remote/regional-inpaint-async",
+        data=data, files=files, timeout=(20, 45),
+    )
+    payload = response.json()
+    remote_job_id = payload.get("job_id")
+    if not remote_job_id:
+        raise RuntimeError("Cloud GPU worker did not return a regional repair job ID.")
+    deadline = time.monotonic() + max(300, int(os.environ.get("CLOUD_GPU_JOB_TIMEOUT_SECONDS", "2400")))
+    while time.monotonic() < deadline:
+        status_response = cloud_worker_request(
+            "GET", f"/api/remote/generation-jobs/{remote_job_id}", timeout=(5, 12)
+        )
+        status_payload = status_response.json()
+        remote_progress = status_payload.get("progress") or {}
+        if progress_callback and isinstance(remote_progress, dict):
+            try:
+                progress_callback(
+                    int(remote_progress.get("current_step") or 0),
+                    int(remote_progress.get("total_steps") or data.get("steps") or 24),
+                    str(remote_progress.get("message") or "Regional repair running on the cloud GPU."),
+                )
+            except (TypeError, ValueError):
+                pass
+        state = status_payload.get("status", "queued")
+        if state == "failed":
+            raise RuntimeError(status_payload.get("error") or "Remote GPU regional inpainting failed.")
+        if state == "cancelled":
+            raise RuntimeError("Remote GPU regional inpainting was cancelled.")
+        if state == "completed":
+            return cloud_worker_request(
+                "GET", f"/api/remote/generation-jobs/{remote_job_id}/result", timeout=(20, 90)
+            )
+        time.sleep(1.5)
+    raise RuntimeError(
+        "Cloud GPU regional repair exceeded the configured job wait limit. The remote job may still be running; "
+        "check its worker status before submitting another repair."
+    )
+
+
 # Compatibility aliases keep older routes and integrations working.
 runpod_configured = cloud_worker_configured
 _runpod_url = cloud_worker_url
@@ -3701,9 +3744,15 @@ def api_regional_inpaint(asset_id):
                 "mask_image": ("mask.png", mask_buffer, "image/png"),
             }
             try:
-                response = cloud_worker_request(
-                    "POST", "/api/remote/regional-inpaint",
-                    data=data, files=files, timeout=(20, 900),
+                response = cloud_worker_regional_inpaint_async(
+                    data=data,
+                    files=files,
+                    task_id=task_id,
+                    progress_callback=lambda current, total, message: _set_generation_progress(
+                        task_id, asset_type="image", backend=backend, status="running",
+                        progress=min(92, 5 + round(87 * current / max(total, 1))),
+                        current_step=current, total_steps=total, stage="inpainting", message=message,
+                    ),
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
