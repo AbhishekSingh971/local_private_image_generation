@@ -3,6 +3,7 @@ from PIL import Image, ImageDraw
 import pytest
 
 from regional_inpainting import (
+    build_regional_inpaint_prompts,
     merge_inpainted_crop,
     normalize_edit_mask,
     prepare_inpaint_crop,
@@ -105,3 +106,15 @@ def test_merge_rejects_bad_crop_box_by_pillow_validation():
             source, generated, crop_box=(0, 0, 100, 100),
             crop_mask=Image.new("L", (64, 64), 255), grow_px=8, blur_px=2,
         )
+
+
+def test_regional_prompt_preserves_source_style_and_does_not_force_photorealism():
+    prompt, negative = build_regional_inpaint_prompts(
+        "Replace the selected clock hand with a clean metal hand.",
+        "extra hands",
+    )
+    assert "existing visual style" in prompt
+    assert "unmasked surroundings" in prompt
+    assert "photorealistic" not in prompt
+    assert "changed lighting" not in negative
+    assert "extra hands" in negative
