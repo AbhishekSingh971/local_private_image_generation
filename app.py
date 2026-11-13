@@ -3063,7 +3063,7 @@ def api_generation_prompt_preview():
         model_family = resolve_model_family(payload.get("model_family") or "sd15")
         preset = validate_image_preset(payload.get("image_preset") or "standard")
         has_reference = bool(payload.get("has_reference_image"))
-        structured_prompt = build_structured_prompt(prompt, payload)
+        structured_prompt = build_structured_prompt(\n            prompt, payload, has_reference_image=has_reference,\n            has_trained_identity=bool(payload.get("face_profile_id")),\n        )
         if model_family == "flux2_klein":
             # FLUX.2 Klein receives the original prompt plus only explicit user-selected controls.
             final_prompt, final_negative = structured_prompt, ""
@@ -3199,7 +3199,7 @@ def generate():
         return jsonify(error="Upload a reference image to use Preserve reference mode."), 400
     prompt_is_final = _truthy(request.form.get("prompt_is_final"))
     if not prompt_is_final:
-        structured_prompt = build_structured_prompt(prompt, request.form)
+        structured_prompt = build_structured_prompt(\n            prompt, request.form, has_reference_image=init_image is not None,\n            has_trained_identity=bool(profile_id),\n        )
         if model_family == "flux2_klein":
             prompt, negative_prompt = structured_prompt, ""
         else:
