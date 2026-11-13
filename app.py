@@ -3684,6 +3684,12 @@ def api_regional_inpaint(asset_id):
                 result.load()
             if result.size != source_image.size:
                 return jsonify(error="Cloud inpainting returned unexpected image dimensions; source image was not replaced."), 502
+            try:
+                worker_metadata = json.loads(response.headers.get("X-Inpaint-Metadata", "{}"))
+                if isinstance(worker_metadata, dict):
+                    inpaint_metadata.update(worker_metadata)
+            except (TypeError, ValueError):
+                app.logger.warning("Cloud inpaint worker returned invalid optional metadata; using app-side request metadata.")
         else:
             if not torch.cuda.is_available():
                 return jsonify(error="System GPU was selected but CUDA is unavailable to this Python environment."), 400
