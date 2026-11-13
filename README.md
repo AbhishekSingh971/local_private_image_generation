@@ -220,22 +220,22 @@ The reviewer checks the original request, whether requested edits appear to have
 
 The image-generation result page includes a **Repair only a selected area** tool for SD 1.5 images. Paint over the part that is malformed (the browser shows the selection in red), describe what should replace it, and submit the repair to the System GPU or connected cloud GPU.
 
-The application uses a dedicated inpainting checkpoint rather than the ordinary text-to-image checkpoint. The default model is \`stable-diffusion-v1-5/stable-diffusion-inpainting\`, which is specifically fine-tuned for inpainting. It is downloaded by Diffusers on first use. See the [Hugging Face inpainting model and pipeline documentation](https://huggingface.co/docs/diffusers/main/en/api/pipelines/stable_diffusion/inpaint).
+The application uses a dedicated inpainting checkpoint rather than the ordinary text-to-image checkpoint. The default model is `stable-diffusion-v1-5/stable-diffusion-inpainting`, which is specifically fine-tuned for inpainting. It is downloaded by Diffusers on first use. See the [Hugging Face inpainting model and pipeline documentation](https://huggingface.co/docs/diffusers/main/en/api/pipelines/stable_diffusion/inpaint).
 
-Configuration in your private \`.env\`:
+Configuration in your private `.env`:
 
-\`\`\`dotenv
+```dotenv
 INPAINT_MODEL_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
 # Optional: use an existing local Diffusers inpainting folder instead.
 # INPAINT_MODEL_PATH=C:/models/stable-diffusion-inpainting
 INPAINT_CROP_PADDING_PX=128
 INPAINT_MASK_GROW_PX=8
 INPAINT_MASK_BLUR_PX=2
-\`\`\`
+```
 
 Set the same model ID/path on the app and remote GPU worker. The first repair on each compute host may download several GB of model weights, so check free disk space and Hugging Face connectivity before testing. No segmentation package or additional Python dependency is required for this first brush-based version.
 
-**Preservation behavior:** the server gets the source image from its saved library asset, not from an arbitrary browser upload. It validates that the PNG mask matches the image dimensions and that no more than 65% of the canvas is selected. The model is given a padded crop so it can see surrounding context. The generated patch is resized to the original crop size and blended through a mask expanded by \`INPAINT_MASK_GROW_PX\` and feathered by \`INPAINT_MASK_BLUR_PX\`. Pixels outside that composite boundary are copied directly from the original image. A thin transition band can still change around the painted area; inspect the result at full resolution.
+**Preservation behavior:** the server gets the source image from its saved library asset, not from an arbitrary browser upload. It validates that the PNG mask matches the image dimensions and that no more than 65% of the canvas is selected. The model is given a padded crop so it can see surrounding context. The generated patch is resized to the original crop size and blended through a mask expanded by `INPAINT_MASK_GROW_PX` and feathered by `INPAINT_MASK_BLUR_PX`. Pixels outside that composite boundary are copied directly from the original image. A thin transition band can still change around the painted area; inspect the result at full resolution.
 
 **Identity behavior:** if the parent image has a trained face profile, the corresponding LoRA must be available on the selected compute backend and load successfully into the inpainting pipeline. The repair fails closed if that adapter is missing or incompatible rather than silently repairing without identity conditioning. The selected profile does not make identity mathematically guaranteed. The result also records the existing optional face-geometry and ArcFace identity-similarity reports. SD 1.5 has a short CLIP text context: the repair prompt plus the built-in preservation instructions are token-counted before inference; the app rejects overflow rather than silently truncating the correction.
 
