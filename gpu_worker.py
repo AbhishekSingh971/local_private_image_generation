@@ -403,6 +403,9 @@ def _run_async_remote_generation(job_id, form_data, file_data):
                     job = REMOTE_GENERATION_JOBS.get(job_id, {})
                     job.update(status="cancelled", error="Generation cancelled before it started.")
                 return
+            with REMOTE_GENERATION_JOBS_LOCK:
+                job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                job["status"] = "running"
             payload = dict(form_data)
             for field, (filename, content, content_type) in file_data.items():
                 payload[field] = (io.BytesIO(content), filename, content_type)
@@ -655,6 +658,9 @@ def _run_async_remote_regional_inpaint(job_id, form_data, file_data):
                 # A video or synchronous image request may win the GPU lock
                 # between the wait above and route acquisition. Retry safely
                 # with fresh upload streams rather than failing the queued job.
+                with REMOTE_GENERATION_JOBS_LOCK:
+                    job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                    job["status"] = "queued"
                 time.sleep(1.0)
                 continue
             if status_code < 200 or status_code >= 300:
