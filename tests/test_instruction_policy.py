@@ -150,3 +150,9 @@ def test_trained_identity_is_preserved_without_reference_image():
         has_trained_identity=True,
     )
     assert "selected trained person's identity" in guidance
+
+
+def test_digital_clock_gets_display_not_analog_hands():
+    guidance = build_instruction_guidance("A digital clock on a bedside table")
+    assert "digital time display" in guidance
+    assert "hour/minute hands" not in guidance
