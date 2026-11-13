@@ -37,7 +37,7 @@ from importlib import metadata as package_metadata
 from flask import Flask, request, send_from_directory, send_file, jsonify, render_template, redirect, url_for, session
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from compute_routing import select_compute_backend
+from compute_routing import select_compute_backend, select_generation_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
 from face_restoration import resolve_face_restoration_options, restore_faces
@@ -477,17 +477,31 @@ def _compute_options(probe_cloud: bool = False) -> dict:
     }
 
 
-def _resolve_compute_backend(form) -> str:
-    """OFF => CPU. ON => selected GPU; auto prefers local CUDA, then a healthy cloud worker."""
+def _resolve_compute_backend(form, *, generation: bool = False) -> str:
+    """Resolve compute for generation or other workflows.
+
+    Image/video generation intentionally prefers the GHive worker and falls
+    back to local CPU. Other workflows retain the existing local-CUDA-first
+    policy so training and utilities are not silently rerouted.
+    """
     gpu_enabled = _truthy(form.get("use_gpu", form.get("use_runpod")))
     if not gpu_enabled:
         return "cpu"
     requested = (form.get("compute_backend") or "auto").strip().lower()
+
+    if generation:
+        # Always probe GHive in Auto mode, even if this machine has CUDA.
+        options = _compute_options(
+            probe_cloud=requested in {"auto", "runpod", "cloud_gpu"}
+        )
+        return select_generation_backend(
+            True, requested,
+            cloud_gpu_available=options["cloud_gpu"]["available"],
+        )
+
     local_available = bool(torch.cuda.is_available())
     probe_cloud = requested in {"runpod", "cloud_gpu"} or (requested == "auto" and not local_available)
     options = _compute_options(probe_cloud=probe_cloud)
-    # Auto mode remains usable when no GPU/worker is configured: route to CPU.
-    # Explicit local_gpu/cloud_gpu choices still fail clearly when unavailable.
     selected = select_compute_backend(
         True, requested,
         local_gpu_available=options["local_gpu"]["available"],
@@ -2994,6 +3008,18 @@ def _load_cpu_or_gpu_pipeline(
                 torch.cuda.empty_cache()
 
             local_model = config["source"]
+            if not use_cuda:
+                if family != "sd15":
+                    raise ValueError(
+                        "Local CPU fallback currently supports only Stable Diffusion 1.5. "
+                        "Select SD 1.5 or start the GHive GPU worker for other model families."
+                    )
+                if not isinstance(local_model, Path) or not (local_model / "model_index.json").is_file():
+                    raise ValueError(
+                        "Local Stable Diffusion 1.5 files were not found. Place the complete Diffusers "
+                        "model folder at models/stable-diffusion-v1-5 or set SD_MODEL_PATH in .env. "
+                        "CPU fallback will not download model weights automatically."
+                    )
             dtype = torch.float16 if use_cuda else torch.float32
             controlnet = None
             if mode == "pose_img2img":
@@ -3153,7 +3179,7 @@ def generate():
         if generation_profile == "photorealistic":
             image_preset = "photorealistic"
         width, height = resolve_image_dimensions(aspect_ratio, model_family)
-        backend = _resolve_compute_backend(request.form)
+        backend = _resolve_compute_backend(request.form, generation=True)
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = _truthy(request.form.get("use_global_body_model"))
         upscale_options = resolve_upscale_options(
@@ -4044,7 +4070,7 @@ def generate_video():
         frames = int(request.form.get("frames", "16"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
-        backend = _resolve_compute_backend(request.form)
+        backend = _resolve_compute_backend(request.form, generation=True)
         seed = resolve_generation_seed(request.form.get("seed"))
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
@@ -4059,7 +4085,7 @@ def generate_video():
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
     if backend == "cpu":
-        return jsonify(error="Video generation requires a GPU. Turn on GPU acceleration and select an available System GPU or cloud GPU."), 400
+        return jsonify(error="Video generation requires the connected GHive GPU worker. Start your GHive rental and worker; video generation has no CPU fallback."), 400
 
     _set_generation_progress(
         task_id, asset_type="video", backend=backend, status="running", progress=1,
