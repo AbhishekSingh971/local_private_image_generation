@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from .reward import PreferenceBandit
 
 DIMENSIONS = ("identity", "angle", "expression", "body_proportions", "image_quality", "prompt_adherence", "training_stability", "loss_trend", "sample_quality")
+GENERATION_DIMENSIONS = ("identity", "angle", "expression", "body_proportions", "image_quality", "prompt_adherence")
 DEFAULT_WEIGHTS = {"identity": 2.0, "angle": 1.5, "expression": 1.5,
                    "body_proportions": 1.5, "image_quality": 1.0, "prompt_adherence": 1.5,\n                   "training_stability": 1.5, "loss_trend": 1.0, "sample_quality": 2.0}
 
@@ -59,7 +60,7 @@ def evaluate_generation(*, human_scores: Mapping[str, Any] | None = None,
         sources["image_quality"] = "technical_heuristic"
         penalties.extend(str(item) for item in quality.get("reasons", [])[:8])
         review.append("image_quality")
-    for dimension in set(requested_dimensions or DIMENSIONS):
+    for dimension in set(requested_dimensions or GENERATION_DIMENSIONS):
         if dimension in DIMENSIONS and dimension not in scores:
             review.append(dimension)
     selected_weights = {key: float((weights or DEFAULT_WEIGHTS).get(key, 0.0)) for key in scores}
