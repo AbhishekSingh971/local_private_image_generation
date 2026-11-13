@@ -99,7 +99,7 @@ def build_scene_validation_prompt(
         '"issues":["short observable issue"],'
         '"unintended_changes":["short observable unintended change"],'
         '"targeted_retry_hint":"one short, specific visual correction or empty string"}\n'
-        "Confidence is your calibrated estimate from 0 to 1, not certainty. List at most five issues "
+        "Confidence is your best self-reported estimate from 0 to 1, not certainty. List at most five issues "
         "and five unintended changes. A retry hint must describe only a relevant correction; never "
         "rewrite the whole user request.\n"
         "<user_request>\n" + user_prompt + "\n</user_request>"
