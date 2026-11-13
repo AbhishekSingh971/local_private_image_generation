@@ -190,3 +190,77 @@ def test_selected_identity_without_reference_must_remain_unverified():
     )
     assert "no identity reference is visible" in prompt
     assert "Do not claim identity consistency" in prompt
+
+
+def test_local_ollama_success_compares_reference_and_generated_images(monkeypatch):
+    from PIL import Image
+    import requests
+
+    captured = {}
+    assessment = {
+        "result": "pass",
+        "confidence": 0.92,
+        "scene_integrity": "pass",
+        "requested_changes_applied": "yes",
+        "issues": [],
+        "unintended_changes": [],
+        "targeted_retry_hint": "",
+    }
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"response": json.dumps(assessment)}
+
+    class FakeSession:
+        trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, endpoint, **kwargs):
+            captured["endpoint"] = endpoint
+            captured["trust_env"] = self.trust_env
+            captured.update(kwargs)
+            return FakeResponse()
+
+    monkeypatch.setenv("SCENE_VISION_MODEL", "local-vision")
+    monkeypatch.setattr(requests, "Session", FakeSession)
+    report = evaluate_scene_integrity(
+        prompt="Change the background but keep the person the same",
+        reference_image=Image.new("RGB", (128, 96), "blue"),
+        generated_image=Image.new("RGB", (128, 96), "green"),
+        has_trained_identity=True,
+    )
+    assert report["status"] == "passed"
+    assert report["model"] == "local-vision"
+    assert captured["trust_env"] is False
+    assert captured["allow_redirects"] is False
+    assert captured["endpoint"] == "http://127.0.0.1:11434/api/generate"
+    assert len(captured["json"]["images"]) == 2
+    assert "Image 1 is the user's reference" in captured["json"]["prompt"]
+
+
+def test_remote_vision_endpoint_is_rejected_before_sending_images(monkeypatch):
+    from PIL import Image
+    import requests
+
+    def unexpected_session():
+        raise AssertionError("Remote endpoint must be rejected before an HTTP request.")
+
+    monkeypatch.setenv("SCENE_VISION_MODEL", "local-vision")
+    monkeypatch.setenv("SCENE_VISION_URL", "https://external.example/api/generate")
+    monkeypatch.setattr(requests, "Session", unexpected_session)
+    report = evaluate_scene_integrity(
+        prompt="A clock on a desk",
+        generated_image=Image.new("RGB", (64, 64), "white"),
+    )
+    assert report["status"] == "unavailable"
+    assert "localhost" in report["reason"]
