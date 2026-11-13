@@ -108,9 +108,10 @@
       <label for="repairNegativePrompt">Avoid <span class="optional">optional</span></label>
       <textarea id="repairNegativePrompt" rows="2" maxlength="1200" placeholder="e.g. extra hands, duplicate details, changed clock face"></textarea>
       <div class="twocol">
+        <button id="toggleRepairEraser" type="button" class="secondary-button">Use eraser</button>
         <button id="clearRepairMask" type="button" class="secondary-button">Clear painted area</button>
-        <button id="submitRegionalRepair" type="button">Repair selected area</button>
       </div>
+      <button id="submitRegionalRepair" type="button">Repair selected area</button>
       <p id="regionalRepairStatus" class="status" role="status" aria-live="polite"></p>
       <p class="field-help">This stage currently supports SD 1.5 only and requires a System GPU or connected cloud GPU. It loads the dedicated inpainting checkpoint on first use. Identity LoRA loading is mandatory when the source image belongs to a trained face profile.</p>
     </section>
