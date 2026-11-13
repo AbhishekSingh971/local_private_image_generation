@@ -3970,6 +3970,8 @@ def api_regional_inpaint_async(asset_id):
     with REGIONAL_INPAINT_JOBS_LOCK:
         existing = REGIONAL_INPAINT_JOBS.get(task_id)
         if existing:
+            if existing.get("asset_id") != asset_id:
+                return jsonify(error="Regional repair task ID is already assigned to another source image."), 409
             return jsonify(task_id=task_id, status=existing.get("status", "queued")), 202
         if len(REGIONAL_INPAINT_JOBS) >= 40:
             completed = [
