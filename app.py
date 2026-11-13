@@ -847,12 +847,12 @@ def _run_local_training(
             with LOCAL_TRAIN_JOBS_LOCK:
                 LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error, "feedback": feedback}
             return
-        feedback = _record_training_feedback_safe(profile_id, job_id, "completed", logs, steps, resolution)
         _persist_face_model_bundle(profile_id, "local")
         update_profile(
             profile_id, local_training_state="completed",
             local_training_error=None, local_model_ready=True,
         )
+        feedback = _record_training_feedback_safe(profile_id, job_id, "completed", logs, steps, resolution)
         with LOCAL_TRAIN_JOBS_LOCK:
             LOCAL_TRAIN_JOBS[job_id] = {"status": "completed", "message": "Face LoRA trained locally.", "feedback": feedback}
     except Exception as exc:
@@ -2956,20 +2956,42 @@ def api_face_train_status(profile_id):
         return jsonify(error=str(exc), status="running", profile=profile), 502
     state = payload.get("status", "running")
     if state == "completed":
-        if database_url_configured() and profile.get("runpod_training_state") != "completed":
+        if profile.get("runpod_training_state") != "completed":
+            if database_url_configured():
+                try:
+                    model_response = cloud_worker_request(
+                        "GET", f"/api/remote/models/{profile_id}", timeout=(15, 120)
+                    )
+                    file_count = int(model_response.headers.get("X-Model-File-Count", "1"))
+                    _persist_face_model_bundle(profile_id, "runpod", model_response.content, file_count)
+                except Exception as exc:
+                    app.logger.warning("Could not back up cloud GPU LoRA bundle to PostgreSQL: %s", type(exc).__name__)
             try:
-                model_response = cloud_worker_request(
-                    "GET", f"/api/remote/models/{profile_id}", timeout=(15, 120)
+                payload["feedback"] = record_training_run_feedback(
+                    profile_id=profile_id, job_id=job_id, status="completed",
+                    configuration_id="lora:sd15:cloud_gpu",
+                    context={"task": "face_training", "model_family": "sd15",
+                             "backend_class": "cloud_gpu", "control_mode": "lora"},
+                    losses=payload.get("losses") if isinstance(payload.get("losses"), list) else [],
                 )
-                file_count = int(model_response.headers.get("X-Model-File-Count", "1"))
-                _persist_face_model_bundle(profile_id, "runpod", model_response.content, file_count)
-            except Exception as exc:
-                app.logger.warning("Could not back up cloud GPU LoRA bundle to PostgreSQL: %s", type(exc).__name__)
+            except Exception:
+                app.logger.warning("Cloud training reward evaluation was unavailable for job %s", job_id, exc_info=True)
         update_profile(
             profile_id, runpod_training_state="completed", runpod_training_error=None,
             runpod_model_ready=True,
         )
     elif state == "failed":
+        if profile.get("runpod_training_state") != "failed":
+            try:
+                payload["feedback"] = record_training_run_feedback(
+                    profile_id=profile_id, job_id=job_id, status="failed",
+                    configuration_id="lora:sd15:cloud_gpu",
+                    context={"task": "face_training", "model_family": "sd15",
+                             "backend_class": "cloud_gpu", "control_mode": "lora"},
+                    losses=payload.get("losses") if isinstance(payload.get("losses"), list) else [],
+                )
+            except Exception:
+                app.logger.warning("Cloud training penalty evaluation was unavailable for job %s", job_id, exc_info=True)
         update_profile(
             profile_id, runpod_training_state="failed",
             runpod_training_error=(payload.get("error") or "Cloud GPU training failed")[-3500:],
