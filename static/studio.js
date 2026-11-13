@@ -1334,6 +1334,12 @@
     repairSubmitButton.disabled=true;
     repairSubmitButton.textContent="Repairing selected area…";
     if(repairStatus)repairStatus.textContent="Loading the dedicated inpainting model and repairing only the selected region…";
+    const repairTaskId=newGenerationTaskId();
+    const repairProgressController=new AbortController();
+    const repairProgress=$("#imageProgress");
+    if(repairProgress)repairProgress.hidden=false;
+    updateGenerationProgress("image",{status:"starting",progress:0,stage:"starting",message:"Submitting regional repair…"});
+    const repairProgressWatcher=watchGenerationProgress(repairTaskId,"image",repairProgressController);
     try{
       const maskBlob=await new Promise((resolve,reject)=>{
         repairMaskCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Could not encode the repair mask.")),"image/png");
@@ -1345,6 +1351,7 @@
       formData.set("strength",$("#repairStrength")?.value||"0.88");
       formData.set("steps",$("#repairSteps")?.value||"24");
       formData.set("seed",$("#repairSeed")?.value.trim()||"");
+      formData.set("task_id",repairTaskId);
       formData.set("mask_image",new File([maskBlob],"regional-mask.png",{type:"image/png"}));
       const data=await readJson(await fetch("/api/assets/"+currentImageAssetId+"/regional-inpaint",{method:"POST",body:formData}));
       currentImageAssetId=data.asset_id;
@@ -1359,10 +1366,14 @@
       if(pill)pill.textContent="Repair saved as new image";
       renderSceneValidation(data.quality_report?.scene_integrity);
       setRegionalRepairSource(data.asset_id,refreshedUrl,data.model_family,data.backend);
+      setFinalGenerationProgress("image",true,data.message||"Regional repair saved as a new library image.");
       if(repairStatus)repairStatus.textContent=data.message||"Regional repair saved as a new library image.";
     }catch(error){
+      setFinalGenerationProgress("image",false,error.message);
       if(repairStatus)repairStatus.textContent="Regional repair failed: "+error.message;
     }finally{
+      repairProgressController.abort();
+      await repairProgressWatcher;
       repairSubmitButton.disabled=false;
       repairSubmitButton.textContent="Repair selected area";
     }
