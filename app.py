@@ -3915,32 +3915,40 @@ def _run_async_regional_inpaint_job(task_id, asset_id, form_data, mask_data):
             return
         job["status"] = "running"
     try:
-        payload = dict(form_data)
-        filename, content, content_type = mask_data
-        payload["mask_image"] = (io.BytesIO(content), filename, content_type)
-        with app.test_request_context(
-            f"/api/assets/{asset_id}/regional-inpaint",
-            method="POST",
-            data=payload,
-        ):
-            response = app.make_response(api_regional_inpaint(asset_id))
-            response.direct_passthrough = False
-            status_code = response.status_code
-            body = response.get_data()
-        try:
-            result = json.loads(body.decode("utf-8", errors="replace"))
-        except (ValueError, AttributeError):
-            result = {"error": "Regional repair returned an unreadable response."}
-        with REGIONAL_INPAINT_JOBS_LOCK:
-            job = REGIONAL_INPAINT_JOBS.get(task_id, {})
-            if 200 <= status_code < 300 and result.get("status") == "completed":
-                job.update(status="completed", result=result, finished_at=time.time())
-            else:
-                job.update(
-                    status="failed",
-                    error=str(result.get("error") or "Regional repair failed.")[:1200],
-                    finished_at=time.time(),
-                )
+        while True:
+            payload = dict(form_data)
+            filename, content, content_type = mask_data
+            payload["mask_image"] = (io.BytesIO(content), filename, content_type)
+            with app.test_request_context(
+                f"/api/assets/{asset_id}/regional-inpaint",
+                method="POST",
+                data=payload,
+            ):
+                response = app.make_response(api_regional_inpaint(asset_id))
+                response.direct_passthrough = False
+                status_code = response.status_code
+                body = response.get_data()
+            try:
+                result = json.loads(body.decode("utf-8", errors="replace"))
+            except (ValueError, AttributeError):
+                result = {"error": "Regional repair returned an unreadable response."}
+            if status_code == 429 and "Another image or video generation is running" in str(result.get("error") or ""):
+                with REGIONAL_INPAINT_JOBS_LOCK:
+                    job = REGIONAL_INPAINT_JOBS.get(task_id, {})
+                    job["status"] = "queued"
+                time.sleep(1.0)
+                continue
+            with REGIONAL_INPAINT_JOBS_LOCK:
+                job = REGIONAL_INPAINT_JOBS.get(task_id, {})
+                if 200 <= status_code < 300 and result.get("status") == "completed":
+                    job.update(status="completed", result=result, finished_at=time.time())
+                else:
+                    job.update(
+                        status="failed",
+                        error=str(result.get("error") or "Regional repair failed.")[:1200],
+                        finished_at=time.time(),
+                    )
+            break
     except Exception as exc:
         app.logger.exception("Background regional inpainting job failed")
         with REGIONAL_INPAINT_JOBS_LOCK:
