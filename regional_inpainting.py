@@ -236,6 +236,8 @@ def run_sd15_regional_inpainting(
                 ) from exc
 
         safe_prompt, safe_negative = build_regional_inpaint_prompts(prompt, negative_prompt)
+        from generation_contracts import validate_diffusion_prompt_capacity
+        prompt_token_counts = validate_diffusion_prompt_capacity(pipeline, safe_prompt, safe_negative)
         total_steps = steps
         def on_step_end(_active_pipeline, step_index, _timestep, callback_kwargs):
             if progress_callback:
@@ -271,6 +273,7 @@ def run_sd15_regional_inpainting(
             "seed": seed,
             "steps": steps,
             "strength": round(strength, 3),
+            "prompt_token_counts": prompt_token_counts,
             "mask_coverage": work["coverage"],
             "mask_bbox": list(work["mask_bbox"]),
             "crop_bbox": list(work["crop_box"]),
