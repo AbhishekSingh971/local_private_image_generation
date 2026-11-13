@@ -3621,6 +3621,10 @@ def api_regional_inpaint(asset_id):
         if not profile_ready_for_backend(profile_id, profile_backend):
             return jsonify(error="The source image's face LoRA is not trained on the selected GPU. Use the matching backend or retrain/sync this profile first."), 409
 
+    source_bytes = source_asset.get("media_data")
+    if not isinstance(source_bytes, (bytes, bytearray, memoryview)) or not source_bytes:
+        return jsonify(error="The saved source image has no readable media bytes; the original was not changed."), 409
+
     mask_file = request.files.get("mask_image")
     if not mask_file or not mask_file.filename:
         return jsonify(error="Paint the area you want to repair before submitting."), 400
@@ -3628,7 +3632,7 @@ def api_regional_inpaint(asset_id):
         mask_bytes = mask_file.stream.read(8 * 1024 * 1024 + 1)
         if len(mask_bytes) > 8 * 1024 * 1024:
             raise ValueError("Repair mask must be 8 MB or smaller.")
-        with Image.open(io.BytesIO(source_asset["media_data"])) as opened_source:
+        with Image.open(io.BytesIO(source_bytes)) as opened_source:
             source_image = ImageOps.exif_transpose(opened_source).convert("RGB")
             source_image.load()
         with Image.open(io.BytesIO(mask_bytes)) as opened_mask:
@@ -3764,6 +3768,9 @@ def api_regional_inpaint(asset_id):
             )
             return jsonify(error="Regional repair did not preserve the source canvas size."), 500
         quality_report = assess_image_quality(result).to_dict()
+        if profile:
+            quality_report["face_geometry"] = assess_face_geometry(result)
+            quality_report["identity_similarity"] = _evaluate_profile_identity(profile["id"], result)
         quality_report["scene_integrity"] = evaluate_scene_integrity(
             prompt=prompt,
             generated_image=result,
