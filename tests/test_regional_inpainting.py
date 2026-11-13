@@ -83,7 +83,7 @@ def test_merge_does_not_change_any_pixel_when_mask_is_empty():
         source, generated_crop, crop_box=(0, 0, 256, 256),
         crop_mask=mask, grow_px=8, blur_px=2,
     )
-    assert list(result.getdata()) == list(source.getdata())
+    assert result.tobytes() == source.tobytes()
 
 
 def test_small_mask_near_image_edge_stays_inside_source_bounds():
