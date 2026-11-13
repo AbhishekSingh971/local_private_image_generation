@@ -183,6 +183,9 @@ FACE_DATASET_JOB_LOCK = threading.RLock()
 FACE_DATASET_JOB_EVENTS: dict[str, threading.Event] = {}
 FACE_DATASET_JOB_FUTURES = {}
 FACE_DATASET_STARTING = False
+REGIONAL_INPAINT_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="regional-inpaint")
+REGIONAL_INPAINT_JOBS = {}
+REGIONAL_INPAINT_JOBS_LOCK = threading.RLock()
 
 
 def _set_generation_progress(task_id, *, asset_type, backend, status, progress, current_step=0, total_steps=0, stage="", message=""):
@@ -3900,6 +3903,112 @@ def api_regional_inpaint(asset_id):
         return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
     finally:
         generation_lock.release()
+
+
+
+
+def _run_async_regional_inpaint_job(task_id, asset_id, form_data, mask_data):
+    """Execute the existing repair route off-request and retain its JSON result."""
+    with REGIONAL_INPAINT_JOBS_LOCK:
+        job = REGIONAL_INPAINT_JOBS.get(task_id)
+        if not job:
+            return
+        job["status"] = "running"
+    try:
+        payload = dict(form_data)
+        filename, content, content_type = mask_data
+        payload["mask_image"] = (io.BytesIO(content), filename, content_type)
+        with app.test_request_context(
+            f"/api/assets/{asset_id}/regional-inpaint",
+            method="POST",
+            data=payload,
+        ):
+            response = app.make_response(api_regional_inpaint(asset_id))
+            response.direct_passthrough = False
+            status_code = response.status_code
+            body = response.get_data()
+        try:
+            result = json.loads(body.decode("utf-8", errors="replace"))
+        except (ValueError, AttributeError):
+            result = {"error": "Regional repair returned an unreadable response."}
+        with REGIONAL_INPAINT_JOBS_LOCK:
+            job = REGIONAL_INPAINT_JOBS.get(task_id, {})
+            if 200 <= status_code < 300 and result.get("status") == "completed":
+                job.update(status="completed", result=result, finished_at=time.time())
+            else:
+                job.update(
+                    status="failed",
+                    error=str(result.get("error") or "Regional repair failed.")[:1200],
+                    finished_at=time.time(),
+                )
+    except Exception as exc:
+        app.logger.exception("Background regional inpainting job failed")
+        with REGIONAL_INPAINT_JOBS_LOCK:
+            job = REGIONAL_INPAINT_JOBS.get(task_id, {})
+            job.update(status="failed", error=str(exc)[:1200], finished_at=time.time())
+
+
+@app.post("/api/assets/<asset_id>/regional-inpaint-async")
+def api_regional_inpaint_async(asset_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", asset_id or ""):
+        return jsonify(error="Invalid source image ID."), 400
+    task_id = (request.form.get("task_id") or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+        return jsonify(error="Invalid regional repair task ID."), 400
+    mask_file = request.files.get("mask_image")
+    if not mask_file or not mask_file.filename:
+        return jsonify(error="Paint the area you want to repair before submitting."), 400
+    mask_bytes = mask_file.stream.read(8 * 1024 * 1024 + 1)
+    if len(mask_bytes) > 8 * 1024 * 1024:
+        return jsonify(error="Repair mask must be 8 MB or smaller."), 400
+    form_data = request.form.to_dict(flat=True)
+    mask_data = (
+        Path(mask_file.filename or "regional-mask.png").name,
+        mask_bytes,
+        mask_file.mimetype or "image/png",
+    )
+    with REGIONAL_INPAINT_JOBS_LOCK:
+        existing = REGIONAL_INPAINT_JOBS.get(task_id)
+        if existing:
+            return jsonify(task_id=task_id, status=existing.get("status", "queued")), 202
+        if len(REGIONAL_INPAINT_JOBS) >= 40:
+            completed = [
+                key for key, value in REGIONAL_INPAINT_JOBS.items()
+                if value.get("status") in {"completed", "failed"}
+            ]
+            for key in completed[:20]:
+                REGIONAL_INPAINT_JOBS.pop(key, None)
+        REGIONAL_INPAINT_JOBS[task_id] = {
+            "task_id": task_id,
+            "asset_id": asset_id,
+            "status": "queued",
+            "created_at": time.time(),
+            "error": None,
+        }
+    REGIONAL_INPAINT_POOL.submit(
+        _run_async_regional_inpaint_job, task_id, asset_id, form_data, mask_data
+    )
+    return jsonify(task_id=task_id, status="queued"), 202
+
+
+@app.get("/api/regional-inpaint-jobs/<task_id>")
+def api_regional_inpaint_job_status(task_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", task_id or ""):
+        return jsonify(error="Invalid regional repair task ID."), 400
+    with REGIONAL_INPAINT_JOBS_LOCK:
+        job = REGIONAL_INPAINT_JOBS.get(task_id)
+        if not job:
+            return jsonify(error="Regional repair job not found; the app process may have restarted."), 404
+        payload = {
+            "task_id": task_id,
+            "status": job.get("status", "queued"),
+            "error": job.get("error"),
+            "result": job.get("result"),
+        }
+    progress = _get_generation_progress(task_id)
+    if progress:
+        payload["progress"] = progress
+    return jsonify(payload)
 
 
 @app.post("/generate-video")
