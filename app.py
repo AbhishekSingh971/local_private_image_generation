@@ -47,6 +47,7 @@ from model_artifacts import safe_extract_lora_bundle, sha256_bytes
 from private_data_crypto import encryption_configured
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from prompt_compiler import build_structured_prompt
+from instruction_policy import build_instruction_guidance
 from generation_contracts import preserve_generation_text
 from geometry_analysis import analyze_geometry
 from face_profiles import (
@@ -3214,6 +3215,16 @@ def generate():
                 has_reference_image=init_image is not None,
             )
         prompt_is_final = True
+    else:
+        # The preview request may not have included the selected profile in older
+        # clients. Re-apply the same policy from the original user prompt here.
+        guidance = build_instruction_guidance(
+            original_prompt,
+            has_reference_image=init_image is not None,
+            has_trained_identity=bool(profile_id),
+        )
+        if guidance and guidance not in prompt:
+            prompt = prompt + " " + guidance
 
     _set_generation_progress(
         task_id, asset_type="image", backend=backend, status="running", progress=1,
