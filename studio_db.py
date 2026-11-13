@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import threading
 import uuid
@@ -10,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
+from private_data_crypto import decrypt_sensitive_bytes, encrypt_sensitive_bytes, encryption_configured, is_encrypted
 from psycopg.rows import dict_row
 from psycopg import sql
 from psycopg.errors import UniqueViolation
@@ -101,6 +103,7 @@ def ensure_schema() -> None:
                 byte_size INTEGER NOT NULL, image_data BYTEA NOT NULL, group_id VARCHAR(32),
                 angle_label VARCHAR(80), photo_kind VARCHAR(16) NOT NULL DEFAULT 'manual',
                 validation_status VARCHAR(24) NOT NULL DEFAULT 'not_checked', validation_message TEXT,
+                training_approval_status VARCHAR(16) NOT NULL DEFAULT 'pending',
                 training_caption TEXT NOT NULL DEFAULT '', target_yaw DOUBLE PRECISION, target_pitch DOUBLE PRECISION,
                 actual_yaw DOUBLE PRECISION, actual_pitch DOUBLE PRECISION, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
             """CREATE TABLE IF NOT EXISTS face_dataset_jobs (
@@ -119,11 +122,20 @@ def ensure_schema() -> None:
                 backend VARCHAR(16) NOT NULL, filename VARCHAR(255) NOT NULL, file_count INTEGER NOT NULL,
                 bundle_size INTEGER NOT NULL, bundle_data BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 CONSTRAINT uq_face_model_profile_backend UNIQUE(profile_id, backend))""",
+            """CREATE TABLE IF NOT EXISTS face_model_versions (
+                id VARCHAR(32) PRIMARY KEY, profile_id VARCHAR(32) NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE,
+                backend VARCHAR(16) NOT NULL, version_number INTEGER NOT NULL, filename VARCHAR(255) NOT NULL,
+                file_count INTEGER NOT NULL, bundle_size INTEGER NOT NULL, sha256 VARCHAR(64) NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb, bundle_data BYTEA NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT uq_face_model_version UNIQUE(profile_id,backend,version_number))""",
             """CREATE TABLE IF NOT EXISTS generated_assets (
                 id VARCHAR(32) PRIMARY KEY, asset_type VARCHAR(12) NOT NULL, title VARCHAR(160) NOT NULL,
                 filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL, prompt TEXT NOT NULL DEFAULT '',
-                negative_prompt TEXT NOT NULL DEFAULT '', profile_id VARCHAR(32), profile_name VARCHAR(80),
+                negative_prompt TEXT NOT NULL DEFAULT '', original_prompt TEXT NOT NULL DEFAULT '',
+                upsampled_prompt TEXT NOT NULL DEFAULT '', model_family VARCHAR(16) NOT NULL DEFAULT 'sd15', profile_id VARCHAR(32), profile_name VARCHAR(80),
                 backend VARCHAR(32) NOT NULL DEFAULT 'cpu', generation_mode VARCHAR(32) NOT NULL DEFAULT '',
+                generation_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 media_size INTEGER NOT NULL, media_data BYTEA NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
         ]
@@ -132,6 +144,10 @@ def ensure_schema() -> None:
                 for statement in statements:
                     cur.execute(statement)
             _ensure_column(conn, "face_profiles", "description", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "generated_assets", "original_prompt", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "generated_assets", "upsampled_prompt", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "generated_assets", "model_family", "VARCHAR(16) NOT NULL DEFAULT 'sd15'")
+            _ensure_column(conn, "generated_assets", "generation_metadata", "JSONB NOT NULL DEFAULT '{}'::jsonb")
             for name, definition in (("dataset_type", "VARCHAR(24) NOT NULL DEFAULT 'face_angles'"), ("prompt", "TEXT NOT NULL DEFAULT ''"), ("generated_count", "INTEGER NOT NULL DEFAULT 0")):
                 _ensure_column(conn, "face_dataset_groups", name, definition)
             # Older installations may already have generated_count but no database
@@ -146,7 +162,9 @@ def ensure_schema() -> None:
                 ("group_id", "VARCHAR(32)"), ("angle_label", "VARCHAR(80)"),
                 ("photo_kind", "VARCHAR(16) NOT NULL DEFAULT 'manual'"),
                 ("validation_status", "VARCHAR(24) NOT NULL DEFAULT 'not_checked'"),
-                ("validation_message", "TEXT"), ("training_caption", "TEXT NOT NULL DEFAULT ''"),
+                ("validation_message", "TEXT"),
+                ("training_approval_status", "VARCHAR(16) NOT NULL DEFAULT 'pending'"),
+                ("training_caption", "TEXT NOT NULL DEFAULT ''"),
                 ("target_yaw", "DOUBLE PRECISION"), ("target_pitch", "DOUBLE PRECISION"),
                 ("actual_yaw", "DOUBLE PRECISION"), ("actual_pitch", "DOUBLE PRECISION")):
                 _ensure_column(conn, "face_photos", name, definition)
@@ -159,8 +177,34 @@ def ensure_schema() -> None:
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_profile_id ON face_dataset_jobs(profile_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_dataset_jobs_status ON face_dataset_jobs(status)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_face_model_artifacts_profile_id ON face_model_artifacts(profile_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS ix_face_model_versions_profile_id ON face_model_versions(profile_id,backend,version_number DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_asset_type ON generated_assets(asset_type)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_generated_assets_profile_id ON generated_assets(profile_id)")
+                # Group legacy ungrouped profile photos so they appear in the review UI.
+                cur.execute("""SELECT profile_id, COUNT(*) AS photo_count,
+                    BOOL_OR(photo_kind='body') AS has_body,
+                    BOOL_OR(photo_kind='expression') AS has_expression
+                    FROM face_photos WHERE group_id IS NULL GROUP BY profile_id""")
+                ungrouped_profiles = cur.fetchall()
+                for legacy_profile in ungrouped_profiles:
+                    group_id = uuid.uuid4().hex
+                    photo_count = int(legacy_profile["photo_count"])
+                    dataset_type = (
+                        "body_type" if legacy_profile.get("has_body")
+                        else "expressions" if legacy_profile.get("has_expression")
+                        else "face_angles"
+                    )
+                    cur.execute(
+                        """INSERT INTO face_dataset_groups(
+                            id,profile_id,title,dataset_type,prompt,status,expected_count,generated_count
+                        ) VALUES(%s,%s,'Imported manual photos',%s,'',
+                            'completed',%s,%s)""",
+                        (group_id, legacy_profile["profile_id"], dataset_type, max(photo_count, 1), photo_count),
+                    )
+                    cur.execute(
+                        "UPDATE face_photos SET group_id=%s WHERE profile_id=%s AND group_id IS NULL",
+                        (group_id, legacy_profile["profile_id"]),
+                    )
         _SCHEMA_READY.add(url)
 
 
@@ -252,11 +296,41 @@ def _repair_face_photo_schema() -> None:
 
 
 def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", group_id=None, angle_label=None,
-    photo_kind="manual", validation_status="not_checked", validation_message=None, training_caption="",
+    photo_kind="manual", validation_status="not_checked", validation_message=None,
+    training_approval_status="pending", training_caption="",
     target_yaw=None,target_pitch=None,actual_yaw=None,actual_pitch=None):
     if photo_kind not in {"source","angle","expression","body","manual"}: raise ValueError("Invalid photo kind.")
     if validation_status not in {"not_checked","passed","needs_review","not_applicable"}: raise ValueError("Invalid photo validation status.")
+    if training_approval_status not in {"pending","approved","rejected"}: raise ValueError("Invalid training approval status.")
     ensure_schema()
+    # Legacy and direct profile uploads without a named group still need a visible
+    # review surface. Reuse one completed manual-upload group per profile.
+    if not group_id:
+        manual_group_type = (
+            "body_type" if photo_kind == "body"
+            else "expressions" if photo_kind == "expression"
+            else "face_angles"
+        )
+        existing_group = _one(
+            """SELECT id FROM face_dataset_groups
+               WHERE profile_id=%s AND title='Manual uploads' AND dataset_type=%s
+               ORDER BY created_at DESC LIMIT 1""",
+            (profile_id, manual_group_type),
+        )
+        if existing_group:
+            group_id = existing_group["id"]
+            _run(
+                "UPDATE face_dataset_groups SET generated_count=generated_count+1, expected_count=GREATEST(expected_count,generated_count+1), updated_at=now() WHERE id=%s",
+                (group_id,),
+            )
+        else:
+            group_id = uuid.uuid4().hex
+            _run(
+                """INSERT INTO face_dataset_groups(
+                    id,profile_id,title,dataset_type,prompt,status,expected_count,generated_count
+                ) VALUES(%s,%s,'Manual uploads',%s,'','completed',1,1)""",
+                (group_id, profile_id, manual_group_type),
+            )
     # CREATE TABLE IF NOT EXISTS does not restore defaults on an existing table.
     # Repair this required timestamp even when ensure_schema() is cached.
     _repair_face_photo_schema()
@@ -264,10 +338,10 @@ def add_face_photo(profile_id, filename, image_data, mime_type="image/jpeg", gro
     # Supply the timestamp in the INSERT itself as well as repairing the legacy
     # default above. This makes the write independent of the column default.
     _run("""INSERT INTO face_photos(id,profile_id,filename,mime_type,byte_size,image_data,group_id,angle_label,photo_kind,
-        validation_status,validation_message,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch,created_at)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())""",
-        (photo_id,profile_id,Path(filename).name,mime_type,len(image_data),image_data,group_id,(angle_label or "")[:80] or None,
-         photo_kind,validation_status,(validation_message or "")[:1200] or None,(training_caption or "")[:1200],
+        validation_status,validation_message,training_approval_status,training_caption,target_yaw,target_pitch,actual_yaw,actual_pitch,created_at)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())""",
+        (photo_id,profile_id,Path(filename).name,mime_type,len(image_data),encrypt_sensitive_bytes(image_data),group_id,(angle_label or "")[:80] or None,
+         photo_kind,validation_status,(validation_message or "")[:1200] or None,training_approval_status,(training_caption or "")[:1200],
          target_yaw,target_pitch,actual_yaw,actual_pitch))
     return photo_id
 
@@ -372,9 +446,13 @@ def list_face_dataset_groups(profile_id=None,limit=200):
     result=[]
     for row in rows:
         rec=_group_dict(row); rec["profile_name"]=row.get("profile_name") or "Unknown profile"
-        photos=_all("""SELECT id,filename,angle_label,photo_kind,validation_status,validation_message,target_yaw,target_pitch,
-            actual_yaw,actual_pitch,mime_type,byte_size,created_at FROM face_photos WHERE group_id=%s ORDER BY created_at,id""",(row["id"],))
-        rec["photos"]=[dict(p,angle_label=p.get("angle_label") or "Training photo",validation_status=p.get("validation_status") or "not_checked",created_at=_iso(p.get("created_at"))) for p in photos]
+        photos=_all("""SELECT id,filename,angle_label,photo_kind,validation_status,validation_message,
+            training_approval_status,target_yaw,target_pitch,actual_yaw,actual_pitch,mime_type,byte_size,created_at
+            FROM face_photos WHERE group_id=%s ORDER BY created_at,id""",(row["id"],))
+        rec["photos"]=[dict(p,angle_label=p.get("angle_label") or "Training photo",
+            validation_status=p.get("validation_status") or "not_checked",
+            training_approval_status=p.get("training_approval_status") or "pending",
+            created_at=_iso(p.get("created_at"))) for p in photos]
         rec["photo_count"]=len(photos); result.append(rec)
     return result
 
@@ -500,6 +578,23 @@ def update_face_dataset_job(job_id,**fields):
     return get_face_dataset_job(job_id)
 
 
+def update_face_photo_approval(photo_id, *, approval_status):
+    """Record the human review decision for one face-training photo."""
+    if approval_status not in {"pending", "approved", "rejected"}:
+        raise ValueError("Training approval must be pending, approved or rejected.")
+    ensure_schema()
+    updated = _run(
+        "UPDATE face_photos SET training_approval_status=%s WHERE id=%s",
+        (approval_status, photo_id),
+    )
+    if not updated:
+        return None
+    return _one(
+        "SELECT id,profile_id,filename,training_approval_status FROM face_photos WHERE id=%s",
+        (photo_id,),
+    )
+
+
 def update_face_photo_validation(photo_id,*,validation_status,validation_message="",actual_yaw=None,actual_pitch=None):
     if validation_status not in {"not_checked","passed","needs_review","not_applicable"}: raise ValueError("Invalid photo validation status.")
     _run("UPDATE face_photos SET validation_status=%s,validation_message=%s,actual_yaw=%s,actual_pitch=%s WHERE id=%s",
@@ -525,10 +620,13 @@ def list_face_photo_names(profile_id):
 def _photo_dict(r,include_bytes=False):
     if not r:return None
     keys=("id","profile_id","filename","mime_type","byte_size","group_id","angle_label","photo_kind","validation_status",
-          "validation_message","training_caption","target_yaw","target_pitch","actual_yaw","actual_pitch")
+          "validation_message","training_approval_status","training_caption","target_yaw","target_pitch","actual_yaw","actual_pitch")
     d={k:r.get(k) for k in keys}
-    d["validation_status"]=d.get("validation_status") or "not_checked"; d["training_caption"]=d.get("training_caption") or ""
-    if include_bytes:d["image_data"]=bytes(r["image_data"])
+    d["validation_status"]=d.get("validation_status") or "not_checked"
+    d["training_approval_status"]=d.get("training_approval_status") or "pending"
+    d["training_caption"]=d.get("training_caption") or ""
+    if include_bytes:
+        d["image_data"]=decrypt_sensitive_bytes(bytes(r["image_data"]))
     return d
 
 
@@ -543,7 +641,7 @@ def list_face_photo_records(profile_id,filenames=None):
 
 def get_face_photo_bytes(photo_id):
     ensure_schema(); r=_one("SELECT * FROM face_photos WHERE id=%s",(photo_id,))
-    return (_photo_dict(r),bytes(r["image_data"])) if r else None
+    return (_photo_dict(r),decrypt_sensitive_bytes(bytes(r["image_data"]))) if r else None
 
 
 def update_face_photo(photo_id,*,angle_label=None,training_caption=None,image_data=None,mime_type=None):
@@ -555,9 +653,11 @@ def update_face_photo(photo_id,*,angle_label=None,training_caption=None,image_da
     if angle_label is not None: updates["angle_label"]=angle_label
     if training_caption is not None: updates["training_caption"]=str(training_caption or "").strip()[:1200]
     if image_data is not None:
-        updates.update(image_data=image_data,byte_size=len(image_data),mime_type=(mime_type or "image/jpeg")[:100],
+        updates.update(image_data=encrypt_sensitive_bytes(image_data),byte_size=len(image_data),mime_type=(mime_type or "image/jpeg")[:100],
             validation_status="needs_review",validation_message="The image was replaced; review its identity, pose and expression before training.",
             actual_yaw=None,actual_pitch=None)
+    if angle_label is not None or training_caption is not None or image_data is not None:
+        updates["training_approval_status"]="pending"
     if updates:
         sets=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in updates)
         _run(sql.SQL("UPDATE face_photos SET {} WHERE id=%s").format(sets),tuple(updates.values())+(photo_id,))
@@ -580,25 +680,175 @@ def save_face_model_bundle(profile_id,backend,filename,bundle_data,file_count):
         VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(profile_id,backend) DO UPDATE SET filename=EXCLUDED.filename,
         file_count=EXCLUDED.file_count,bundle_size=EXCLUDED.bundle_size,bundle_data=EXCLUDED.bundle_data,updated_at=now()
         RETURNING id,profile_id,backend,filename,file_count,bundle_size,updated_at""",
-        (uuid.uuid4().hex,profile_id,backend,name,int(file_count),len(bundle_data),bundle_data))
+        (uuid.uuid4().hex,profile_id,backend,name,int(file_count),len(bundle_data),encrypt_sensitive_bytes(bundle_data)))
     return dict(r,updated_at=_iso(r["updated_at"]))
+
+
+def save_face_model_version(profile_id, backend, filename, bundle_data, file_count, metadata=None):
+    """Append an immutable, checksummed LoRA artifact version."""
+    if backend not in {"local", "runpod"}:
+        raise ValueError("Face model backend must be local or runpod.")
+    if not bundle_data or len(bundle_data) > 512 * 1024 * 1024:
+        raise ValueError("Face model bundle must be non-empty and no larger than 512 MB.")
+    ensure_schema()
+    digest = hashlib.sha256(bundle_data).hexdigest()
+    metadata_json = json.dumps(metadata if isinstance(metadata, dict) else {}, separators=(",", ":"), default=str)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"{profile_id}:{backend}",))
+        cur.execute(
+            "SELECT COALESCE(MAX(version_number),0)+1 AS next_version FROM face_model_versions WHERE profile_id=%s AND backend=%s",
+            (profile_id, backend),
+        )
+        version_number = int(cur.fetchone()["next_version"])
+        cur.execute(
+            """INSERT INTO face_model_versions(
+                id,profile_id,backend,version_number,filename,file_count,bundle_size,sha256,metadata,bundle_data
+            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+            RETURNING id,profile_id,backend,version_number,filename,file_count,bundle_size,sha256,metadata,created_at""",
+            (uuid.uuid4().hex,profile_id,backend,version_number,Path(filename).name,int(file_count),
+             len(bundle_data),digest,metadata_json,encrypt_sensitive_bytes(bundle_data)),
+        )
+        row = cur.fetchone()
+    return dict(row, created_at=_iso(row["created_at"]))
+
+
+def list_face_model_versions(profile_id, backend=None, limit=50):
+    ensure_schema()
+    if backend is not None and backend not in {"local", "runpod"}:
+        raise ValueError("Face model backend must be local or runpod.")
+    if backend:
+        rows = _all(
+            """SELECT id,profile_id,backend,version_number,filename,file_count,bundle_size,sha256,metadata,created_at
+               FROM face_model_versions WHERE profile_id=%s AND backend=%s
+               ORDER BY version_number DESC LIMIT %s""",
+            (profile_id,backend,max(1,min(int(limit),100))),
+        )
+    else:
+        rows = _all(
+            """SELECT id,profile_id,backend,version_number,filename,file_count,bundle_size,sha256,metadata,created_at
+               FROM face_model_versions WHERE profile_id=%s
+               ORDER BY created_at DESC LIMIT %s""",
+            (profile_id,max(1,min(int(limit),100))),
+        )
+    result=[]
+    for row in rows:
+        item=dict(row,created_at=_iso(row.get("created_at")))
+        if isinstance(item.get("metadata"), str):
+            try: item["metadata"]=json.loads(item["metadata"])
+            except (TypeError,ValueError): item["metadata"]={}
+        result.append(item)
+    return result
+
+
+def encrypt_existing_private_data(batch_size=5, reencrypt=False):
+    """Encrypt legacy plaintext BYTEA blobs in place; run while the app is in maintenance mode."""
+    if not encryption_configured():
+        raise RuntimeError("Set FACE_DATA_ENCRYPTION_KEY before encrypting existing private data.")
+    ensure_schema()
+    targets = (
+        ("face_photos", "image_data"),
+        ("face_model_artifacts", "bundle_data"),
+        ("face_model_versions", "bundle_data"),
+        ("generated_assets", "media_data"),
+    )
+    migrated = {}
+    for table, column in targets:
+        last_id = ""
+        changed = 0
+        while True:
+            rows = _all(
+                f"SELECT id,{column} FROM {table} WHERE id>%s ORDER BY id LIMIT %s",
+                (last_id, max(1, min(int(batch_size), 50))),
+            )
+            if not rows:
+                break
+            with _connect() as conn, conn.cursor() as cur:
+                for row in rows:
+                    last_id = row["id"]
+                    payload = bytes(row[column])
+                    if is_encrypted(payload):
+                        if not reencrypt:
+                            continue
+                        payload = decrypt_sensitive_bytes(payload)
+                    cur.execute(
+                        f"UPDATE {table} SET {column}=%s WHERE id=%s",
+                        (encrypt_sensitive_bytes(payload), row["id"]),
+                    )
+                    changed += 1
+        migrated[f"{table}.{column}"] = changed
+    return migrated
+
+
+def private_data_encryption_status():
+    """Return counts of legacy plaintext blobs without reading the blob contents."""
+    ensure_schema()
+    targets = (
+        ("face_photos", "image_data"),
+        ("face_model_artifacts", "bundle_data"),
+        ("face_model_versions", "bundle_data"),
+        ("generated_assets", "media_data"),
+    )
+    result = {}
+    for table, column in targets:
+        row = _one(
+            f"""SELECT COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE substring({column} from 1 for 5) <> %s) AS plaintext
+                FROM {table}""",
+            (b"PFDB1",),
+        )
+        sample = _one(
+            f"SELECT {column} FROM {table} WHERE substring({column} from 1 for 5) = %s LIMIT 1",
+            (b"PFDB1",),
+        )
+        if sample:
+            # Verify that the configured active/previous key can decrypt real data,
+            # not merely that blobs carry the expected format marker.
+            decrypt_sensitive_bytes(bytes(sample[column]))
+        result[f"{table}.{column}"] = {
+            "total": int(row["total"]),
+            "plaintext": int(row["plaintext"]),
+            "key_verified": bool(sample) or int(row["total"]) == 0,
+        }
+    return result
+
+
+def get_face_model_version(profile_id, version_id):
+    ensure_schema()
+    row = _one(
+        "SELECT * FROM face_model_versions WHERE profile_id=%s AND id=%s",
+        (profile_id,version_id),
+    )
+    if not row:
+        return None
+    result=dict(row,created_at=_iso(row.get("created_at")),bundle_data=decrypt_sensitive_bytes(bytes(row["bundle_data"])))
+    if isinstance(result.get("metadata"), str):
+        try: result["metadata"]=json.loads(result["metadata"])
+        except (TypeError,ValueError): result["metadata"]={}
+    return result
 
 
 def get_face_model_bundle(profile_id,backend):
     ensure_schema(); r=_one("SELECT * FROM face_model_artifacts WHERE profile_id=%s AND backend=%s",(profile_id,backend))
     if not r:return None
-    r=dict(r,updated_at=_iso(r["updated_at"]),bundle_data=bytes(r["bundle_data"])); return r
+    r=dict(r,updated_at=_iso(r["updated_at"]),bundle_data=decrypt_sensitive_bytes(bytes(r["bundle_data"]))); return r
 
 
 def _asset_dict(r,include_content=False):
     if not r:return None
-    d={k:r.get(k) for k in ("id","asset_type","title","filename","mime_type","prompt","negative_prompt","profile_id","profile_name","backend","generation_mode","media_size")}
+    d={k:r.get(k) for k in ("id","asset_type","title","filename","mime_type","prompt","negative_prompt","original_prompt","upsampled_prompt","model_family","profile_id","profile_name","backend","generation_mode","media_size")}
+    metadata = r.get("generation_metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            metadata = {}
+    d["generation_metadata"] = metadata if isinstance(metadata, dict) else {}
     d.update(created_at=_iso(r.get("created_at")),updated_at=_iso(r.get("updated_at")))
-    if include_content:d["media_data"]=bytes(r["media_data"])
+    if include_content:d["media_data"]=decrypt_sensitive_bytes(bytes(r["media_data"]))
     return d
 
 
-def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",negative_prompt="",profile_id=None,profile_name=None,backend="cpu",generation_mode=""):
+def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",negative_prompt="",original_prompt=None,upsampled_prompt="",model_family="sd15",profile_id=None,profile_name=None,backend="cpu",generation_mode="",generation_metadata=None):
     if asset_type not in {"image","video"}: raise ValueError("Asset type must be image or video.")
     if not media_data: raise ValueError("Cannot save an empty media file.")
     if len(media_data)>512*1024*1024: raise ValueError("Media files must be 512 MB or smaller to store in the database.")
@@ -606,11 +856,19 @@ def create_asset(*,asset_type,title,filename,mime_type,media_data,prompt="",nega
     title=(title or "").strip()[:160] or ("Generated image" if asset_type=="image" else "Generated video")
     # Explicitly set timestamps instead of relying on defaults that may be
     # absent on an existing Supabase table created by an older schema version.
-    r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,profile_id,profile_name,
-        backend,generation_mode,media_size,media_data,created_at,updated_at)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now()) RETURNING *""",
-        (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,prompt[:1200],negative_prompt[:600],profile_id,profile_name,
-         backend[:32],generation_mode[:32],len(media_data),media_data))
+    full_prompt=str(prompt or "")
+    full_negative_prompt=str(negative_prompt or "")
+    original_prompt=full_prompt if original_prompt is None else str(original_prompt or "")
+    family=str(model_family or "sd15").strip().lower()
+    if family not in {"sd15","sdxl","flux2_klein"}: raise ValueError("Model family must be sd15, sdxl or flux2_klein.")
+    upsampled_prompt=str(upsampled_prompt or "")
+    metadata = generation_metadata if isinstance(generation_metadata, dict) else {}
+    metadata_json = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), default=str)
+    r=_one("""INSERT INTO generated_assets(id,asset_type,title,filename,mime_type,prompt,negative_prompt,original_prompt,upsampled_prompt,model_family,profile_id,profile_name,
+        backend,generation_mode,generation_metadata,media_size,media_data,created_at,updated_at)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,now(),now()) RETURNING *""",
+        (uuid.uuid4().hex,asset_type,title,Path(filename).name,mime_type,full_prompt,full_negative_prompt,original_prompt,upsampled_prompt,family,profile_id,profile_name,
+         backend[:32],generation_mode[:32],metadata_json,len(media_data),encrypt_sensitive_bytes(media_data)))
     return _asset_dict(r)
 
 
@@ -652,8 +910,9 @@ def update_asset(asset_id,fields):
     if "title" in fields:
         fields["title"]=str(fields["title"] or "").strip()
         if not fields["title"] or len(fields["title"])>160: raise ValueError("Title must contain 1–160 characters.")
-    if "prompt" in fields and len(str(fields["prompt"] or ""))>1200: raise ValueError("Prompt must be 1200 characters or fewer.")
-    if "negative_prompt" in fields and len(str(fields["negative_prompt"] or ""))>600: raise ValueError("Negative prompt must be 600 characters or fewer.")
+    for key in ("prompt","negative_prompt"):
+        if key in fields:
+            fields[key]=str(fields[key] or "")
     sets=sql.SQL(", ").join(sql.SQL("{}=%s").format(sql.Identifier(k)) for k in fields)
     r=_one(sql.SQL("UPDATE generated_assets SET {} , updated_at=now() WHERE id=%s RETURNING *").format(sets),tuple(fields.values())+(asset_id,))
     return _asset_dict(r)

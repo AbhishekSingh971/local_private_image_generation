@@ -1,4 +1,4 @@
-"""Authenticated GPU worker for a user-managed Colab or cloud GPU runtime.
+"""Provider-neutral authenticated worker for a user-managed remote CUDA GPU.
 
 Set REMOTE_API_TOKEN to a strong random secret and expose port 8000 only through
 an HTTPS tunnel/proxy. This worker does not provision, purchase, or keep a runtime alive.
@@ -27,18 +27,25 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 import app as local_engine
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_upscaling import resolve_upscale_options, upscale_image
+from face_restoration import resolve_face_restoration_options, restore_faces
+from generation_contracts import preserve_generation_text
+from model_artifacts import safe_extract_lora_bundle, sha256_bytes
+import shutil
+import tempfile
+from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from face_profiles import (
     create_profile,
+    dataset_dir,
     dataset_images,
     get_profile,
     model_path,
-    save_profile_image,
     update_profile,
     validate_profile_id,
 )
 
-worker = Flask("runpod_gpu_worker")
-worker.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
+worker = Flask("remote_gpu_worker")
+worker.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
 TOKEN = os.environ.get("REMOTE_API_TOKEN", "").strip()
 TASKS = {}
 TASKS_LOCK = threading.RLock()
@@ -122,7 +129,7 @@ def _valid_profile(profile_id):
     return value if get_profile(value) else None
 
 
-def _training_job(profile_id, job_id, steps, resolution):
+def _training_job(profile_id, job_id, steps, resolution, approved_filenames):
     profile = get_profile(profile_id)
     if not profile:
         with TASKS_LOCK:
@@ -138,6 +145,8 @@ def _training_job(profile_id, job_id, steps, resolution):
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
     ]
+    for filename in approved_filenames:
+        command.extend(["--approved-filename", filename])
     with TASKS_LOCK:
         TASKS[job_id] = {
             "job_id": job_id, "profile_id": profile_id, "status": "running",
@@ -172,6 +181,19 @@ def _training_job(profile_id, job_id, steps, resolution):
             local_model_ready=False,
         )
         task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error}
+    cleanup_warnings = []
+    for filename in approved_filenames:
+        safe_name = Path(filename).name
+        if safe_name != filename or not safe_name.startswith("approved_"):
+            continue
+        image_path = dataset_dir(profile_id) / safe_name
+        try:
+            image_path.unlink(missing_ok=True)
+            image_path.with_name(image_path.name + ".caption.txt").unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            cleanup_warnings.append(f"Could not remove temporary training photo {safe_name}: {cleanup_error}")
+    if cleanup_warnings:
+        task["cleanup_warnings"] = cleanup_warnings[:10]
     with TASKS_LOCK:
         task["finished_at"] = time.time()
         TASKS[job_id] = task
@@ -216,23 +238,23 @@ def remote_train_profile():
                 caption_by_name[Path(caption_file.filename or "").name] = caption_file.stream.read(1200).decode("utf-8", errors="replace").strip()
             except (OSError, UnicodeError):
                 continue
-        create_profile(name, profile_id=profile_id, token=token, description=description)
-        for upload, image in zip(photo_uploads, images):
-            caption = caption_by_name.get(Path(upload.filename or "").name, "")
-            if caption:
-                lowered = caption.lower()
-                if lowered.startswith("body type:"):
-                    photo_kind = "body"
-                elif any(term in lowered for term in ("smile", "laugh", "expression", "surprised", "neutral", "serious")):
-                    photo_kind = "expression"
-                else:
-                    photo_kind = "angle"
-                save_profile_image(profile_id, image, angle_label=caption, photo_kind=photo_kind)
-            else:
-                save_profile_image(profile_id, image)
         existing = get_profile(profile_id)
         if existing and existing.get("local_training_state") == "running":
             return jsonify(error="This face profile is already training on the GPU worker."), 409
+        create_profile(name, profile_id=profile_id, token=token, description=description)
+        approved_filenames = []
+        worker_dataset = dataset_dir(profile_id)
+        for upload, image in zip(photo_uploads, images):
+            filename = f"approved_{uuid.uuid4().hex}.jpg"
+            saved_path = worker_dataset / filename
+            image.convert("RGB").save(saved_path, format="JPEG", quality=95, optimize=True)
+            caption = caption_by_name.get(Path(upload.filename or "").name, "")
+            caption_path = saved_path.with_name(saved_path.name + ".caption.txt")
+            if caption:
+                caption_path.write_text(caption[:1200], encoding="utf-8")
+            else:
+                caption_path.unlink(missing_ok=True)
+            approved_filenames.append(saved_path.name)
         job_id = uuid.uuid4().hex
         update_profile(
             profile_id, local_training_state="running", local_training_job_id=job_id,
@@ -240,12 +262,60 @@ def remote_train_profile():
         )
         with TASKS_LOCK:
             TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "status": "queued"}
-        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution)
+        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution, approved_filenames)
         return jsonify(status="queued", job_id=job_id, profile_id=profile_id), 202
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     except RuntimeError as exc:
         return jsonify(error=str(exc)), 500
+
+
+@worker.post("/api/remote/models/<profile_id>/restore")
+def remote_restore_model_version(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile is not present on this GPU worker. Sync the profile before restoring a model."), 404
+    if profile.get("local_training_state") == "running":
+        return jsonify(error="Cannot restore a model while face LoRA training is running."), 409
+    upload = request.files.get("bundle")
+    if not upload:
+        return jsonify(error="A model bundle is required."), 400
+    bundle_data = upload.stream.read(512 * 1024 * 1024 + 1)
+    if not bundle_data or len(bundle_data) > 512 * 1024 * 1024:
+        return jsonify(error="Model bundle must be non-empty and no larger than 512 MB."), 413
+    expected_hash = (request.form.get("sha256") or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_hash) or sha256_bytes(bundle_data) != expected_hash:
+        return jsonify(error="Model bundle checksum is invalid."), 409
+    target = model_path(profile_id)
+    temp_root = Path(tempfile.mkdtemp(prefix=f"restore-{profile_id}-", dir=str(target.parent)))
+    staging, backup = temp_root / "staging", temp_root / "previous"
+    try:
+        safe_extract_lora_bundle(bundle_data, staging)
+        if target.exists():
+            target.rename(backup)
+        try:
+            staging.rename(target)
+        except Exception:
+            if backup.exists() and not target.exists():
+                backup.rename(target)
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
+        update_profile(
+            profile_id, local_model_ready=True,
+            local_training_state="completed", local_training_error=None,
+        )
+        return jsonify(status="restored", profile_id=profile_id, sha256=expected_hash)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        worker.logger.exception("Could not restore remote face model version")
+        return jsonify(error="Remote face model restore failed. The previous model was preserved when possible."), 500
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 @worker.get("/api/remote/jobs/<job_id>")
@@ -434,45 +504,61 @@ def remote_generation_job_result(job_id):
 
 @worker.post("/api/remote/generate")
 def remote_generate():
-    prompt = (request.form.get("prompt") or "").strip()
-    negative_prompt = (request.form.get("negative_prompt") or "").strip()
+    prompt = request.form.get("prompt") or ""
+    negative_prompt = request.form.get("negative_prompt") or ""
     try:
-        steps = int(request.form.get("steps", "25"))
+        steps = int(request.form.get("steps", "4" if (request.form.get("model_family") or "sd15").strip().lower() == "flux2_klein" else "25"))
         strength = float(request.form.get("strength", "0.45"))
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
         image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
-        width, height = resolve_image_dimensions(aspect_ratio)
+        model_family = resolve_model_family(request.form.get("model_family") or "sd15")
+        width, height = resolve_image_dimensions(aspect_ratio, model_family)
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = str(request.form.get("use_global_body_model") or "").strip().lower() in {"1", "true", "yes", "on"}
+        upscale_options = resolve_upscale_options(
+            request.form.get("ai_upscale"), request.form.get("upscale_steps") or 20
+        )
+        ai_upscale = upscale_options["enabled"]
+        face_restore_options = resolve_face_restoration_options(
+            request.form.get("face_restore"), request.form.get("face_restore_weight") or 0.5
+        )
+        face_restore_enabled = face_restore_options["enabled"]
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
     except (ValueError, TypeError, KeyError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
-    if not prompt:
+    if not prompt.strip():
         return jsonify(error="Prompt is required."), 400
-    if len(prompt) > 1200:
-        return jsonify(error=f"Prompt is {len(prompt)} characters; the worker limit is 1200."), 400
-    # The local UI enhances the user's negative prompt with realism/anatomy
-    # constraints before forwarding it. Allow that combined value without
-    # repeatedly modifying the user's editable text.
-    if len(negative_prompt) > 1200:
-        return jsonify(error=f"Enhanced negative prompt is {len(negative_prompt)} characters; the worker limit is 1200."), 400
-    if not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
+    if model_family == "flux2_klein":
+        if negative_prompt.strip():
+            return jsonify(error="FLUX.2 Klein 4B distilled does not accept a negative prompt."), 400
+        if steps != 4:
+            return jsonify(error="FLUX.2 Klein 4B distilled uses a fixed 4-step generation schedule."), 400
+    elif not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
         return jsonify(error="Invalid step count or image strength."), 400
     if not torch.cuda.is_available():
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
         return jsonify(error="CUDA is not available on this worker."), 503
     if profile_id:
+        if not supports_face_lora(model_family):
+            return jsonify(error="This face LoRA was trained for SD 1.5 and cannot be loaded by the selected model family. Select SD 1.5 for this identity or continue without the trained face."), 400
         profile = get_profile(profile_id)
         if not profile or not profile.get("local_model_ready"):
             return jsonify(error="The selected face LoRA is not trained on this GPU worker."), 400
     if use_global_body_model:
-        body_profile = local_engine.ensure_global_body_profile()
-        if not local_engine.profile_ready_for_backend(local_engine.GLOBAL_BODY_PROFILE_ID, "local"):
-            return jsonify(error="The shared body-type LoRA is not trained on this cloud GPU worker. Train it using the global body model first."), 400
-        prompt = local_engine.GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
+        if model_family != "sd15":
+            use_global_body_model = False
+        else:
+            try:
+                local_engine.ensure_global_body_profile()
+                if not local_engine.profile_ready_for_backend(local_engine.GLOBAL_BODY_PROFILE_ID, "local"):
+                    use_global_body_model = False
+                else:
+                    prompt = local_engine.GLOBAL_BODY_PROFILE_TOKEN + ", " + prompt
+            except (RuntimeError, ValueError):
+                use_global_body_model = False
     image = None
     pose_control_image = None
     uploaded = request.files.get("image")
@@ -481,11 +567,14 @@ def remote_generate():
             with Image.open(uploaded.stream) as source:
                 image = ImageOps.exif_transpose(source).convert("RGB")
                 image.load()
-            image = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
+            if model_family != "flux2_klein":
+                image = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
             return jsonify(error="Reference image is not a valid PNG, JPG or WEBP image."), 400
     pose_uploaded = request.files.get("pose_control_image")
     if pose_uploaded and pose_uploaded.filename:
+        if model_family != "sd15":
+            return jsonify(error="The configured face-pose ControlNet is SD 1.5-only. Select SD 1.5 for pose-guided generation."), 400
         try:
             with Image.open(pose_uploaded.stream) as source:
                 pose_control_image = ImageOps.exif_transpose(source).convert("RGB")
@@ -500,53 +589,133 @@ def remote_generate():
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="busy", message="Another GPU generation is already running.")
         return jsonify(error="Another GPU generation is running. Try again shortly."), 429
     try:
-        mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
-        pipeline = local_engine._load_cpu_or_gpu_pipeline(
-            mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model
-        )
-        _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the cloud GPU…")
-        def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+        upsampled_prompt = ""
+        prompt_token_count = None
+        if model_family == "flux2_klein":
+            if pose_control_image is not None:
+                return jsonify(error="FLUX.2 Klein uses reference-image editing rather than the SD 1.5 face-pose ControlNet path."), 400
             if _remote_generation_cancelled(task_id):
                 raise RemoteGenerationCancelled("Generation cancelled by the user.")
-            scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
-            current = min(step_index + 1, scheduler_steps)
-            percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+            from flux2_engine import generate_flux2_image
             _set_generation_progress(
-                task_id, asset_type="image", status="running", progress=percent,
-                current_step=current, total_steps=scheduler_steps, stage="denoising",
-                message=f"Generating image on the cloud GPU · step {current} of {scheduler_steps}",
+                task_id, asset_type="image", status="running", progress=5,
+                total_steps=steps, stage="loading_model",
+                message="Loading FLUX.2 Klein 4B on the remote GPU…",
             )
-            return callback_kwargs
-        generator = torch.Generator(device="cuda").manual_seed(seed)
-        if str(request.form.get("prompt_is_final") or "").strip().lower() in {"1", "true", "yes", "on"}:
-            effective_prompt, effective_negative_prompt = prompt, negative_prompt
+            flux_output = generate_flux2_image(
+                prompt, image=image, seed=seed,
+                width=width, height=height,
+                source=model_configuration("flux2_klein")["source"],
+            )
+            result = flux_output["image"]
+            prompt_token_count = flux_output.get("prompt_token_count")
+            if _remote_generation_cancelled(task_id):
+                raise RemoteGenerationCancelled("Generation cancellation was requested; FLUX.2 inference has completed.")
         else:
-            effective_prompt, effective_negative_prompt = build_generation_prompts(
-                prompt, negative_prompt, image_preset, has_reference_image=image is not None
+            mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
+            pipeline = local_engine._load_cpu_or_gpu_pipeline(
+                mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
+                model_family=model_family,
             )
-        kwargs = {
-            "prompt": effective_prompt,
-            "negative_prompt": effective_negative_prompt or None,
-            "width": width,
-            "height": height,
-            "num_inference_steps": steps,
-            "guidance_scale": 7.5,
-            "generator": generator,
-        }
-        if image is not None:
-            kwargs.update(image=image, strength=strength)
-        if pose_control_image is not None:
-            kwargs["control_image"] = pose_control_image
-            kwargs["controlnet_conditioning_scale"] = 1.0
-            if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
-                kwargs["ip_adapter_image"] = image
-        result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+            _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the remote GPU…")
+            def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+                if _remote_generation_cancelled(task_id):
+                    raise RemoteGenerationCancelled("Generation cancelled by the user.")
+                scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
+                current = min(step_index + 1, scheduler_steps)
+                percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+                _set_generation_progress(
+                    task_id, asset_type="image", status="running", progress=percent,
+                    current_step=current, total_steps=scheduler_steps, stage="denoising",
+                    message=f"Generating image on the remote GPU · step {current} of {scheduler_steps}",
+                )
+                return callback_kwargs
+            generator = torch.Generator(device="cuda").manual_seed(seed)
+            if str(request.form.get("prompt_is_final") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                effective_prompt, effective_negative_prompt = prompt, negative_prompt
+            else:
+                effective_prompt, effective_negative_prompt = build_generation_prompts(
+                    prompt, negative_prompt, image_preset, has_reference_image=image is not None
+                )
+            from generation_contracts import validate_diffusion_prompt_capacity
+            prompt_token_count = validate_diffusion_prompt_capacity(
+                pipeline, effective_prompt, effective_negative_prompt or ""
+            )
+            kwargs = {
+                "prompt": effective_prompt,
+                "negative_prompt": effective_negative_prompt or None,
+                "width": width,
+                "height": height,
+                "num_inference_steps": steps,
+                "guidance_scale": 7.5,
+                "generator": generator,
+            }
+            if image is not None:
+                kwargs.update(image=image, strength=strength)
+            if pose_control_image is not None:
+                kwargs["control_image"] = pose_control_image
+                kwargs["controlnet_conditioning_scale"] = 1.0
+                if getattr(pipeline, "_private_face_ip_adapter_loaded", False):
+                    kwargs["ip_adapter_image"] = image
+            result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+        upscale_warning = ""
+        if ai_upscale:
+            _set_generation_progress(
+                task_id, asset_type="image", status="running", progress=93,
+                current_step=0, total_steps=upscale_options["steps"], stage="upscaling",
+                message="Running optional AI x4 super-resolution on the remote GPU…",
+            )
+            def on_upscale_step(current, total):
+                percent = min(94, 93 + round(current / max(total, 1)))
+                _set_generation_progress(
+                    task_id, asset_type="image", status="running", progress=percent,
+                    current_step=current, total_steps=total, stage="upscaling",
+                    message=f"AI x4 super-resolution · step {current} of {total}",
+                )
+            try:
+                result = upscale_image(
+                    result, prompt, negative_prompt=negative_prompt, seed=seed,
+                    steps=upscale_options["steps"],
+                    cancelled=lambda: _remote_generation_cancelled(task_id),
+                    progress_callback=on_upscale_step,
+                )
+            except RemoteGenerationCancelled:
+                raise
+            except Exception as upscale_exc:
+                if _remote_generation_cancelled(task_id):
+                    raise RemoteGenerationCancelled("Generation cancelled during AI upscaling.") from upscale_exc
+                worker.logger.exception("AI upscaling failed; returning the base generated image")
+                upscale_warning = "AI upscaling failed; the original generated image was returned. " + str(upscale_exc)[:300]
+        face_restore_warning = ""
+        face_restore_status = "not_requested"
+        if face_restore_enabled:
+            _set_generation_progress(
+                task_id, asset_type="image", status="running", progress=94,
+                current_step=0, total_steps=1, stage="face_restoration",
+                message="Applying optional face restoration on the remote GPU…",
+            )
+            try:
+                restored = restore_faces(result, weight=face_restore_options["weight"])
+                result = restored["image"]
+                face_restore_status = restored["status"]
+            except Exception as restore_exc:
+                worker.logger.exception("Face restoration failed; returning the pre-restoration image")
+                face_restore_status = "failed_fallback"
+                face_restore_warning = "Face restoration failed; the pre-restoration image was returned. " + str(restore_exc)[:300]
         _set_generation_progress(task_id, asset_type="image", status="running", progress=95, current_step=steps, total_steps=steps, stage="finalizing", message="Preparing the generated image for download…")
         output = io.BytesIO()
         result.save(output, format="PNG")
         output.seek(0)
         _set_generation_progress(task_id, asset_type="image", status="completed", progress=100, current_step=steps, total_steps=steps, stage="completed", message="Image generation completed on the cloud GPU.")
-        return send_file(output, mimetype="image/png", download_name="generated.png")
+        response = send_file(output, mimetype="image/png", download_name="generated.png")
+        if upscale_warning:
+            response.headers["X-Upscale-Warning"] = upscale_warning.replace("\\r", " ").replace("\\n", " ").encode("ascii", "replace").decode("ascii")[:500]
+        response.headers["X-Upscale-Status"] = "completed" if ai_upscale and not upscale_warning else ("failed_fallback" if upscale_warning else "not_requested")
+        if face_restore_warning:
+            response.headers["X-Face-Restoration-Warning"] = face_restore_warning.replace("\\r", " ").replace("\\n", " ").encode("ascii", "replace").decode("ascii")[:500]
+        response.headers["X-Face-Restoration-Status"] = face_restore_status
+        response.headers["X-Prompt-Token-Count"] = json.dumps(prompt_token_count, separators=(",", ":"))
+        return response
     except RemoteGenerationCancelled:
         _set_generation_progress(
             task_id, asset_type="image", status="cancelled", progress=0, total_steps=steps,
@@ -568,19 +737,23 @@ def remote_generate():
 @worker.post("/api/remote/generate-video")
 def remote_generate_video():
     global VIDEO_PIPE, VIDEO_ACTIVE_LORA
-    prompt = (request.form.get("prompt") or "").strip()
-    negative_prompt = (request.form.get("negative_prompt") or "").strip()
+    try:
+        prompt = preserve_generation_text(request.form.get("prompt"), "Prompt")
+        negative_prompt = preserve_generation_text(request.form.get("negative_prompt"), "Negative prompt")
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     try:
         steps = int(request.form.get("steps", "12"))
         frames = int(request.form.get("frames", "16"))
+        seed = resolve_generation_seed(request.form.get("seed"))
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
     except (ValueError, TypeError, KeyError) as exc:
         return jsonify(error=str(exc) or "Invalid video settings."), 400
-    if not prompt or len(prompt) > 1000 or len(negative_prompt) > 600:
-        return jsonify(error="Video prompt is required and must be within the allowed length."), 400
+    if not prompt.strip():
+        return jsonify(error="Video prompt is required."), 400
     if not 5 <= steps <= 20 or frames not in (8, 16, 24):
         return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
     if not torch.cuda.is_available():
@@ -630,7 +803,9 @@ def remote_generate_video():
                 message=f"Generating video on the cloud GPU · step {current} of {scheduler_steps} · {frames} frames",
             )
             return callback_kwargs
-        generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+        from generation_contracts import validate_diffusion_prompt_capacity
+        validate_diffusion_prompt_capacity(VIDEO_PIPE, prompt, negative_prompt)
+        generator = torch.Generator(device="cuda").manual_seed(seed)
         result = VIDEO_PIPE(
             prompt=prompt, negative_prompt=negative_prompt or None,
             num_frames=frames, num_inference_steps=steps,

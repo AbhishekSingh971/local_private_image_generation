@@ -1,16 +1,16 @@
 Flask==3.1.1
 gunicorn>=23,<24
 Pillow>=10.4,<12
-diffusers==0.35.1
-transformers>=4.44,<5
-accelerate>=0.34,<2
-peft>=0.13,<1
+diffusers==0.43.0
+transformers>=5.0,<6
+accelerate>=1.0,<2
+peft>=0.21,<1
 safetensors>=0.4.5
-huggingface_hub>=0.34,<1
+huggingface_hub>=1.32,<3
 imageio>=2.34,<3
 imageio-ffmpeg>=0.5,<1
 requests>=2.31,<3
 python-dotenv>=1.0,<2
 psycopg[binary]>=3.2,<4
 mediapipe==0.10.30  # Keep the legacy mediapipe.solutions.face_mesh API used by pose_validation.py
-
+cryptography>=42,<47  # AES-256-GCM encrypted database backups

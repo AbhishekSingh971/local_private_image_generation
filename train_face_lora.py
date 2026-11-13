@@ -20,6 +20,7 @@ from peft.utils import get_peft_model_state_dict
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from face_profiles import get_profile
+from training_approval import select_approved_training_files
 
 ROOT = Path(__file__).resolve().parent
 BASE_MODEL = ROOT / "models" / "stable-diffusion-v1-5"
@@ -84,6 +85,10 @@ def parse_args():
         description="Train a reusable face LoRA from data/face_dataset using the local SD 1.5 model."
     )
     parser.add_argument("--profile-id", default=None, help="Persistent face profile ID; uses that profile's dataset.")
+    parser.add_argument(
+        "--approved-filename", action="append", default=[],
+        help="Filename explicitly approved by a human reviewer; required for profile training and may be repeated.",
+    )
     parser.add_argument("--output-name", default=None)
     parser.add_argument("--token", default="sks")
     parser.add_argument("--class-name", default="person")
@@ -126,10 +131,18 @@ def main():
         PROFILE_DATASET_ROOT / args.profile_id / "dataset"
         if args.profile_id else LEGACY_DATASET_DIR
     )
-    files = sorted(
-        p for p in dataset_dir.glob("*")
-        if p.is_file() and p.suffix.lower() in EXTENSIONS
-    ) if dataset_dir.is_dir() else []
+    if args.profile_id:
+        if len(args.approved_filename) < 5:
+            raise SystemExit("Profile training requires at least 5 explicitly approved photo filenames.")
+        try:
+            files = select_approved_training_files(dataset_dir, args.approved_filename, EXTENSIONS)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    else:
+        files = sorted(
+            p for p in dataset_dir.glob("*")
+            if p.is_file() and p.suffix.lower() in EXTENSIONS
+        ) if dataset_dir.is_dir() else []
     if len(files) < 5:
         raise SystemExit(
             f"Found {len(files)} face photos in {dataset_dir}. Add at least 5 good photos; 15–30 varied photos "

@@ -1,12 +1,27 @@
 from datetime import datetime, timezone
+import os
 import uuid
+
+import pytest
 
 import studio_db
 import face_profiles
 
 
-def test_assets_and_face_models_are_persisted(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "studio.sqlite").as_posix())
+@pytest.fixture
+def postgres_database(monkeypatch):
+    """Use the same PostgreSQL-only storage contract as the production app."""
+    url = (os.environ.get("CI_POSTGRES_TEST_URL") or os.environ.get("DATABASE_URL") or "").strip()
+    if not url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
+        pytest.skip("A PostgreSQL DATABASE_URL is required for database tests.")
+    monkeypatch.setenv("DATABASE_URL", url)
+    studio_db.ensure_schema()
+    yield
+
+
+
+
+def test_assets_and_face_models_are_persisted(postgres_database):
     studio_db.ensure_schema()
     profile_id = uuid.uuid4().hex
     studio_db.create_face_profile_record({
@@ -60,8 +75,7 @@ def test_assets_and_face_models_are_persisted(tmp_path, monkeypatch):
     assert studio_db.get_asset(asset["id"]) is None
 
 
-def test_dataset_group_and_photo_crud(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "dataset-crud.sqlite").as_posix())
+def test_dataset_group_and_photo_crud(postgres_database):
     studio_db.ensure_schema()
     profile_id = uuid.uuid4().hex
     studio_db.create_face_profile_record({
@@ -112,21 +126,19 @@ def test_dataset_group_and_photo_crud(tmp_path, monkeypatch):
     assert studio_db.list_face_dataset_groups(profile_id) == []
 
 
-def test_database_status_does_not_disclose_database_path(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "status.sqlite").as_posix())
+def test_database_status_does_not_disclose_database_path(postgres_database):
     status = studio_db.database_status()
     assert status["connected"] is True
-    assert status["configured_postgresql"] is False
-    assert "status.sqlite" not in status["message"]
+    assert status["configured_postgresql"] is True
+    assert "postgres:postgres@" not in status["message"]
 
 
 
-def test_legacy_profile_migration_does_not_resurrect_deleted_profile(tmp_path, monkeypatch):
+def test_legacy_profile_migration_does_not_resurrect_deleted_profile(tmp_path, monkeypatch, postgres_database):
     data_dir = tmp_path / "data"
     profiles_dir = data_dir / "face_profiles"
     model_dir = tmp_path / "models" / "face_loras"
     profile_id = "a" * 32
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "migration.sqlite").as_posix())
     monkeypatch.setattr(face_profiles, "DATA_DIR", data_dir)
     monkeypatch.setattr(face_profiles, "PROFILES_FILE", data_dir / "face_profiles.json")
     monkeypatch.setattr(face_profiles, "PROFILES_DIR", profiles_dir)
@@ -142,25 +154,24 @@ def test_legacy_profile_migration_does_not_resurrect_deleted_profile(tmp_path, m
         encoding="utf-8",
     )
 
-    assert len(face_profiles.list_profiles()) == 1
+    assert any(item["id"] == profile_id for item in face_profiles.list_profiles())
     assert studio_db.get_face_profile_record(profile_id)["image_count"] == 1
 
     # Simulate loss of the local cache; the database should rebuild it on a new process start.
     (dataset / "face_legacy.jpg").unlink()
     monkeypatch.setattr(face_profiles, "_DB_MIGRATED", False)
-    assert len(face_profiles.list_profiles()) == 1
+    assert any(item["id"] == profile_id for item in face_profiles.list_profiles())
     assert (dataset / "face_legacy.jpg").read_bytes() == b"legacy-photo"
 
     assert face_profiles.delete_profile(profile_id) is True
 
     # A new process would run the migration again; the persisted marker prevents resurrection.
     monkeypatch.setattr(face_profiles, "_DB_MIGRATED", False)
-    assert face_profiles.list_profiles() == []
+    assert not any(item["id"] == profile_id for item in face_profiles.list_profiles())
 
 
 
-def test_typed_dataset_groups_persist_category_and_prompt(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "typed-groups.sqlite").as_posix())
+def test_typed_dataset_groups_persist_category_and_prompt(postgres_database):
     studio_db.ensure_schema()
     profile_id = uuid.uuid4().hex
     studio_db.create_face_profile_record({
@@ -193,8 +204,7 @@ def test_typed_dataset_groups_persist_category_and_prompt(tmp_path, monkeypatch)
 
 
 
-def test_background_dataset_job_state_and_pose_validation_persist(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "background-job.sqlite").as_posix())
+def test_background_dataset_job_state_and_pose_validation_persist(postgres_database):
     studio_db.ensure_schema()
     profile_id = uuid.uuid4().hex
     studio_db.create_face_profile_record({
@@ -265,8 +275,7 @@ def test_background_dataset_job_state_and_pose_validation_persist(tmp_path, monk
 
 
 
-def test_update_face_photo_validation_metadata(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "pose-update.sqlite").as_posix())
+def test_update_face_photo_validation_metadata(postgres_database):
     studio_db.ensure_schema()
     profile_id = uuid.uuid4().hex
     studio_db.create_face_profile_record({
@@ -292,8 +301,7 @@ def test_update_face_photo_validation_metadata(tmp_path, monkeypatch):
 
 
 
-def test_replacing_photo_resets_pose_validation(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + (tmp_path / "replace-validation.sqlite").as_posix())
+def test_replacing_photo_resets_pose_validation(postgres_database):
     studio_db.ensure_schema()
     profile_id = uuid.uuid4().hex
     studio_db.create_face_profile_record({

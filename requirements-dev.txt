@@ -1,0 +1,10 @@
+pytest>=8,<10
+Flask>=3.1,<4
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+Pillow>=10.4,<12
+numpy>=1.26,<3
+SQLAlchemy>=2,<3
+psycopg[binary]>=3.2,<4
+mediapipe==0.10.21
+cryptography>=42,<47

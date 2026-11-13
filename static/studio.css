@@ -198,4 +198,29 @@ button.danger-button{background:#3c1f2a;border-color:#643345;color:#ffd9df}
 .photo-validation-badge.passed{background:#173b34;color:#a4f0cf;border:1px solid #28584e}
 .photo-validation-badge.needs-review{background:#4a3417;color:#ffda97;border:1px solid #745225}
 .photo-validation-badge.not-applicable,.photo-validation-badge.not-checked{background:#263247;color:#c2cde2;border:1px solid #3b4a64}
+.training-approval-badge.pending{background:#443619;color:#ffe0a3;border:1px solid #80612b}
+.training-approval-badge.approved{background:#173b34;color:#a4f0cf;border:1px solid #28584e}
+.training-approval-badge.rejected{background:#48272d;color:#ffb8bf;border:1px solid #783b46}
 .dataset-group-photo .photo-validation-details{font-size:10px;line-height:1.4;color:#aebbd1;overflow-wrap:anywhere}
+
+
+.model-version-panel{display:grid;gap:10px;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--panel-soft,rgba(127,127,127,.06))}
+.model-version-item{display:grid;gap:8px;padding:10px;border:1px solid var(--border);border-radius:10px}
+.model-version-summary{display:grid;gap:4px}
+.model-version-summary span{font-size:.78rem;color:var(--muted)}
+
+
+.diagnostics-panel{display:grid;gap:18px}
+.diagnostics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.diagnostic-card{display:grid;gap:8px;padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--panel-soft,rgba(127,127,127,.05));min-width:0}
+.diagnostic-card>strong{text-transform:capitalize}
+.diagnostic-state{width:max-content;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:700;background:#303847;color:#cbd5e1}
+.diagnostic-state.ok,.diagnostic-state.available{background:#173b34;color:#a4f0cf}
+.diagnostic-state.degraded,.diagnostic-state.unavailable{background:#443619;color:#ffe0a3}
+.diagnostic-card pre,.diagnostics-json{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.76rem;color:var(--muted);max-height:260px;overflow:auto;margin:0}
+
+.geometry-panel{display:grid;gap:14px}
+.geometry-panel .diagnostics-json{max-height:65vh;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--panel-soft,rgba(127,127,127,.05))}
+.advanced-prompt-controls{margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--panel-soft,rgba(127,127,127,.04))}
+.advanced-prompt-controls summary{cursor:pointer;font-weight:700}
+.advanced-prompt-controls .twocol{margin-top:12px}

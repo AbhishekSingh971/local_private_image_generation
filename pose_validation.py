@@ -291,3 +291,75 @@ def build_pose_control_image(
             radius = 2
             draw.ellipse((xv-radius, yv-radius, xv+radius, yv+radius), fill=(240, 245, 230))
     return canvas
+
+
+
+def assess_face_geometry(image) -> dict:
+    """Assess face detectability and rough geometry without claiming identity match."""
+    try:
+        import numpy as np
+        import mediapipe as mp
+    except Exception:
+        return {
+            "status": "not_assessed",
+            "reason": "MediaPipe is unavailable; face geometry could not be checked.",
+        }
+    try:
+        rgb = np.asarray(image.convert("RGB"))
+        if rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) < 64:
+            return {"status": "needs_review", "reason": "Image is too small for face geometry checks."}
+        mesh_api = _face_mesh_api(mp)
+        if mesh_api is None:
+            return {"status": "not_assessed", "reason": "MediaPipe Face Mesh API is unavailable."}
+        with mesh_api.FaceMesh(
+            static_image_mode=True, max_num_faces=3, refine_landmarks=False,
+            min_detection_confidence=0.55,
+        ) as detector:
+            detection = detector.process(rgb)
+        faces = detection.multi_face_landmarks or []
+        if len(faces) != 1:
+            return {
+                "status": "needs_review",
+                "face_count": len(faces),
+                "reason": "Expected exactly one detectable face; inspect the generated image manually.",
+            }
+        height, width = rgb.shape[:2]
+        landmarks = faces[0].landmark
+        xs = [float(point.x) for point in landmarks]
+        ys = [float(point.y) for point in landmarks]
+        left, right = max(0.0, min(xs)), min(1.0, max(xs))
+        top, bottom = max(0.0, min(ys)), min(1.0, max(ys))
+        face_width = max(0.0, right - left)
+        face_height = max(0.0, bottom - top)
+        area_fraction = face_width * face_height
+        pose, pose_reason = estimate_head_pose(image)
+        reasons = []
+        if face_width < 0.10 or face_height < 0.10:
+            reasons.append("The detected face is small relative to the canvas.")
+        if left <= 0.005 or top <= 0.005 or right >= 0.995 or bottom >= 0.995:
+            reasons.append("The detected face touches the image boundary.")
+        if pose is None:
+            reasons.append(pose_reason or "Head pose could not be estimated.")
+        return {
+            "status": "needs_review" if reasons else "geometry_detected",
+            "face_count": 1,
+            "face_box_normalized": {
+                "left": round(left, 4), "top": round(top, 4),
+                "right": round(right, 4), "bottom": round(bottom, 4),
+            },
+            "face_box_area_fraction": round(area_fraction, 5),
+            "head_pose_degrees": (
+                {"yaw": round(pose.yaw, 2), "pitch": round(pose.pitch, 2), "roll": round(pose.roll, 2)}
+                if pose else None
+            ),
+            "reasons": reasons,
+            "identity_similarity": {
+                "status": "not_configured",
+                "reason": "Geometric face detection does not verify that the generated face matches the selected identity.",
+            },
+        }
+    except Exception as exc:
+        return {
+            "status": "not_assessed",
+            "reason": "Face geometry check failed: " + str(exc)[:240],
+        }

@@ -1,11 +1,16 @@
 import base64
 from datetime import datetime, timezone
 import gc
+import hmac
+import secrets
 import io
 import json
 import os
+import platform
 import re
 import subprocess
+import shutil
+import tempfile
 import sys
 import threading
 import time
@@ -28,11 +33,22 @@ load_dotenv(APP_DIR / ".env")
 
 import requests
 import importlib
-from flask import Flask, request, send_from_directory, send_file, jsonify, render_template, redirect, url_for
+from importlib import metadata as package_metadata
+from flask import Flask, request, send_from_directory, send_file, jsonify, render_template, redirect, url_for, session
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend
 from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_upscaling import resolve_upscale_options, upscale_image
+from face_restoration import resolve_face_restoration_options, restore_faces
+from identity_evaluation import evaluate_identity_similarity
+from video_quality import evaluate_video_identity
+from model_artifacts import safe_extract_lora_bundle, sha256_bytes
+from private_data_crypto import encryption_configured
+from model_registry import model_configuration, resolve_model_family, supports_face_lora
+from prompt_compiler import build_structured_prompt
+from generation_contracts import preserve_generation_text
+from geometry_analysis import analyze_geometry
 from face_profiles import (
     DATA_DIR,
     LORA_DIR,
@@ -54,7 +70,7 @@ from face_profiles import (
     update_profile,
     validate_profile_id,
 )
-from pose_validation import build_pose_control_image, estimate_head_pose, validate_pose_target
+from pose_validation import assess_face_geometry, build_pose_control_image, estimate_head_pose, validate_pose_target
 from training_generation import targets_for_dataset_type
 from image_quality import assess_image_quality
 from safe_diagnostics import format_exception_detail
@@ -65,6 +81,7 @@ from studio_db import (
     database_status,
     database_url_configured,
     ensure_schema,
+    private_data_encryption_status,
     create_face_dataset_group,
     delete_face_dataset_group,
     delete_face_photo,
@@ -82,7 +99,12 @@ from studio_db import (
     create_face_dataset_job,
     list_face_dataset_jobs,
     update_face_photo_validation,
+    update_face_photo_approval,
+    list_face_photo_records,
     get_face_model_bundle,
+    get_face_model_version,
+    list_face_model_versions,
+    save_face_model_version,
     list_asset_filenames,
     save_face_model_bundle,
     delete_asset,
@@ -116,6 +138,21 @@ torch = _LazyTorch()
 
 Image.MAX_IMAGE_PIXELS = 40_000_000
 app = Flask(__name__)
+APP_ENV = (os.environ.get("APP_ENV") or "development").strip().lower()
+APP_ACCESS_PASSWORD = os.environ.get("APP_ACCESS_PASSWORD", "")
+APP_ACCESS_PASSWORD_HASH = os.environ.get("APP_ACCESS_PASSWORD_HASH", "")
+APP_ACCESS_GATE_ENABLED = bool(APP_ACCESS_PASSWORD or APP_ACCESS_PASSWORD_HASH)
+APP_SECRET_KEY = os.environ.get("APP_SECRET_KEY") or os.environ.get("SECRET_KEY") or ""
+_PRIVATE_DATA_ENCRYPTION_CHECKED = False
+_PRIVATE_DATA_ENCRYPTION_READY = False
+_PRIVATE_DATA_ENCRYPTION_ERROR = ""
+app.secret_key = APP_SECRET_KEY or secrets.token_hex(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=(APP_ENV == "production"),
+    PERMANENT_SESSION_LIFETIME=60 * 60 * 12,
+)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 MODEL_ID = os.environ.get("SD_MODEL_ID", "").strip() or "stable-diffusion-v1-5/stable-diffusion-v1-5"
 MODEL_PATH_OVERRIDE = os.environ.get("SD_MODEL_PATH", "").strip()
@@ -123,6 +160,7 @@ MODEL_PATH_OVERRIDE = os.environ.get("SD_MODEL_PATH", "").strip()
 pipe = None
 pipeline_mode = None
 pipeline_device = None
+pipeline_family = None
 active_lora = None
 model_error = None
 video_pipe = None
@@ -407,6 +445,11 @@ def _resolve_compute_backend(form) -> str:
     return "cloud_gpu" if selected == "runpod" else selected
 
 
+def _clean_generation_text(value: str, field_name: str) -> str:
+    """Preserve the entire prompt; no application-level character truncation."""
+    return preserve_generation_text(value, field_name)
+
+
 def _clean_prompt(value: str, field_name: str, limit: int) -> str:
     value = (value or "").strip()
     if len(value) > limit:
@@ -560,7 +603,7 @@ def _safe_profile_count():
         return 0
 
 
-def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode):
+def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_prompt, profile, backend, generation_mode, original_prompt=None, upsampled_prompt="", model_family="sd15", generation_metadata=None):
     folder = OUTPUT_DIR if asset_type == "image" else VIDEO_OUTPUT_DIR
     path = folder / Path(filename).name
     try:
@@ -572,16 +615,118 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
             media_data=path.read_bytes(),
             prompt=prompt,
             negative_prompt=negative_prompt,
+            original_prompt=original_prompt if original_prompt is not None else prompt,
+            upsampled_prompt=upsampled_prompt,
+            model_family=model_family,
             profile_id=profile["id"] if profile else None,
             profile_name=profile["name"] if profile else None,
             backend=backend,
             generation_mode=generation_mode,
+            generation_metadata=generation_metadata or {},
         )
     except Exception as exc:
         app.logger.exception("Could not persist generated media to the database")
         raise RuntimeError(
             "The media was generated but could not be saved to the database. Check DATABASE_URL and database permissions. The local output copy remains in " + str(path)
         ) from exc
+
+
+def _approved_profile_reference_images(profile_id: str):
+    if not database_url_configured():
+        return []
+    records = list_face_photo_records(profile_id)
+    approved = [
+        record for record in records
+        if record.get("training_approval_status") == "approved" and record.get("image_data")
+    ][:20]
+    images = []
+    for record in approved:
+        with Image.open(io.BytesIO(record["image_data"])) as source:
+            images.append(ImageOps.exif_transpose(source).convert("RGB").copy())
+    return images
+
+
+def _evaluate_profile_identity(profile_id: str, generated_image) -> dict:
+    """Compare generated output against only human-approved profile references."""
+    if not os.environ.get("FACE_IDENTITY_ONNX_MODEL", "").strip():
+        return {"status": "not_configured", "reason": "No licensed ArcFace-compatible ONNX model is configured."}
+    try:
+        references = _approved_profile_reference_images(profile_id)
+        return evaluate_identity_similarity(references, generated_image)
+    except Exception:
+        app.logger.warning("Identity similarity evaluation unavailable for profile %s", profile_id, exc_info=True)
+        return {"status": "not_assessed", "reason": "Could not load approved reference photos for identity comparison."}
+
+
+def _evaluate_profile_video_identity(profile_id: str, video_path: Path) -> dict:
+    if not os.environ.get("FACE_IDENTITY_ONNX_MODEL", "").strip():
+        return {"status": "not_configured", "reason": "No licensed ArcFace-compatible ONNX model is configured."}
+    try:
+        references = _approved_profile_reference_images(profile_id)
+        return evaluate_video_identity(video_path, references)
+    except Exception:
+        app.logger.warning("Video identity consistency evaluation unavailable for profile %s", profile_id, exc_info=True)
+        return {"status": "not_assessed", "reason": "Could not load approved reference photos for video comparison."}
+
+
+
+def _generation_metadata(
+    *, model_family, backend, seed, steps, width, height, output_width, output_height,
+    aspect_ratio, generation_mode, strength, ai_upscale, upscale_options,
+    upscale_warning="", quality_report=None, prompt_token_count=None, profile=None,
+    face_restore_options=None, face_restore_warning="", face_restore_status="not_requested",
+):
+    """Capture enough provenance to reproduce or compare a generated asset."""
+    config = model_configuration(model_family)
+    try:
+        diffusers_version = package_metadata.version("diffusers")
+    except package_metadata.PackageNotFoundError:
+        diffusers_version = None
+    upscale_status = (
+        "failed_fallback" if upscale_warning else
+        "completed" if ai_upscale else "not_requested"
+    )
+    return {
+        "schema_version": 1,
+        "model": {
+            "family": model_family,
+            "model_id": config.get("model_id"),
+            "source": str(config.get("source") or ""),
+            "diffusers_version": diffusers_version,
+        },
+        "compute": {"backend": backend},
+        "sampling": {
+            "seed": int(seed),
+            "steps": int(steps),
+            "guidance_scale": 1.0 if model_family == "flux2_klein" else 7.5,
+            "strength": float(strength) if generation_mode == "img2img" else None,
+        },
+        "canvas": {
+            "aspect_ratio": aspect_ratio,
+            "requested_width": int(width),
+            "requested_height": int(height),
+            "output_width": int(output_width),
+            "output_height": int(output_height),
+        },
+        "generation_mode": generation_mode,
+        "identity_profile_id": profile.get("id") if profile else None,
+        "prompt_token_count": prompt_token_count,
+        "prompt_contract_version": 1,
+        "upscaling": {
+            "enabled": bool(ai_upscale),
+            "status": upscale_status,
+            "model_id": upscale_options.get("model_id") if ai_upscale else None,
+            "steps": upscale_options.get("steps") if ai_upscale else None,
+            "warning": upscale_warning[:500] if upscale_warning else None,
+        },
+        "quality": quality_report or {"status": "not_assessed", "reasons": []},
+        "face_restoration": {
+            "enabled": bool((face_restore_options or {}).get("enabled")),
+            "status": "failed_fallback" if face_restore_warning else face_restore_status,
+            "weight": (face_restore_options or {}).get("weight") if (face_restore_options or {}).get("enabled") else None,
+            "warning": face_restore_warning[:500] if face_restore_warning else None,
+        },
+    }
 
 
 def _persist_face_model_bundle(profile_id: str, backend: str, bundle_data: bytes | None = None, file_count: int | None = None):
@@ -601,13 +746,39 @@ def _persist_face_model_bundle(profile_id: str, backend: str, bundle_data: bytes
                 archive.write(item, arcname=item.relative_to(folder).as_posix())
         bundle_data = buffer.getvalue()
         file_count = len(files)
-    return save_face_model_bundle(
-        profile_id, backend, f"{profile_id}-{backend}-lora.zip",
-        bundle_data, int(file_count or 1),
+    filename = f"{profile_id}-{backend}-lora.zip"
+    approved_count = sum(
+        1 for record in list_face_photo_records(profile_id)
+        if record.get("training_approval_status") == "approved"
     )
+    version = save_face_model_version(
+        profile_id, backend, filename, bundle_data, int(file_count or 1),
+        metadata={
+            "model_family": "sd15",
+            "trainer": "train_face_lora.py",
+            "approved_photo_count": approved_count,
+        },
+    )
+    latest = save_face_model_bundle(
+        profile_id, backend, filename, bundle_data, int(file_count or 1),
+    )
+    return {"latest": latest, "version": version}
 
 
-def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: str) -> None:
+def _approved_profile_training_paths(profile_id: str) -> list[Path]:
+    """Return only database-backed photos explicitly approved by a human reviewer."""
+    records = list_face_photo_records(profile_id)
+    approved_names = {
+        Path(str(record.get("filename") or "")).name
+        for record in records
+        if record.get("training_approval_status") == "approved"
+    }
+    return [path for path in dataset_images(profile_id) if path.name in approved_names]
+
+
+def _run_local_training(
+    profile_id: str, steps: int, resolution: int, job_id: str, approved_filenames: list[str]
+) -> None:
     profile = get_profile(profile_id)
     if not profile:
         return
@@ -620,6 +791,8 @@ def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: st
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
     ]
+    for name in approved_filenames:
+        args.extend(["--approved-filename", name])
     try:
         completed = subprocess.run(
             args, cwd=APP_DIR, capture_output=True, text=True, timeout=8 * 60 * 60,
@@ -652,6 +825,120 @@ def _run_local_training(profile_id: str, steps: int, resolution: int, job_id: st
             LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
 
 
+def _request_is_same_origin() -> bool:
+    origin = (request.headers.get("Origin") or "").strip()
+    if origin:
+        try:
+            return urlparse(origin).netloc.lower() == request.host.lower()
+        except ValueError:
+            return False
+    return (request.headers.get("Sec-Fetch-Site") or "").lower() != "cross-site"
+
+
+def _production_private_data_ready() -> tuple[bool, str]:
+    global _PRIVATE_DATA_ENCRYPTION_CHECKED, _PRIVATE_DATA_ENCRYPTION_READY, _PRIVATE_DATA_ENCRYPTION_ERROR
+    if _PRIVATE_DATA_ENCRYPTION_CHECKED:
+        return _PRIVATE_DATA_ENCRYPTION_READY, _PRIVATE_DATA_ENCRYPTION_ERROR
+    _PRIVATE_DATA_ENCRYPTION_CHECKED = True
+    if not database_url_configured():
+        _PRIVATE_DATA_ENCRYPTION_READY = True
+        return True, ""
+    if not encryption_configured():
+        _PRIVATE_DATA_ENCRYPTION_ERROR = (
+            "FACE_DATA_ENCRYPTION_KEY is required for production PostgreSQL storage. "
+            "Configure it, back up the database, then run encrypt_private_data.py --confirm-encryption."
+        )
+        return False, _PRIVATE_DATA_ENCRYPTION_ERROR
+    try:
+        status = private_data_encryption_status()
+        plaintext = {
+            table: details["plaintext"]
+            for table, details in status.items()
+            if details["plaintext"]
+        }
+        if plaintext:
+            _PRIVATE_DATA_ENCRYPTION_ERROR = (
+                "Private database blobs are not fully encrypted. Keep the app in maintenance mode and run "
+                "encrypt_private_data.py --confirm-encryption after taking an encrypted backup. "
+                + json.dumps(plaintext)
+            )
+            return False, _PRIVATE_DATA_ENCRYPTION_ERROR
+    except Exception:
+        app.logger.exception("Could not verify private-data encryption status")
+        _PRIVATE_DATA_ENCRYPTION_ERROR = "Could not verify private-data encryption. Check PostgreSQL and encryption-key configuration."
+        return False, _PRIVATE_DATA_ENCRYPTION_ERROR
+    _PRIVATE_DATA_ENCRYPTION_READY = True
+    return True, ""
+
+
+@app.before_request
+def _protect_private_workspace():
+    if request.endpoint in {"login", "health", "static"}:
+        return None
+    if APP_ENV == "production" and (not APP_ACCESS_GATE_ENABLED or not APP_SECRET_KEY):
+        return jsonify(
+            error="Production access is disabled until APP_ACCESS_PASSWORD (or APP_ACCESS_PASSWORD_HASH) and APP_SECRET_KEY are configured."
+        ), 503
+    if APP_ENV == "production":
+        private_data_ready, private_data_error = _production_private_data_ready()
+        if not private_data_ready:
+            return jsonify(error=private_data_error), 503
+    if not APP_ACCESS_GATE_ENABLED:
+        return None
+    if not session.get("private_workspace_authenticated"):
+        if request.path.startswith("/api/") or request.is_json or request.method not in {"GET", "HEAD"}:
+            return jsonify(error="Authentication required. Sign in to the private workspace."), 401
+        return redirect(url_for("login", next=request.full_path.rstrip("?")))
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _request_is_same_origin():
+        return jsonify(error="Cross-origin state-changing requests are not allowed."), 403
+    return None
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not APP_ACCESS_GATE_ENABLED:
+        return redirect(url_for("dashboard"))
+    if APP_ENV == "production" and not APP_SECRET_KEY:
+        return "APP_SECRET_KEY must be configured before sign-in is available.", 503
+    if "login_csrf" not in session:
+        session["login_csrf"] = secrets.token_urlsafe(32)
+    error = None
+    if request.method == "POST":
+        supplied_csrf = request.form.get("csrf_token") or ""
+        if not hmac.compare_digest(supplied_csrf, str(session.get("login_csrf") or "")):
+            error = "The sign-in form expired. Refresh and try again."
+        else:
+            supplied = request.form.get("password") or ""
+            valid = False
+            if APP_ACCESS_PASSWORD_HASH:
+                try:
+                    from werkzeug.security import check_password_hash
+                    valid = check_password_hash(APP_ACCESS_PASSWORD_HASH, supplied)
+                except (ValueError, TypeError):
+                    valid = False
+            elif APP_ACCESS_PASSWORD:
+                valid = hmac.compare_digest(supplied, APP_ACCESS_PASSWORD)
+            if valid:
+                next_path = request.form.get("next") or request.args.get("next") or url_for("dashboard")
+                if not next_path.startswith("/") or next_path.startswith("//"):
+                    next_path = url_for("dashboard")
+                session.clear()
+                session["private_workspace_authenticated"] = True
+                session.permanent = True
+                return redirect(next_path)
+            error = "The password is incorrect."
+    return render_template(
+        "login.html", csrf_token=session["login_csrf"], error=error,
+        next_path=request.args.get("next") or url_for("dashboard"),
+    )
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.errorhandler(413)
 def request_too_large(_error):
     return jsonify(error="Upload too large. Keep the combined request under 64 MB."), 413
@@ -659,7 +946,11 @@ def request_too_large(_error):
 
 @app.context_processor
 def inject_storage_status():
-    return {"storage_status": database_status()}
+    return {
+        "storage_status": database_status(),
+        "access_gate_enabled": APP_ACCESS_GATE_ENABLED,
+        "workspace_authenticated": bool(session.get("private_workspace_authenticated")),
+    }
 
 
 @app.get("/")
@@ -1759,6 +2050,12 @@ def api_delete_face_dataset_group(group_id):
         return jsonify(error="Dataset group not found."), 404
     if existing_group.get("status") == "generating":
         return jsonify(error="This dataset group is still generating. Wait for it to finish before deleting it."), 409
+    profile = get_profile(existing_group["profile_id"])
+    if profile and (
+        profile.get("local_training_state") == "running"
+        or profile.get("runpod_training_state") == "running"
+    ):
+        return jsonify(error="Face-model training is running. Dataset groups are locked until the training snapshot finishes."), 409
     try:
         photo_records = list_face_dataset_group_photo_records(group_id)
         staged = _stage_profile_dataset_files(
@@ -1801,21 +2098,36 @@ def api_face_photo_detail(photo_id):
         return jsonify(error="The photo's dataset group no longer exists."), 404
     if group.get("status") == "generating":
         return jsonify(error="This group is still generating. Wait before editing its photos."), 409
+    profile = get_profile(metadata["profile_id"])
+    if profile and (
+        profile.get("local_training_state") == "running"
+        or profile.get("runpod_training_state") == "running"
+    ):
+        return jsonify(error="Face-model training is running. Photo approval and edits are locked until the training snapshot finishes."), 409
 
     if request.method == "PATCH":
         payload = request.get_json(silent=True) or {}
-        if "angle_label" not in payload:
-            return jsonify(error="Supply an angle_label to update the photo label."), 400
+        if not ({"angle_label", "training_approval_status"} & set(payload)):
+            return jsonify(error="Supply angle_label and/or training_approval_status."), 400
         try:
-            next_label = str(payload.get("angle_label") or "").strip()
-            photo = update_face_photo(photo_id, angle_label=next_label, training_caption=next_label)
-            if not photo:
-                return jsonify(error="Training photo not found."), 404
-            caption_path = dataset_dir(metadata["profile_id"]) / (Path(metadata["filename"]).name + ".caption.txt")
-            if metadata.get("photo_kind") in {"angle", "expression", "body"}:
-                caption_path.write_text(next_label[:1200], encoding="utf-8")
-            else:
-                caption_path.unlink(missing_ok=True)
+            photo = metadata
+            if "angle_label" in payload:
+                next_label = str(payload.get("angle_label") or "").strip()
+                photo = update_face_photo(photo_id, angle_label=next_label, training_caption=next_label)
+                if not photo:
+                    return jsonify(error="Training photo not found."), 404
+                caption_path = dataset_dir(metadata["profile_id"]) / (Path(metadata["filename"]).name + ".caption.txt")
+                if metadata.get("photo_kind") in {"angle", "expression", "body"}:
+                    caption_path.write_text(next_label[:1200], encoding="utf-8")
+                else:
+                    caption_path.unlink(missing_ok=True)
+            if "training_approval_status" in payload:
+                approval = update_face_photo_approval(
+                    photo_id, approval_status=str(payload.get("training_approval_status") or "").strip().lower()
+                )
+                if not approval:
+                    return jsonify(error="Training photo not found."), 404
+                photo = dict(photo, training_approval_status=approval["training_approval_status"])
             return jsonify(status="updated", photo=photo)
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
@@ -2084,6 +2396,100 @@ def api_add_generated_photos(profile_id):
 
 
 
+@app.get("/diagnostics")
+def diagnostics_page():
+    return render_template("diagnostics.html", active_page="diagnostics")
+
+
+@app.get("/geometry")
+def geometry_page():
+    return render_template("geometry.html", active_page="geometry")
+
+
+@app.post("/api/geometry/analyze")
+def api_geometry_analyze():
+    upload = request.files.get("image")
+    if not upload or not upload.filename:
+        return jsonify(error="Upload an image to analyze face and body geometry."), 400
+    try:
+        raw = upload.stream.read(8 * 1024 * 1024 + 1)
+        if not raw or len(raw) > 8 * 1024 * 1024:
+            return jsonify(error="Geometry analysis images must be non-empty and 8 MB or smaller."), 413
+        with Image.open(io.BytesIO(raw)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.load()
+        return jsonify(analysis=analyze_geometry(image))
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
+        return jsonify(error="Upload a valid PNG, JPG or WEBP image."), 400
+
+
+@app.get("/api/system/diagnostics")
+def system_diagnostics():
+    """Sanitized operational diagnostics for authenticated workspace administrators."""
+    db = database_status()
+    storage = {}
+    for name, folder in {
+        "outputs": OUTPUT_DIR,
+        "videos": VIDEO_OUTPUT_DIR,
+        "face_models": LORA_DIR,
+    }.items():
+        try:
+            usage = shutil.disk_usage(folder)
+            storage[name] = {
+                "writable": os.access(folder, os.W_OK),
+                "free_gb": round(usage.free / (1024 ** 3), 2),
+            }
+        except OSError:
+            storage[name] = {"writable": False, "free_gb": None}
+    gpu = {"available": False, "name": None, "vram_total_gb": None, "error": None}
+    try:
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            gpu = {
+                "available": True, "name": torch.cuda.get_device_name(0),
+                "vram_total_gb": round(props.total_memory / (1024 ** 3), 2),
+                "error": None,
+            }
+    except Exception as exc:
+        gpu["error"] = type(exc).__name__
+    worker = {"configured": cloud_worker_configured(), "reachable": None, "message": "Not configured."}
+    if worker["configured"]:
+        try:
+            response = runpod_request("GET", "/api/remote/health", timeout=(3, 5))
+            payload = response.json() if hasattr(response, "json") else {}
+            worker.update(reachable=True, message="Remote GPU worker responded.", health=payload.get("status", "unknown"))
+        except Exception as exc:
+            worker.update(reachable=False, message="Remote GPU worker health probe failed.", error=type(exc).__name__)
+    components = {
+        "database": {"status": "ok" if db.get("connected") else "degraded", "configured": db.get("configured_postgresql", False)},
+        "local_gpu": {"status": "available" if gpu["available"] else "unavailable", **gpu},
+        "remote_worker": {"status": "available" if worker.get("reachable") else ("unavailable" if worker["configured"] else "not_configured"), **worker},
+        "storage": {
+            "status": "ok" if all(item["writable"] for item in storage.values()) else "degraded",
+            "directories": storage,
+        },
+        "models": {
+            "sd15_available": (MODEL_DIR / "model_index.json").is_file(),
+            "animatediff_adapter_available": (MOTION_DIR / "config.json").is_file(),
+            "face_model_profiles": len(list_profiles()),
+        },
+        "jobs": {
+            "generation_lock_busy": generation_lock.locked(),
+            "training_threads": TRAINING_POOL._max_workers,
+            "training_queue_depth": TRAINING_POOL._work_queue.qsize(),
+        },
+    }
+    critical = [name for name in ("database", "storage") if components[name]["status"] != "ok"]
+    return jsonify(
+        status="degraded" if critical else "ok",
+        app_version=os.environ.get("APP_VERSION", "development"),
+        python_version=platform.python_version(),
+        platform=platform.system(),
+        components=components,
+        note="Diagnostics omit secrets, prompts, profile names, face data and filesystem paths.",
+    )
+
+
 @app.get("/health")
 def health():
     return jsonify(
@@ -2201,6 +2607,8 @@ def api_add_face_photos(profile_id):
         if not get_profile(profile_id):
             return jsonify(error="Face profile not found."), 404
         group_id = (request.form.get("group_id") or "").strip() or None
+        if not database_url_configured():
+            return jsonify(error="Face-photo review and training approval require the configured PostgreSQL database. Configure DATABASE_URL before uploading training photos."), 503
         if group_id:
             group = get_face_dataset_group(group_id)
             if not group or group["profile_id"] != profile_id:
@@ -2212,11 +2620,15 @@ def api_add_face_photos(profile_id):
         if not images:
             return jsonify(error="Choose one or more photos to upload."), 400
         labels = request.form.getlist("labels")
+        if not group_id:
+            group = create_face_dataset_group(
+                profile_id, "Manual uploads " + datetime.now().strftime("%Y-%m-%d %H:%M"),
+                expected_count=min(max(len(images), 1), 30), dataset_type="face_angles",
+            )
+            group_id = group["id"]
         for index, image in enumerate(images):
-            label = None
-            if group_id:
-                label = (labels[index].strip() if index < len(labels) else "") or f"Additional photo {index + 1}"
-            group_type = group.get("dataset_type", "face_angles") if group_id else "face_angles"
+            label = (labels[index].strip() if index < len(labels) else "") or f"Additional photo {index + 1}"
+            group_type = group.get("dataset_type", "face_angles")
             if group_type == "body_type":
                 photo_kind = "body"
             elif group_type == "expressions":
@@ -2231,7 +2643,11 @@ def api_add_face_photos(profile_id):
                 profile_id, image, group_id=group_id, angle_label=label, photo_kind=photo_kind
             )
         if group_id:
-            update_face_dataset_group(group_id, error="")
+            update_face_dataset_group(
+                group_id, status="completed" if group.get("status") == "generating" else None,
+                generated_count=(group.get("generated_count", 0) + len(images)) if group.get("status") == "generating" else None,
+                error="",
+            )
         return jsonify(status="saved", profile=get_profile(profile_id), added=len(images), group_id=group_id)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
@@ -2246,8 +2662,16 @@ def api_train_face_profile(profile_id):
     profile = get_profile(profile_id)
     if not profile:
         return jsonify(error="Face profile not found."), 404
-    if profile["image_count"] < 5:
-        return jsonify(error=f"Add at least 5 clear photos to this face profile first. Currently: {profile['image_count']}. "), 400
+    try:
+        approved_paths = _approved_profile_training_paths(profile_id)
+    except Exception:
+        app.logger.exception("Could not load human-approved face training photos")
+        return jsonify(error="Could not verify photo approvals. Check the database connection before training."), 503
+    if len(approved_paths) < 5:
+        return jsonify(
+            error=f"At least 5 photos must be explicitly approved for training. Approved: {len(approved_paths)}. "
+                  "Review the photos in Training datasets and approve the usable images first."
+        ), 400
     try:
         steps = int(request.form.get("steps", "800"))
         resolution = int(request.form.get("resolution", "512"))
@@ -2270,11 +2694,11 @@ def api_train_face_profile(profile_id):
         if not cloud_worker_configured():
             return jsonify(error=(
                 "Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN in .env, "
-                "start the configured GHive or Colab worker and its HTTPS tunnel, then restart the app."
+                "start the configured remote GPU worker and its HTTPS endpoint, then restart the app."
             )), 400
         opened_files = []
         try:
-            dataset_paths = dataset_images(profile_id)
+            dataset_paths = approved_paths
             files = []
             for path in dataset_paths:
                 handle = path.open("rb")
@@ -2326,8 +2750,96 @@ def api_train_face_profile(profile_id):
     )
     with LOCAL_TRAIN_JOBS_LOCK:
         LOCAL_TRAIN_JOBS[job_id] = {"status": "running", "profile_id": profile_id}
-    TRAINING_POOL.submit(_run_local_training, profile_id, steps, resolution, job_id)
+    TRAINING_POOL.submit(
+        _run_local_training, profile_id, steps, resolution, job_id,
+        [path.name for path in approved_paths],
+    )
     return jsonify(status="running", backend="local", job_id=job_id, message="Local face training has started."), 202
+
+
+@app.get("/api/face-profiles/<profile_id>/model-versions")
+def api_face_model_versions(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+        if not get_profile(profile_id):
+            return jsonify(error="Face profile not found."), 404
+        backend = (request.args.get("backend") or "").strip().lower() or None
+        versions = list_face_model_versions(profile_id, backend=backend)
+        return jsonify(profile_id=profile_id, versions=versions)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not list face-model versions")
+        return jsonify(error="Face-model version history is unavailable. Check PostgreSQL connectivity."), 503
+
+
+@app.post("/api/face-profiles/<profile_id>/model-versions/<version_id>/restore")
+def api_restore_face_model_version(profile_id, version_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+        profile = get_profile(profile_id)
+        if not profile:
+            return jsonify(error="Face profile not found."), 404
+        if (
+            profile.get("local_training_state") == "running"
+            or profile.get("runpod_training_state") == "running"
+        ):
+            return jsonify(error="Cannot restore a model while face training is running."), 409
+        version = get_face_model_version(profile_id, version_id)
+        if not version:
+            return jsonify(error="Face-model version not found."), 404
+        bundle_data = version.get("bundle_data") or b""
+        if sha256_bytes(bundle_data) != version.get("sha256"):
+            return jsonify(error="Stored model bundle checksum failed. The current model was not changed."), 409
+        if version.get("backend") == "runpod":
+            if not cloud_worker_configured():
+                return jsonify(error="The cloud GPU worker is not configured; the archived version remains safe in PostgreSQL."), 503
+            response = runpod_request(
+                "POST", f"/api/remote/models/{profile_id}/restore",
+                data={"sha256": version["sha256"]},
+                files={"bundle": ("face-lora-version.zip", io.BytesIO(bundle_data), "application/zip")},
+                timeout=(20, 600),
+            )
+            update_profile(
+                profile_id, runpod_model_ready=True,
+                runpod_training_state="completed", runpod_training_error=None,
+            )
+        elif version.get("backend") == "local":
+            temp_root = Path(tempfile.mkdtemp(prefix=f"restore-{profile_id}-", dir=str(LORA_DIR)))
+            staging = temp_root / "staging"
+            backup = temp_root / "previous"
+            target = model_path(profile_id)
+            try:
+                safe_extract_lora_bundle(bundle_data, staging)
+                if target.exists():
+                    target.rename(backup)
+                try:
+                    staging.rename(target)
+                except Exception:
+                    if backup.exists() and not target.exists():
+                        backup.rename(target)
+                    raise
+                shutil.rmtree(backup, ignore_errors=True)
+            finally:
+                shutil.rmtree(temp_root, ignore_errors=True)
+            update_profile(
+                profile_id, local_model_ready=True,
+                local_training_state="completed", local_training_error=None,
+            )
+        else:
+            return jsonify(error="Unsupported model artifact backend."), 400
+        return jsonify(
+            status="restored", profile=get_profile(profile_id),
+            restored_version={
+                "id": version["id"], "version_number": version["version_number"],
+                "sha256": version["sha256"],
+            },
+        )
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not restore face-model version")
+        return jsonify(error="Face-model version restore failed. The previous model was preserved when possible."), 500
 
 
 @app.get("/api/face-profiles/<profile_id>/train-status")
@@ -2387,12 +2899,29 @@ def api_face_train_status(profile_id):
 
 
 def _load_cpu_or_gpu_pipeline(
-    mode, profile_id, compute_backend="cpu", *, use_global_body_model=False
+    mode, profile_id, compute_backend="cpu", *, use_global_body_model=False, model_family="sd15"
 ):
-    """Load one face identity and optionally the reusable shared-body LoRA."""
-    global pipe, pipeline_mode, pipeline_device, active_lora, model_error
+    """Load one compatible image model family and its optional SD 1.5 adapters."""
+    global pipe, pipeline_mode, pipeline_device, pipeline_family, active_lora, model_error
     global video_pipe, active_video_lora
-    from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
+    family = resolve_model_family(model_family)
+    config = model_configuration(family)
+
+    if profile_id and not supports_face_lora(family):
+        raise ValueError(
+            "The selected face LoRA was trained for Stable Diffusion 1.5 and is incompatible with the selected model family. "
+            "Choose Stable Diffusion 1.5 for this trained identity, or generate with the selected base model without that adapter."
+        )
+    if use_global_body_model and family != "sd15":
+        raise ValueError(
+            "The shared body LoRA was trained for Stable Diffusion 1.5 and is unavailable for the selected model family. "
+            "The selected base model can generate normal anatomy without this optional adapter."
+        )
+    if family == "sdxl" and mode == "pose_img2img":
+        raise ValueError(
+            "The configured face-pose ControlNet is SD 1.5-specific. SDXL pose conditioning is not enabled until "
+            "an SDXL-compatible ControlNet is configured and benchmarked."
+        )
 
     if compute_backend not in {"cpu", "local_gpu"}:
         raise ValueError("Local image pipeline requires the CPU or System GPU backend.")
@@ -2401,25 +2930,19 @@ def _load_cpu_or_gpu_pipeline(
     with model_lock:
         use_cuda = compute_backend == "local_gpu"
         device = "cuda" if use_cuda else "cpu"
-        if pipe is None or pipeline_mode != mode or pipeline_device != device:
+        if pipe is None or pipeline_mode != mode or pipeline_device != device or pipeline_family != family:
             pipe = None
             pipeline_mode = None
             pipeline_device = None
+            pipeline_family = None
             active_lora = None
             video_pipe = None
             active_video_lora = None
             gc.collect()
             if use_cuda:
                 torch.cuda.empty_cache()
-            if MODEL_PATH_OVERRIDE:
-                override_path = Path(MODEL_PATH_OVERRIDE).expanduser()
-                if not override_path.is_dir() or not (override_path / "model_index.json").is_file():
-                    raise ValueError("SD_MODEL_PATH must point to an existing Diffusers model directory containing model_index.json.")
-                local_model = override_path
-            elif os.environ.get("SD_MODEL_ID", "").strip():
-                local_model = MODEL_ID
-            else:
-                local_model = MODEL_DIR if (MODEL_DIR / "model_index.json").is_file() else MODEL_ID
+
+            local_model = config["source"]
             dtype = torch.float16 if use_cuda else torch.float32
             controlnet = None
             if mode == "pose_img2img":
@@ -2427,10 +2950,6 @@ def _load_cpu_or_gpu_pipeline(
                 controlnet_id = os.environ.get(
                     "FACE_POSE_CONTROLNET_ID", "CrucibleAI/ControlNetMediaPipeFace"
                 ).strip() or "CrucibleAI/ControlNetMediaPipeFace"
-                # The default app model is Stable Diffusion 1.5 (CLIP hidden size 768).
-                # CrucibleAI/ControlNetMediaPipeFace at the repository root is SD 2.1
-                # (cross-attention size 1024); its SD 1.5 weights are in diffusion_sd15.
-                # Allow an explicit override for users intentionally pairing a different base.
                 controlnet_subfolder = os.environ.get(
                     "FACE_POSE_CONTROLNET_SUBFOLDER", "diffusion_sd15"
                 ).strip()
@@ -2439,8 +2958,13 @@ def _load_cpu_or_gpu_pipeline(
                     controlnet_kwargs["subfolder"] = controlnet_subfolder
                 controlnet = ControlNetModel.from_pretrained(controlnet_id, **controlnet_kwargs)
                 pipeline_class = StableDiffusionControlNetImg2ImgPipeline
+            elif family == "sdxl":
+                from diffusers import StableDiffusionXLImg2ImgPipeline, StableDiffusionXLPipeline
+                pipeline_class = StableDiffusionXLImg2ImgPipeline if mode == "img2img" else StableDiffusionXLPipeline
             else:
+                from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
                 pipeline_class = StableDiffusionImg2ImgPipeline if mode == "img2img" else StableDiffusionPipeline
+
             kwargs = {
                 "torch_dtype": dtype,
                 "safety_checker": None,
@@ -2450,7 +2974,9 @@ def _load_cpu_or_gpu_pipeline(
                 kwargs["controlnet"] = controlnet
             if isinstance(local_model, Path):
                 if not (local_model / "model_index.json").is_file():
-                    raise ValueError(f"SD_MODEL_PATH is not a Diffusers model folder containing model_index.json.")
+                    raise ValueError(
+                        f"{family} model path must be a Diffusers model folder containing model_index.json."
+                    )
                 kwargs["local_files_only"] = True
             try:
                 loaded = pipeline_class.from_pretrained(local_model, **kwargs)
@@ -2462,8 +2988,7 @@ def _load_cpu_or_gpu_pipeline(
                         raise RuntimeError(
                             "Face-pose ControlNet is incompatible with the selected base model: "
                             f"ControlNet cross_attention_dim={control_dim}, text encoder hidden_size={text_dim}. "
-                            "For Stable Diffusion 1.5, use FACE_POSE_CONTROLNET_SUBFOLDER=diffusion_sd15; "
-                            "for a compatible SD 2.1 base, use FACE_POSE_CONTROLNET_SUBFOLDER=none."
+                            "For Stable Diffusion 1.5, use FACE_POSE_CONTROLNET_SUBFOLDER=diffusion_sd15."
                         )
                 loaded = loaded.to("cuda" if use_cuda else "cpu")
                 if not use_cuda:
@@ -2491,12 +3016,13 @@ def _load_cpu_or_gpu_pipeline(
                 pipe = loaded
                 pipeline_mode = mode
                 pipeline_device = device
+                pipeline_family = family
                 model_error = None
             except Exception as exc:
                 model_error = str(exc)
                 raise
 
-        requested_loras = (profile_id or None, bool(use_global_body_model))
+        requested_loras = (profile_id or None, bool(use_global_body_model), family)
         if active_lora != requested_loras:
             if active_lora is not None:
                 pipe.unload_lora_weights()
@@ -2505,15 +3031,19 @@ def _load_cpu_or_gpu_pipeline(
             if profile_id:
                 identity_path = model_path(profile_id)
                 if not profile_ready_for_backend(profile_id, "local") or not identity_path.is_dir():
-                    raise ValueError("This face profile has no locally trained LoRA. Train it locally or turn on GPU acceleration and select the cloud GPU.")
+                    raise ValueError(
+                        "This face profile has no locally trained SD 1.5 LoRA. Train it locally or use a compatible remote worker."
+                    )
                 pipe.load_lora_weights(str(identity_path), adapter_name="face_identity")
                 adapter_names.append("face_identity")
                 adapter_weights.append(1.0)
             if use_global_body_model:
-                body_profile = ensure_global_body_profile()
                 body_path = model_path(GLOBAL_BODY_PROFILE_ID)
                 if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, "local") or not body_path.is_dir():
-                    raise ValueError("The shared body model has not been trained on this device. Train it from Training datasets first.")
+                    raise ValueError(
+                        "The optional shared body LoRA is unavailable on this device. "
+                        "Retry without it to use the base model's normal anatomy."
+                    )
                 pipe.load_lora_weights(str(body_path), adapter_name="global_body")
                 adapter_names.append("global_body")
                 adapter_weights.append(0.75)
@@ -2528,14 +3058,23 @@ def api_generation_prompt_preview():
     """Return the exact image prompt pair that generation will submit."""
     payload = request.get_json(silent=True) or {}
     try:
-        prompt = _clean_prompt(payload.get("prompt"), "Prompt", 1200)
-        negative_prompt = _clean_prompt(payload.get("negative_prompt"), "Negative prompt", 1000)
+        prompt = _clean_generation_text(payload.get("prompt"), "Prompt")
+        negative_prompt = _clean_generation_text(payload.get("negative_prompt"), "Negative prompt")
+        model_family = resolve_model_family(payload.get("model_family") or "sd15")
         preset = validate_image_preset(payload.get("image_preset") or "standard")
         has_reference = bool(payload.get("has_reference_image"))
-        final_prompt, final_negative = build_generation_prompts(
-            prompt, negative_prompt, preset, has_reference_image=has_reference
+        structured_prompt = build_structured_prompt(prompt, payload)
+        if model_family == "flux2_klein":
+            # FLUX.2 Klein receives the original prompt plus only explicit user-selected controls.
+            final_prompt, final_negative = structured_prompt, ""
+        else:
+            final_prompt, final_negative = build_generation_prompts(
+                structured_prompt, negative_prompt, preset, has_reference_image=has_reference
+            )
+        return jsonify(
+            prompt=final_prompt, negative_prompt=final_negative,
+            original_prompt=prompt, structured_prompt=structured_prompt, prompt_changed=(final_prompt != prompt),
         )
-        return jsonify(prompt=final_prompt, negative_prompt=final_negative)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
 
@@ -2543,11 +3082,13 @@ def api_generation_prompt_preview():
 @app.post("/generate")
 def generate():
     try:
-        prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1200)
-        negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 1200)
+        prompt = _clean_generation_text(request.form.get("prompt"), "Prompt")
+        original_prompt = _clean_generation_text(request.form.get("original_prompt") or prompt, "Original prompt")
+        negative_prompt = _clean_generation_text(request.form.get("negative_prompt"), "Negative prompt")
+        model_family = resolve_model_family(request.form.get("model_family") or "sd15")
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = float(request.form.get("strength", "0.45"))
-        steps = int(request.form.get("steps", "25"))
+        steps = int(request.form.get("steps", "4" if model_family == "flux2_klein" else "25"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
         image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
@@ -2557,10 +3098,18 @@ def generate():
         output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
         if generation_profile == "photorealistic":
             image_preset = "photorealistic"
-        width, height = resolve_image_dimensions(aspect_ratio)
+        width, height = resolve_image_dimensions(aspect_ratio, model_family)
         backend = _resolve_compute_backend(request.form)
         seed = resolve_generation_seed(request.form.get("seed"))
         use_global_body_model = _truthy(request.form.get("use_global_body_model"))
+        upscale_options = resolve_upscale_options(
+            request.form.get("ai_upscale"), request.form.get("upscale_steps") or 20
+        )
+        ai_upscale = upscale_options["enabled"]
+        face_restore_options = resolve_face_restoration_options(
+            request.form.get("face_restore"), request.form.get("face_restore_weight") or 0.5
+        )
+        face_restore_enabled = face_restore_options["enabled"]
         face_angle = (request.form.get("face_angle") or "").strip().lower()
         face_expression = (request.form.get("face_expression") or "").strip().lower()
         angle_prompts = {
@@ -2584,35 +3133,56 @@ def generate():
             raise ValueError("Invalid generation task ID. Refresh the page and retry.")
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid generation settings."), 400
-    if not prompt:
+    if not prompt.strip():
         return jsonify(error="Enter a prompt describing the image you want."), 400
-    if not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
+    if model_family == "flux2_klein":
+        if negative_prompt.strip():
+            return jsonify(error="FLUX.2 Klein 4B distilled does not accept a negative prompt. Clear it or select SD 1.5 / SDXL."), 400
+        if steps != 4:
+            return jsonify(error="FLUX.2 Klein 4B distilled uses a fixed 4-step generation schedule."), 400
+    elif not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
         return jsonify(error="Strength must be 0.20–0.95 and steps must be 5–25."), 400
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
+    if profile_id and not supports_face_lora(model_family):
+        return jsonify(
+            error="This face profile has an SD 1.5 LoRA and cannot be loaded by the selected model family. "
+                  "Choose Stable Diffusion 1.5 to use this trained identity, or continue with the selected base model without it."
+        ), 400
     if (face_angle or face_expression) and not profile_id:
         return jsonify(error="Select a face profile before using the face-angle or expression controls."), 400
+    if model_family == "flux2_klein" and backend == "cpu":
+        return jsonify(error="FLUX.2 Klein requires a CUDA GPU. Enable GPU acceleration and select a local or remote GPU worker."), 400
+    if ai_upscale and backend == "cpu":
+        return jsonify(error="AI x4 upscaling requires a CUDA GPU. Select a local or remote GPU worker, or disable AI upscaling."), 400
     if face_angle:
         prompt += ", head angle: " + angle_prompts[face_angle]
     if face_expression:
         prompt += ", facial expression: " + expression_prompts[face_expression]
+    body_model_fallback = False
+    upsampled_prompt = ""
+    if model_family == "flux2_klein" and use_global_body_model:
+        use_global_body_model = False
+        body_model_fallback = True
     if use_global_body_model:
-        try:
-            body_profile = ensure_global_body_profile()
-            body_backend = "runpod" if backend in {"runpod", "cloud_gpu"} else "local"
-            if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, body_backend):
-                return jsonify(error=(
-                    "The shared body model is not trained for the selected backend. Open Training datasets, "
-                    "generate body-type samples, train the shared body model on this backend, then retry."
-                )), 400
-            if backend not in {"runpod", "cloud_gpu"}:
-                prompt = f"{GLOBAL_BODY_PROFILE_TOKEN}, {prompt}"
-        except (RuntimeError, ValueError) as exc:
-            return jsonify(error=str(exc)), 400
-
-    if len(prompt) > 1200:
-        return jsonify(error="The prompt plus face/body controls exceeds 1200 characters. Shorten the text prompt."), 400
+        if model_family != "sd15":
+            use_global_body_model = False
+            body_model_fallback = True
+        else:
+            try:
+                ensure_global_body_profile()
+                body_backend = "runpod" if backend in {"runpod", "cloud_gpu"} else "local"
+                if not profile_ready_for_backend(GLOBAL_BODY_PROFILE_ID, body_backend):
+                    use_global_body_model = False
+                    body_model_fallback = True
+                elif backend not in {"runpod", "cloud_gpu"}:
+                    prompt = f"{GLOBAL_BODY_PROFILE_TOKEN}, {prompt}"
+            except (RuntimeError, ValueError):
+                # The shared body adapter is optional. Keep generation available
+                # using the base model's normal anatomy rather than failing.
+                use_global_body_model = False
+                body_model_fallback = True
 
     image_file = request.files.get("image")
     try:
@@ -2621,11 +3191,23 @@ def generate():
             with Image.open(image_file.stream) as source:
                 init_image = ImageOps.exif_transpose(source).convert("RGB")
                 init_image.load()
-            init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
+            if model_family != "flux2_klein":
+                init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
     if generation_profile == "preserve_reference" and init_image is None:
         return jsonify(error="Upload a reference image to use Preserve reference mode."), 400
+    prompt_is_final = _truthy(request.form.get("prompt_is_final"))
+    if not prompt_is_final:
+        structured_prompt = build_structured_prompt(prompt, request.form)
+        if model_family == "flux2_klein":
+            prompt, negative_prompt = structured_prompt, ""
+        else:
+            prompt, negative_prompt = build_generation_prompts(
+                structured_prompt, negative_prompt, image_preset,
+                has_reference_image=init_image is not None,
+            )
+        prompt_is_final = True
 
     _set_generation_progress(
         task_id, asset_type="image", backend=backend, status="running", progress=1,
@@ -2637,6 +3219,11 @@ def generate():
             total_steps=steps, stage="busy", message="Another generation is already running.",
         )
         return jsonify(error="Another generation is running. Please wait."), 429
+    upscale_warning = ""
+    face_restore_warning = ""
+    face_restore_status = "not_requested"
+    quality_report = None
+    flux_prompt_token_count = None
     try:
         if backend == "cloud_gpu":
             if profile_id and not profile.get("runpod_model_ready"):
@@ -2650,7 +3237,11 @@ def generate():
                 "steps": str(steps), "strength": str(strength), "seed": str(seed),
                 "use_global_body_model": "true" if use_global_body_model else "false",
                 "task_id": task_id, "aspect_ratio": aspect_ratio, "image_preset": image_preset,
-                "prompt_is_final": "true",
+                "prompt_is_final": "true", "model_family": model_family,
+                "ai_upscale": "true" if ai_upscale else "false",
+                "upscale_steps": str(upscale_options["steps"]),
+                "face_restore": "true" if face_restore_enabled else "false",
+                "face_restore_weight": str(face_restore_options["weight"]),
             }
             if profile_id:
                 data["face_profile_id"] = profile_id
@@ -2674,6 +3265,9 @@ def generate():
                 task_id, asset_type="image", backend="cloud_gpu", status="running", progress=96,
                 total_steps=steps, stage="saving", message="Cloud GPU generation finished; saving image to the library…",
             )
+            upscale_warning = response.headers.get("X-Upscale-Warning", "")
+            face_restore_warning = response.headers.get("X-Face-Restoration-Warning", "")
+            face_restore_status = response.headers.get("X-Face-Restoration-Status", "not_requested")
             filename = f"{uuid.uuid4().hex}.png"
             output_path = OUTPUT_DIR / filename
             output_path.write_bytes(response.content)
@@ -2683,9 +3277,38 @@ def generate():
                 output_path.unlink(missing_ok=True)
                 return jsonify(error=f"Could not resize image to the selected output resolution: {exc}"), 500
             try:
+                with Image.open(output_path) as saved_image:
+                    output_width, output_height = saved_image.size
+                    quality_report = assess_image_quality(saved_image).to_dict()
+                    if profile:
+                        quality_report["face_geometry"] = assess_face_geometry(saved_image)
+                        quality_report["identity_similarity"] = _evaluate_profile_identity(profile["id"], saved_image)
+            except Exception as quality_exc:
+                app.logger.warning("Cloud generated-image quality assessment unavailable: %s", quality_exc)
+                output_width, output_height = width, height
+                quality_report = {"status": "not_assessed", "reasons": [str(quality_exc)[:240]]}
+            try:
+                prompt_token_count = None
+                try:
+                    prompt_token_count = json.loads(response.headers.get("X-Prompt-Token-Count", "null"))
+                except (TypeError, ValueError):
+                    pass
+                generation_mode = "img2img" if init_image is not None else "txt2img"
+                generation_metadata = _generation_metadata(
+                    model_family=model_family, backend="cloud_gpu", seed=seed, steps=steps,
+                    width=width, height=height, output_width=output_width, output_height=output_height,
+                    aspect_ratio=aspect_ratio, generation_mode=generation_mode, strength=strength,
+                    ai_upscale=ai_upscale, upscale_options=upscale_options,
+                    upscale_warning=upscale_warning, quality_report=quality_report,
+                    prompt_token_count=prompt_token_count, profile=profile,
+                    face_restore_options=face_restore_options, face_restore_warning=face_restore_warning,
+                    face_restore_status=face_restore_status,
+                )
                 asset = _persist_generated_asset(
                     "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
-                    profile=profile, backend="cloud_gpu", generation_mode="img2img" if init_image is not None else "txt2img",
+                    original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
+                    model_family=model_family, profile=profile, backend="cloud_gpu",
+                    generation_mode=generation_mode, generation_metadata=generation_metadata,
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -2695,14 +3318,19 @@ def generate():
                 return jsonify(error=str(exc)), 503
             _set_generation_progress(
                 task_id, asset_type="image", backend="cloud_gpu", status="completed", progress=100,
-                current_step=steps, total_steps=steps, stage="completed", message="Image saved to the library.",
+                current_step=steps, total_steps=steps, stage="completed",
+                message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else "") + ((" " + face_restore_warning) if face_restore_warning else ""),
             )
             return jsonify(
                 status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
                 asset_id=asset["id"], title=asset["title"],
                 mode="img2img" if init_image is not None else "txt2img",
                 face_profile=profile["name"] if profile else None,
-                backend="cloud_gpu", message="Generated on the selected cloud GPU and saved to the database library.",
+                backend="cloud_gpu", model_family=model_family,
+                upsampled_prompt=upsampled_prompt,
+                generation_metadata=asset.get("generation_metadata", {}),
+                quality_report=quality_report,
+                message="Generated on the selected cloud GPU and saved to the database library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else "") + ((" " + face_restore_warning) if face_restore_warning else ""),
             )
 
         if profile_id and not profile_ready_for_backend(profile_id, "local"):
@@ -2713,42 +3341,101 @@ def generate():
                 task_id, asset_type="image", backend=backend, status="running", progress=3,
                 total_steps=steps, stage="loading_model", message="Loading the image model and selected face…",
             )
-            pipeline = _load_cpu_or_gpu_pipeline(
-                mode, profile_id, backend, use_global_body_model=use_global_body_model
-            )
-            generator_device = "cuda" if backend == "local_gpu" else "cpu"
-            _set_generation_progress(
-                task_id, asset_type="image", backend=backend, status="running", progress=5,
-                total_steps=steps, stage="denoising", message="Starting image denoising steps…",
-            )
-            def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
-                scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
-                current = min(step_index + 1, scheduler_steps)
-                percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+            if model_family == "flux2_klein":
+                from flux2_engine import generate_flux2_image
+                model_source = model_configuration("flux2_klein")["source"]
                 _set_generation_progress(
-                    task_id, asset_type="image", backend=backend, status="running", progress=percent,
-                    current_step=current, total_steps=scheduler_steps, stage="denoising",
-                    message=f"Generating image · step {current} of {scheduler_steps}",
+                    task_id, asset_type="image", backend=backend, status="running", progress=5,
+                    total_steps=steps, stage="loading_model", message="Loading FLUX.2 Klein 4B…",
                 )
-                return callback_kwargs
-            if _truthy(request.form.get("prompt_is_final")):
-                effective_prompt, effective_negative_prompt = prompt, negative_prompt
+                flux_output = generate_flux2_image(
+                    prompt, image=init_image, seed=seed,
+                    width=width, height=height, source=model_source,
+                )
+                result = flux_output["image"]
+                flux_prompt_token_count = flux_output.get("prompt_token_count")
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="running", progress=95,
+                    current_step=steps, total_steps=steps, stage="finalizing",
+                    message=f"FLUX.2 inference complete · {flux_output['prompt_token_count']} prompt tokens; finalizing image…",
+                )
             else:
-                effective_prompt, effective_negative_prompt = build_generation_prompts(
-                    prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
+                pipeline = _load_cpu_or_gpu_pipeline(
+                    mode, profile_id, backend, use_global_body_model=use_global_body_model,
+                    model_family=model_family,
                 )
-            kwargs = {
-                "prompt": effective_prompt,
-                "negative_prompt": effective_negative_prompt or None,
-                "width": width,
-                "height": height,
-                "num_inference_steps": steps,
-                "guidance_scale": 7.5,
-                "generator": torch.Generator(device=generator_device).manual_seed(seed),
-            }
-            if init_image is not None:
-                kwargs.update(image=init_image, strength=strength)
-            result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+                generator_device = "cuda" if backend == "local_gpu" else "cpu"
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="running", progress=5,
+                    total_steps=steps, stage="denoising", message="Starting image denoising steps…",
+                )
+                def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
+                    scheduler_steps = len(getattr(active_pipeline.scheduler, "timesteps", [])) or steps
+                    current = min(step_index + 1, scheduler_steps)
+                    percent = min(92, 5 + round(87 * current / max(scheduler_steps, 1)))
+                    _set_generation_progress(
+                        task_id, asset_type="image", backend=backend, status="running", progress=percent,
+                        current_step=current, total_steps=scheduler_steps, stage="denoising",
+                        message=f"Generating image · step {current} of {scheduler_steps}",
+                    )
+                    return callback_kwargs
+                if _truthy(request.form.get("prompt_is_final")):
+                    effective_prompt, effective_negative_prompt = prompt, negative_prompt
+                else:
+                    effective_prompt, effective_negative_prompt = build_generation_prompts(
+                        prompt, negative_prompt, image_preset, has_reference_image=init_image is not None
+                    )
+                from generation_contracts import validate_diffusion_prompt_capacity
+                prompt_token_count = validate_diffusion_prompt_capacity(
+                    pipeline, effective_prompt, effective_negative_prompt or ""
+                )
+                kwargs = {
+                    "prompt": effective_prompt,
+                    "negative_prompt": effective_negative_prompt or None,
+                    "width": width,
+                    "height": height,
+                    "num_inference_steps": steps,
+                    "guidance_scale": 7.5,
+                    "generator": torch.Generator(device=generator_device).manual_seed(seed),
+                }
+                if init_image is not None:
+                    kwargs.update(image=init_image, strength=strength)
+                result = pipeline(**kwargs, callback_on_step_end=on_step_end).images[0]
+            if ai_upscale:
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="running", progress=93,
+                    current_step=0, total_steps=upscale_options["steps"], stage="upscaling",
+                    message="Running optional AI x4 super-resolution…",
+                )
+                def on_upscale_step(current, total):
+                    percent = min(94, 93 + round(current / max(total, 1)))
+                    _set_generation_progress(
+                        task_id, asset_type="image", backend=backend, status="running", progress=percent,
+                        current_step=current, total_steps=total, stage="upscaling",
+                        message=f"AI x4 super-resolution · step {current} of {total}",
+                    )
+                try:
+                    result = upscale_image(
+                        result, prompt, negative_prompt=negative_prompt, seed=seed,
+                        steps=upscale_options["steps"], progress_callback=on_upscale_step,
+                    )
+                except Exception as upscale_exc:
+                    app.logger.exception("AI upscaling failed; preserving the base generated image")
+                    upscale_warning = "AI upscaling failed; the original generated image was saved. " + str(upscale_exc)[:300]
+            if face_restore_enabled:
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="running", progress=94,
+                    current_step=0, total_steps=1, stage="face_restoration",
+                    message="Applying optional face restoration…",
+                )
+                try:
+                    restored = restore_faces(result, weight=face_restore_options["weight"])
+                    result = restored["image"]
+                    face_restore_status = restored["status"]
+                except Exception as restore_exc:
+                    app.logger.exception("Face restoration failed; preserving the pre-restoration image")
+                    face_restore_status = "failed_fallback"
+                    face_restore_warning = "Face restoration failed; the pre-restoration image was saved. " + str(restore_exc)[:300]
             _set_generation_progress(
                 task_id, asset_type="image", backend=backend, status="running", progress=95,
                 current_step=steps, total_steps=steps, stage="finalizing", message="Finalizing the generated image…",
@@ -2768,6 +3455,28 @@ def generate():
         except Exception as exc:
             (OUTPUT_DIR / filename).unlink(missing_ok=True)
             return jsonify(error=f"Could not resize image to the selected output resolution: {exc}"), 500
+        try:
+            with Image.open(OUTPUT_DIR / filename) as saved_image:
+                output_width, output_height = saved_image.size
+                quality_report = assess_image_quality(saved_image).to_dict()
+                if profile:
+                    quality_report["face_geometry"] = assess_face_geometry(saved_image)
+                    quality_report["identity_similarity"] = _evaluate_profile_identity(profile["id"], saved_image)
+        except Exception as quality_exc:
+            app.logger.warning("Generated-image quality assessment was unavailable: %s", quality_exc)
+            output_width, output_height = result.size
+            quality_report = {"status": "not_assessed", "reasons": [str(quality_exc)[:240]]}
+        generation_mode = "img2img" if init_image is not None else "txt2img"
+        generation_metadata = _generation_metadata(
+            model_family=model_family, backend=backend, seed=seed, steps=steps,
+            width=width, height=height, output_width=output_width, output_height=output_height,
+            aspect_ratio=aspect_ratio, generation_mode=generation_mode, strength=strength,
+            ai_upscale=ai_upscale, upscale_options=upscale_options,
+            upscale_warning=upscale_warning, quality_report=quality_report,
+            prompt_token_count=flux_prompt_token_count or prompt_token_count, profile=profile,
+            face_restore_options=face_restore_options, face_restore_warning=face_restore_warning,
+            face_restore_status=face_restore_status,
+        )
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="running", progress=97,
             current_step=steps, total_steps=steps, stage="saving", message="Saving image bytes and generation details to the database…",
@@ -2775,7 +3484,9 @@ def generate():
         try:
             asset = _persist_generated_asset(
                 "image", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
-                profile=profile, backend=backend, generation_mode="img2img" if init_image is not None else "txt2img",
+                original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
+                model_family=model_family, profile=profile, backend=backend,
+                generation_mode=generation_mode, generation_metadata=generation_metadata,
             )
         except RuntimeError as exc:
             _set_generation_progress(
@@ -2789,14 +3500,19 @@ def generate():
             message = "Generated locally on this computer's CPU and saved to the database library."
         _set_generation_progress(
             task_id, asset_type="image", backend=backend, status="completed", progress=100,
-            current_step=steps, total_steps=steps, stage="completed", message="Image saved to the library.",
+            current_step=steps, total_steps=steps, stage="completed",
+            message="Image saved to the library." + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else "") + ((" " + face_restore_warning) if face_restore_warning else ""),
         )
         return jsonify(
             status="completed", task_id=task_id, image_url=f"/assets/{asset['id']}/content", filename=filename,
             asset_id=asset["id"], title=asset["title"],
             mode="img2img" if init_image is not None else "txt2img",
             face_profile=profile["name"] if profile else None,
-            backend=backend, message=message,
+            backend=backend, model_family=model_family,
+            original_prompt=original_prompt, upsampled_prompt=upsampled_prompt,
+            generation_metadata=asset.get("generation_metadata", {}),
+            quality_report=quality_report, seed=seed,
+            message=message + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else "") + ((" " + face_restore_warning) if face_restore_warning else ""),
         )
     finally:
         generation_lock.release()
@@ -2804,8 +3520,11 @@ def generate():
 
 @app.post("/generate-video")
 def generate_video():
-    prompt = _clean_prompt(request.form.get("prompt"), "Prompt", 1000)
-    negative_prompt = _clean_prompt(request.form.get("negative_prompt"), "Negative prompt", 600)
+    try:
+        prompt = _clean_generation_text(request.form.get("prompt"), "Prompt")
+        negative_prompt = _clean_generation_text(request.form.get("negative_prompt"), "Negative prompt")
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     try:
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         steps = int(request.form.get("steps", "12"))
@@ -2813,12 +3532,13 @@ def generate_video():
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         output_resolution, output_max_edge = _parse_output_resolution(request.form.get("output_resolution"))
         backend = _resolve_compute_backend(request.form)
+        seed = resolve_generation_seed(request.form.get("seed"))
         task_id = (request.form.get("task_id") or "").strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID. Refresh the page and retry.")
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid video settings."), 400
-    if not prompt:
+    if not prompt.strip():
         return jsonify(error="Enter a video prompt."), 400
     if not 5 <= steps <= 20 or frames not in (8, 16, 24):
         return jsonify(error="Choose 5–20 steps and 8, 16, or 24 frames."), 400
@@ -2846,7 +3566,7 @@ def generate_video():
                 task_id, asset_type="video", backend="cloud_gpu", status="running", progress=2,
                 total_steps=steps, stage="connecting", message="Connecting to cloud GPU worker…",
             )
-            data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames), "task_id": task_id}
+            data = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": str(steps), "frames": str(frames), "seed": str(seed), "task_id": task_id}
             if profile_id:
                 data["face_profile_id"] = profile_id
             try:
@@ -2871,10 +3591,20 @@ def generate_video():
             except Exception as exc:
                 output_path.unlink(missing_ok=True)
                 return jsonify(error=f"Could not resize video to the selected output resolution: {exc}"), 500
+            identity_report = _evaluate_profile_video_identity(profile["id"], output_path) if profile else {"status": "not_assessed"}
+            video_quality = {"status": identity_report.get("status", "not_assessed"), "identity_consistency": identity_report}
+            generation_metadata = {
+                "schema_version": 1, "model": {"family": "sd15", "model_id": MODEL_ID},
+                "video": {"engine": "AnimateDiff", "seed": seed, "steps": steps, "frames": frames, "fps": 8},
+                "compute": {"backend": "cloud_gpu"},
+                "identity_profile_id": profile.get("id") if profile else None,
+                "quality": video_quality,
+            }
             try:
                 asset = _persist_generated_asset(
                     "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                     profile=profile, backend="cloud_gpu", generation_mode="animatediff",
+                    generation_metadata=generation_metadata,
                 )
             except RuntimeError as exc:
                 _set_generation_progress(
@@ -2888,7 +3618,8 @@ def generate_video():
             )
             return jsonify(
                 status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
-                asset_id=asset["id"], title=asset["title"],
+                asset_id=asset["id"], title=asset["title"], seed=seed,
+                generation_metadata=asset.get("generation_metadata", {}),
                 face_profile=profile["name"] if profile else None, backend="cloud_gpu",
                 message="Generated on the selected cloud GPU and saved to the database library.",
             )
@@ -2938,7 +3669,9 @@ def generate_video():
                     message=f"Generating video · step {current} of {scheduler_steps} · {frames} frames",
                 )
                 return callback_kwargs
-            generator = torch.Generator(device="cuda").manual_seed(int(time.time_ns() % (2**31 - 1)))
+            from generation_contracts import validate_diffusion_prompt_capacity
+            validate_diffusion_prompt_capacity(video_pipe, prompt, negative_prompt)
+            generator = torch.Generator(device="cuda").manual_seed(seed)
             result = video_pipe(
                 prompt=prompt, negative_prompt=negative_prompt or None,
                 num_frames=frames, num_inference_steps=steps,
@@ -2967,10 +3700,20 @@ def generate_video():
             task_id, asset_type="video", backend="local_gpu", status="running", progress=97,
             current_step=steps, total_steps=steps, stage="saving", message="Saving video bytes and generation details to the database…",
         )
+        identity_report = _evaluate_profile_video_identity(profile["id"], output_path) if profile else {"status": "not_assessed"}
+        video_quality = {"status": identity_report.get("status", "not_assessed"), "identity_consistency": identity_report}
+        generation_metadata = {
+            "schema_version": 1, "model": {"family": "sd15", "model_id": MODEL_ID},
+            "video": {"engine": "AnimateDiff", "seed": seed, "steps": steps, "frames": frames, "fps": 8},
+            "compute": {"backend": "local_gpu"},
+            "identity_profile_id": profile.get("id") if profile else None,
+            "quality": video_quality,
+        }
         try:
             asset = _persist_generated_asset(
                 "video", filename, title=title, prompt=prompt, negative_prompt=negative_prompt,
                 profile=profile, backend="local_gpu", generation_mode="animatediff",
+                generation_metadata=generation_metadata,
             )
         except RuntimeError as exc:
             _set_generation_progress(
@@ -2984,7 +3727,8 @@ def generate_video():
         )
         return jsonify(
             status="completed", task_id=task_id, video_url=f"/assets/{asset['id']}/content", filename=filename,
-            asset_id=asset["id"], title=asset["title"],
+            asset_id=asset["id"], title=asset["title"], seed=seed,
+            generation_metadata=asset.get("generation_metadata", {}),
             face_profile=profile["name"] if profile else None, backend="local_gpu",
             message="Generated locally on the System GPU and saved to the database library.",
         )

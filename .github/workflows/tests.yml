@@ -1,0 +1,58 @@
+name: CPU regression checks
+
+on:
+  push:
+    branches:
+      - main
+      - feature/production-image-engine
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: studio_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d studio_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CI_POSTGRES_TEST_URL: postgresql://postgres:postgres@localhost:5432/studio_test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
+
+      - name: Compile changed Python modules
+        run: |
+          python -m compileall -q app.py gpu_worker.py image_generation.py model_registry.py generation_contracts.py training_approval.py flux2_engine.py image_upscaling.py model_artifacts.py private_data_crypto.py identity_evaluation.py face_restoration.py geometry_analysis.py prompt_compiler.py video_quality.py pose_validation.py backup_postgres.py encrypt_private_data.py gpu_acceptance.py studio_db.py
+
+      - name: Check browser JavaScript syntax
+        run: node --check static/studio.js
+
+      - name: Run CPU regression tests
+        run: python -m pytest -q tests

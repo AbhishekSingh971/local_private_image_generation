@@ -23,5 +23,16 @@ def test_training_dataset_page_defaults_to_all_groups_and_renders_empty_groups()
     source = Path("static/studio.js").read_text(encoding="utf-8")
     assert 'data-dataset-filter="all">All groups</button>' in template
     assert 'let activeDatasetType="all";' in source
-    assert 'activeDatasetType==="all"?allGroups:' in source
+    assert 'const groups=activeDatasetType==="all"?profileGroups:' in source
+    assert 'const profileGroups=activeDatasetProfileId?allGroups.filter(group=>group.profile_id===activeDatasetProfileId):allGroups;' in source
     assert "This group is saved but has no training photos yet." in source
+
+
+
+def test_training_dataset_photos_distinguish_pose_checks_from_identity_verification():
+    source = Path("static/studio.js").read_text(encoding="utf-8")
+    assert 'validationStatus==="passed"?"Pose target met"' in source
+    assert 'validationStatus==="needs_review"?"Pose needs review"' in source
+    assert 'validationStatus==="not_applicable"?"Source photo":"Pose unverified"' in source
+    assert 'identityValidation.textContent="Identity unverified";' in source
+    assert 'figure.append(image,label,validation,identityValidation,approvalBadge);' in source

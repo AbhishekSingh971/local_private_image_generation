@@ -1,6 +1,6 @@
 # Private Face Studio
 
-A local-first Windows/Flask application for generating photos, training separate face-identity LoRAs, managing a persistent face library, and optionally using a remote CUDA GPU through the authenticated cloud worker API. Google Colab remains supported, and GHive can host the same authenticated remote CUDA worker.
+A local-first Windows/Flask application for image generation, separate face-identity LoRA training, image editing, and private media-library management. It supports local CUDA and a provider-neutral authenticated remote CUDA GPU worker. Notebook-hosted GPU integrations are not included.
 
 ## Features
 
@@ -18,7 +18,7 @@ A local-first Windows/Flask application for generating photos, training separate
 - Reusable LoRA adapters stored under `models/face_loras/<profile-id>/`.
 - Face selector for photo and video generation.
 - A GPU acceleration toggle that is OFF by default: OFF forces local CPU; ON checks actual local CUDA and connected cloud GPU availability.
-- A backend selector that appears when acceleration is on: supported local System GPU, connected remote GPU (Google Colab or GHive), and CPU fallback. Auto mode prefers a usable local CUDA GPU first, then the configured remote GPU, then CPU if neither GPU is available.
+- A backend selector for local System GPU, a configured authenticated remote GPU worker, and CPU for compatible workloads. Auto prefers a usable local CUDA GPU, then the remote worker, then CPU for models that support it.
 - Authenticated provider-neutral cloud worker endpoints for face training, photo generation, video generation and status polling.
 - Local output copies saved under `data/outputs/` and `data/videos/`.
 
@@ -68,7 +68,7 @@ Requirements: Windows 10/11 64-bit, Python 3.11 x64, PostgreSQL reachable from t
 4. Run `run_local.bat`.
 5. Open http://127.0.0.1:5000.
 
-The Windows installer installs CPU-only PyTorch. This is for local development and slow image generation; it does not enable CUDA training or local video generation. The local web app binds to 127.0.0.1 only.
+The Windows installer installs a CPU-only PyTorch/TorchVision pair for local development and slow image generation; it does not enable CUDA training or local video generation. PyTorch is deliberately not in the shared `requirements.txt`, so lightweight web hosts do not pull a large GPU runtime. CUDA workers must use a CUDA-enabled PyTorch installation supplied by their GPU image/template. The local web app binds to 127.0.0.1 only.
 
 ### Select a compatible photorealistic checkpoint
 
@@ -78,28 +78,28 @@ The original Stable Diffusion 1.5 checkpoint often produces less convincing huma
 
 - Image generation: open Generate image from the sidebar, select a trained face, choose the composition and image preset, optionally upload a reference image, enter a concise prompt and save a title. Portrait is 512×768 by default to provide more room for full-length subjects; inference defaults to 25 steps and can be reduced for faster tests. Successful output is stored in PostgreSQL and appears in Generated images. Stable Diffusion 1.5 has a short CLIP text context, so keep essential subject, clothing/nudity, body, and framing terms near the start. A preset can improve the wording and framing, but cannot guarantee a particular result.
 - Video generation: open Generate video, select the face/profile trained on the selected backend, choose frame count and steps, and generate the clip. Successful output is stored in PostgreSQL and appears in Generated videos.
-- Face models: create isolated identity profiles, add photos from your computer, reuse saved generated images, or select **Face angles** / **Expressions** and upload one source image to start a background job. Angles queues 9 precise yaw/pitch targets; Expressions queues 10 expression targets. A shared progress banner and Cancel button remain available across routes; the Start button stays disabled while a job is active. Every successful output is saved immediately and appears in Training datasets while later targets continue. A failed target can be retried from the global job banner without regenerating successful targets. Pose conditioning improves the requested view, but visual review is still required because SD 1.5 can invent unseen face details and identity/pose estimates are approximate. Each profile can include an optional face/training description of up to 200 words; the trigger token remains a short identifier. Stable Diffusion 1.5 uses a fixed text-encoder context window, so the trainer rotates through short description chunks across training steps instead of sending all 200 words in one prompt. At least 5 photos are required to start training; 15–30 varied photos are a better starting point.
-- Training datasets: separate filters show **Face angles**, **Expressions**, and **Body type · global**. Photo cards show automatic pose-validation status, estimated yaw/pitch when available, and the reason a photo needs review. A prompt-edit preview remains non-destructive until **Save new photo** is clicked; replacing an image resets its pose status to Needs review. Retrain the associated identity after reviewing and accepting dataset updates.
+- Face models: create isolated identity profiles, add photos from your computer, reuse saved generated images, or select **Face angles** / **Expressions** and upload one source image to start a background job. Angles queues 9 precise yaw/pitch targets; Expressions queues 10 expression targets. A shared progress banner and Cancel button remain available across routes; the Start button stays disabled while a job is active. Every successful output is saved immediately and appears in Training datasets while later targets continue. A failed target can be retried from the global job banner without regenerating successful targets. Pose conditioning improves the requested view, but visual review is still required because SD 1.5 can invent unseen face details and identity/pose estimates are approximate. Each profile can include an optional face/training description of up to 200 words; the trigger token remains a short identifier. Stable Diffusion 1.5 uses a fixed text-encoder context window, so the trainer rotates through short description chunks across training steps instead of sending all 200 words in one prompt. At least 5 human-approved photos are required to start training; pending or rejected photos are excluded. 15–30 varied, approved photos are a better starting point.
+- Training datasets: separate filters show **Face angles**, **Expressions**, and **Body type · global**. Photo cards show automatic pose-validation status separately from human training approval, estimated yaw/pitch when available, and the reason a photo needs review. Approve or reject each image before training; editing, relabeling or replacing a photo resets its approval to pending. A prompt-edit preview remains non-destructive until **Save new photo** is clicked. Retrain the associated identity after reviewing and accepting dataset updates.
 - Libraries: use the separate Generated images and Generated videos pages to search across all saved items, page through the results, preview, edit the title/prompt/negative prompt, download the original media bytes, or delete an item. Deletion removes the database record and the local output copy. The generated-image picker on Face models can also search and page through saved image outputs when selecting training photos.
 - **Live generation progress:** image and video pages show the current phase and real Diffusers denoising step count while generation runs. A browser poll updates the progress bar roughly every 0.8 seconds; the RunPod worker exposes its own authenticated progress endpoint so cloud generations show their actual worker-side steps too. Model loading, final encoding, and database save appear as separate phases, so the percentage is an approximate overall indicator while the step counter reflects the pipeline callback.
 - **Background dataset jobs:** job ID, target manifest, target progress, cancellation state, per-target failures and pose-review records are persisted in the database. Navigation does not cancel a job; only stopping the app/worker process interrupts execution. After an app restart, a stale active job is marked interrupted and completed photos remain saved rather than claiming the generation continued.
-- Each training job reads only its selected profile's local working dataset and writes an adapter to models/face_loras/<profile-id>/. When PostgreSQL is configured, successful local training also writes a ZIP backup of the adapter to the database. A completed RunPod training job is similarly backed up to the database when the local app polls its final status.
+- Each profile training job reads only the exact human-approved filenames captured at job start from its selected profile's local working dataset and writes an adapter to models/face_loras/<profile-id>/. When PostgreSQL is configured, successful local training also writes a ZIP backup of the adapter to the database. A completed RunPod training job is similarly backed up to the database when the local app polls its final status.
 - Select the same face in the image or video panel. Include the displayed prompt token in your prompt, such as photo of face_a1b2c3d4 person, natural studio light.
 
-Local LoRA training requires a CUDA-enabled NVIDIA GPU. Your local Windows venv will normally report `torch.cuda.is_available() == False`; on that machine, select a connected cloud GPU worker (Colab or RunPod) after configuring it.
+Local LoRA training requires a CUDA-enabled NVIDIA GPU. If the local machine has no CUDA GPU, configure a supported remote worker and use the same authenticated worker API.
 
 ### Existing ungrouped dataset note
 
 Older versions stored all uploaded photos in `data/face_dataset/`. New named profiles use `data/face_profiles/<profile-id>/dataset/`. Review and manually copy any old images into the correct new profile through the UI; the app deliberately will not guess which person those old images belong to.
 
-## GHive GPU mode (optional; preserves Google Colab)
+## Remote GPU worker
 
-GHive runs the same repository worker used by the existing Colab integration. The Flask application can remain on your Windows laptop or on Render; both connect to the worker using the same HTTPS base URL and bearer token. GHive is a compute host, not a second copy of the web application.
+The remote worker runs the same repository's authenticated `gpu_worker.py` service on a CUDA host. The Flask application can remain on your Windows laptop or a web host and connect through a stable HTTPS endpoint and bearer token. The GPU provider is independent of the application code.
 
 1. Rent an NVIDIA GPU using GHive's **PyTorch + Jupyter** workload. Prefer 24 GB VRAM for AnimateDiff and face-LoRA training.
 2. In JupyterLab, open a terminal and clone this branch (or the merged branch once reviewed):
    ```bash
-   git clone --branch feature/ghive-runtime-integration https://github.com/AbhishekSingh971/local_private_image_generation.git
+   git clone --branch feature/production-image-engine https://github.com/AbhishekSingh971/local_private_image_generation.git
    cd local_private_image_generation
    ```
 3. Create a strong shared secret and start the worker/tunnel:
@@ -116,7 +116,7 @@ GHive runs the same repository worker used by the existing Colab integration. Th
    REMOTE_API_TOKEN=THE_EXACT_SAME_SECRET
    ```
    For Render, add the same two values as environment variables in the Render service dashboard. Do not commit either secret.
-6. Restart the local app / redeploy or restart the Render service. Enable GPU acceleration and choose **GHive / Colab GPU** (or Auto). The app's authenticated `/api/gpu-status?probe=1` check reports the worker's actual CUDA device and VRAM.
+6. Restart the local app / redeploy or restart the Render service. Enable GPU acceleration and choose **Remote GPU** (or Auto). The app's authenticated `/api/gpu-status?probe=1` check reports the worker's actual CUDA device and VRAM.
 7. Test a small image first, then video generation, face-angle/expression generation, and face-LoRA training.
 
 ### Networking, persistence and production notes
@@ -128,15 +128,7 @@ GHive runs the same repository worker used by the existing Colab integration. Th
 - GHive rental costs continue until the rental is stopped in GHive's dashboard. Closing the browser or local Flask app does not stop the rental.
 - Face photos and prompts sent to the worker are processed on a third-party host. Use only images you have permission to process and consider GHive host trust/privacy options.
 
-Detailed setup: [GHIVE_GPU_SETUP.md](GHIVE_GPU_SETUP.md). Existing Colab setup remains available in [COLAB_GPU_SETUP.md](COLAB_GPU_SETUP.md).
-
-## Google Colab GPU mode (free runtime, optional)
-
-You can experiment with the same authenticated `gpu_worker.py` worker from a Colab notebook. Start with [COLAB_GPU_SETUP.md](COLAB_GPU_SETUP.md) and [run_colab_worker.sh](run_colab_worker.sh). The app code supports the existing `/api/remote/*` endpoints, with `GPU_WORKER_URL` and `REMOTE_API_TOKEN` for the generic worker connection; legacy RunPod-specific environment variables are no longer used.
-
-**Important:** Google's current Colab FAQ warns that free managed runtimes may be terminated when used as a web service for content generation. This worker exposes an HTTP image/video-generation API, so free Colab is not a reliable supported deployment target; use this section for limited experimentation only and check Google's [current policy](https://research.google.com/colaboratory/faq.html) before using it.
-
-Colab's free runtime is temporary and may be disconnected or reclaim its GPU. A stable ngrok Dev Domain can keep the same HTTPS hostname, but it does not keep the Colab session or tunnel alive. Model weights and LoRA files on Colab storage can be lost when the runtime is reset; save trained adapters and important outputs to durable storage. Do not expose the worker without a strong `REMOTE_API_TOKEN` and HTTPS.
+Provider-specific deployment details can be documented separately; the worker itself only requires CUDA, `GPU_WORKER_URL`, and `REMOTE_API_TOKEN` on the application host.
 
 ## RunPod GPU mode (optional, OFF by default)
 
@@ -146,10 +138,10 @@ The UI toggle routes training/generation requests to a worker that you already d
 
 1. In RunPod, deploy a CUDA-enabled NVIDIA GPU Pod. Select RTX 3090 if it is available for your region/account.
 2. Expose HTTP port `8000` and mount a persistent volume, recommended at `/workspace`.
-3. Clone this repository's `feature/face-identity-lora` branch into the persistent workspace, for example:
+3. Clone this repository's `feature/production-image-engine` branch into the persistent workspace, for example:
 
        cd /workspace
-       git clone --branch feature/face-identity-lora https://github.com/AbhishekSingh971/local_private_image_generation.git
+       git clone --branch feature/production-image-engine https://github.com/AbhishekSingh971/local_private_image_generation.git
        cd local_private_image_generation
 
 4. Confirm that the Pod sees its GPU:
@@ -166,7 +158,7 @@ The UI toggle routes training/generation requests to a worker that you already d
 
 6. In RunPod, confirm the Pod is running and note the exposed port URL. It should follow:
 
-For background face-angle/expression jobs, pose-conditioned generation and Cancel support, the worker must be running the latest `feature/face-identity-lora` code. It uses the authenticated `/api/remote/generation-progress/<task-id>` and `/api/remote/generation-cancel/<task-id>` endpoints. Pull this branch and restart `runpod_worker_linux.sh`; updating only the Windows app is not enough for cloud jobs. The first angle job downloads the SD 1.5 OpenPose ControlNet and IP-Adapter weights if they are not already cached, so leave enough disk space and expect first-run model loading to take longer.
+For background face-angle/expression jobs, pose-conditioned generation and Cancel support, the worker must be running the latest `feature/production-image-engine` code. It uses the authenticated `/api/remote/generation-progress/<task-id>` and `/api/remote/generation-cancel/<task-id>` endpoints. Pull this branch and restart `runpod_worker_linux.sh`; updating only the Windows app is not enough for cloud jobs. The first angle job downloads the SD 1.5 OpenPose ControlNet and IP-Adapter weights if they are not already cached, so leave enough disk space and expect first-run model loading to take longer.
 
        https://<POD_ID>-8000.proxy.runpod.net
 
@@ -186,16 +178,161 @@ Keep `.env` private. Do not commit it or paste a real token into an issue/chat. 
 
 The worker stores the uploaded face datasets and generated LoRAs on the Pod's filesystem under the project directory. Put the repository and its `data/` and `models/` directories on a persistent volume if you need them to survive a Pod replacement. Back up important profiles and LoRA weights before terminating a Pod.
 
+## Advanced image model: FLUX.2 Klein 4B
+
+The image generator supports three model families:
+
+- **Stable Diffusion 1.5** remains the trained-face backend. Existing face/body LoRAs and the current face-pose ControlNet are specific to this family.
+- **Stable Diffusion XL 1.0** is an experimental base-model option. It does not load the existing SD 1.5 identity adapters.
+- **FLUX.2 Klein 4B (distilled)** is the advanced generation and reference-image editing option. It uses the dedicated `Flux2KleinPipeline`, supports text-to-image and reference-image editing, and is intended for consumer GPUs. The model card estimates around 13 GB VRAM; benchmark on the actual worker before production rollout.
+
+FLUX.2 Klein 4B is Apache-2.0 licensed. The distilled model is designed for a 4-step workflow. It does not accept a negative-prompt string or a denoising-strength parameter. The UI disables those controls when FLUX.2 is selected. The image model's text context has a 512-token limit; the application checks the tokenizer count and rejects overflow instead of silently truncating the user's prompt. The app does not automatically add clothing, crop body parts, censor, or rewrite the FLUX.2 prompt. However, the model checkpoint itself includes safety fine-tuning and input/output safety-filter implementations; the model may still refuse or fail to depict some requests. This project does not remove or bypass those model-level safeguards. The model card lists prohibitions including illegal content and non-consensual intimate imagery.
+
+The current SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible with FLUX.2 Klein. Choose SD 1.5 to use an already-trained face identity. A future FLUX.2 Base identity-training path must be implemented and evaluated separately before claiming cross-model face identity support.
+
+Model access: the model is published on Hugging Face. Follow the repository's current access instructions and configure any required credentials in the application and GPU-worker environment. Never commit access tokens or model weights to Git.
+
+Model card: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
+Official inference examples: https://github.com/black-forest-labs/flux2
+
+## Optional face restoration
+
+The image form includes an optional GFPGAN face-restoration stage after base generation and optional x4 super-resolution. It is deliberately not bundled into the shared requirements because GFPGAN dependencies can constrain PyTorch versions.
+
+To enable it on a local GPU host or remote worker:
+
+1. Install a GFPGAN release compatible with the host's existing PyTorch, TorchVision, CUDA and Python versions (for example, in the GPU worker image rather than a lightweight web-only environment).
+2. Supply a legally usable GFPGAN checkpoint outside the repository.
+3. Set `GFPGAN_MODEL_PATH` on every host that performs restoration.
+4. Enable **AI face restoration** in the image form and adjust fidelity from 0 to 1.
+
+The stage preserves the original canvas dimensions. It is optional and may change identity details; it is not an identity-preservation guarantee. If the package/checkpoint is missing or inference fails, the pre-restoration image is saved and an explicit warning is returned. Compare original and restored results, and use the identity similarity evaluator when configured.
+
+## AI x4 image upscaling
+
+Image generation has an optional **AI x4 super-resolution** stage. It uses Diffusers' `StableDiffusionUpscalePipeline` with the configurable checkpoint `IMAGE_UPSCALER_MODEL_ID` (default: `stabilityai/stable-diffusion-x4-upscaler`). It is separate from the output-resolution Lanczos resize.
+
+- Leave it disabled for the fastest generation and lowest GPU memory use.
+- Enable it in the image-generation form to run the upscaler after the base model.
+- It requires CUDA and downloads/loads a separate checkpoint on first use.
+- Configure `IMAGE_UPSCALER_MODEL_ID` and `HF_TOKEN` on both the web process (for local GPU) and the remote worker when applicable.
+- Upscaling uses 10–30 inference steps (default 20). Larger inputs are first reduced to a maximum 768-pixel long edge before the x4 stage to limit memory use.
+- Super-resolution is generative and may alter identity details. Compare the result with the original; do not use it as an identity-preservation guarantee.
+- If the upscaler fails, the base generated image is retained and saved, and the API/UI reports an explicit warning rather than claiming the image was enhanced.
+
+The output-resolution selector remains a final pixel resize and is not AI upscaling.
+
+## GPU acceptance benchmark
+
+Before enabling a model for production traffic, run the real-GPU acceptance script on the actual CUDA worker. It generates a test image and writes a JSON report containing model ID, GPU/VRAM, elapsed time, peak allocated/reserved memory, requested/output dimensions, seed and prompt-token measurements. It does not upload or use face datasets.
+
+Examples:
+
+```bash
+python gpu_acceptance.py --model-family flux2_klein --seed 12345
+python gpu_acceptance.py --model-family sd15 --seed 12345
+python gpu_acceptance.py --model-family sdxl --seed 12345
+python gpu_acceptance.py --model-family flux2_klein --reference-image path/to/reference.jpg --seed 12345
+```
+
+Run this on the target worker after installing its CUDA-compatible PyTorch build and accepting any required model access terms. Keep the generated PNG and JSON report private if they contain user-provided reference imagery or prompts. CPU CI compiles this script but does not download models or claim that GPU acceptance has passed.
+
+## Video identity consistency
+
+When the optional ONNX identity evaluator is configured, generated AnimateDiff videos are sampled at up to eight evenly spaced frames. Each detectable face is compared with the profile's approved reference-photo centroid. The saved video metadata records mean/minimum/maximum cosine similarity, standard deviation, sampled-frame count and per-frame results. This is a diagnostic signal only; it does not guarantee temporal identity stability. Video generation remains available when the evaluator is not configured.
+
+## Face identity consistency evaluation
+
+An optional evaluator can compare a generated face against the profile's **human-approved** reference photos. Configure `FACE_IDENTITY_ONNX_MODEL` with a user-supplied, appropriately licensed ArcFace-compatible ONNX model that accepts a normalized NCHW 112 × 112 face tensor. Install `onnxruntime` separately to enable it; no biometric model weights are bundled or downloaded by this repository. Set `FACE_IDENTITY_MODEL_VERSION` so scores can be compared across releases.
+
+The evaluator aligns one detected face with MediaPipe landmarks, creates normalized embeddings, compares the generated embedding to the approved-reference centroid and stores cosine similarity in the asset's quality metadata. It does not identify a person, prove identity, or apply an automatic pass threshold. Calibrate thresholds on a private, consented benchmark and retain human review. Only use photos of adults who have explicitly consented to this processing, and verify the evaluator model's commercial-use license before deployment.
+
+Without the optional ONNX model, the app still records technical image quality and face geometry but labels identity similarity as not configured.
+
+## Model version history and rollback
+
+When PostgreSQL is configured, each successful local or cloud face LoRA training run is archived as an immutable version with a SHA-256 checksum, backend, file count and training metadata. The latest artifact remains available for the existing worker flow. The Face Models profile card exposes **Model versions**; local and cloud versions can be restored after checksum verification. Cloud rollback sends the archived bundle to the authenticated GPU worker.
+
+Version history stores model bundles in PostgreSQL and can increase database storage substantially. Configure database capacity and retention/backup policies before large-scale training.
+
+## Application-layer encryption for private database blobs
+
+The application can encrypt face photos, generated images/videos and archived LoRA bundles before writing their BYTEA payloads to PostgreSQL using AES-256-GCM. New writes are encrypted when `FACE_DATA_ENCRYPTION_KEY` is configured. Existing plaintext rows remain readable until migrated.
+
+For a production database:
+
+1. Take an encrypted backup using the backup procedure below.
+2. Generate a separate 32-byte key and set `FACE_DATA_ENCRYPTION_KEY` on the Flask app and any worker that writes to the same database.
+3. Stop application writes / place the app in maintenance mode.
+4. Run `python encrypt_private_data.py --confirm-encryption`.
+5. Confirm the script reports zero remaining plaintext blobs.
+6. Set `APP_ENV=production`, `APP_SECRET_KEY`, and an access password/hash, then restart the app.
+
+Production requests fail closed if PostgreSQL is configured but the private-data encryption key is missing or plaintext blob rows remain. The check is cached for the process lifetime; restart after the migration.
+
+Keep the encryption key outside the database and backups. Losing it makes encrypted face photos, generated media and LoRA bundles unrecoverable. During key rotation, set the new key as `FACE_DATA_ENCRYPTION_KEY` and the old key as `FACE_DATA_ENCRYPTION_KEY_PREVIOUS`, take a fresh encrypted backup, then run `python encrypt_private_data.py --confirm-encryption --rotate-existing`. Remove the previous key only after the migration reports zero plaintext rows and the app can read the stored data. The separate `BACKUP_ENCRYPTION_KEY` protects backup files and must also be stored separately.
+
+## Encrypted PostgreSQL backups
+
+The repository includes `backup_postgres.py`. It creates an AES-256-GCM encrypted custom-format PostgreSQL dump containing saved media, face photos and archived LoRA bundles.
+
+1. Install PostgreSQL client tools (`pg_dump` and `pg_restore`) on the machine running the script.
+2. Configure `DATABASE_URL` and a separate `BACKUP_ENCRYPTION_KEY` in the private environment. Generate a 32-byte key with:
+
+   ```bash
+   python -c "import secrets; print(secrets.token_hex(32))"
+   ```
+
+3. Create an encrypted backup:
+
+   ```bash
+   python backup_postgres.py create --output backups/private-studio.pfbackup
+   ```
+
+4. Restore only after checking that `DATABASE_URL` points to the intended target database:
+
+   ```bash
+   python backup_postgres.py restore backups/private-studio.pfbackup --confirm-restore
+   ```
+
+Keep the encryption key separately from the backup, restrict filesystem permissions, and test restores against a disposable database. Restore replaces database objects. The backup script does not back up downloaded base model checkpoints; those should be downloaded again from their documented model sources.
+
+## Face-photo approval before training
+
+Face-photo quality validation and human training approval are separate states:
+
+- Automatic validation records pose/quality observations such as `passed` or `needs_review`.
+- Human review records `pending`, `approved`, or `rejected`.
+- New uploads and replaced/relabeled photos return to `pending`.
+- The Training datasets page exposes Approve, Reject, and Reopen review controls.
+- Profile LoRA training requires at least five explicitly approved photos. Both local and remote worker training receive an exact approved-filename allowlist; the trainer refuses profile training without it.
+- While a profile is training, photo approval, replacement, deletion and caption edits are locked so the running job uses a stable dataset snapshot.
+- Existing ungrouped photos are migrated into a reviewable manual-upload group. The review workflow requires PostgreSQL-backed photo records.
+
+Only the photos approved when the training job starts are included. Pending and rejected photos are never passed to the profile trainer.
+
 ## Training details
 
 - Training script: `train_face_lora.py`
 - A profile is trained independently by ID, token and dataset.
 - Example direct command (only on CUDA-enabled hardware, after photos have been saved to a profile):
 
-      python train_face_lora.py --profile-id <32-character-profile-id> --output-name <same-profile-id> --token <profile-token> --steps 800 --resolution 512 --mixed-precision fp16
+      python train_face_lora.py --profile-id <32-character-profile-id> --output-name <same-profile-id> --token <profile-token> --steps 800 --resolution 512 --mixed-precision fp16 --approved-filename face_a.jpg --approved-filename face_b.jpg --approved-filename face_c.jpg --approved-filename face_d.jpg --approved-filename face_e.jpg
 
 - Default web UI training values are 800 steps and 512px. Lower to 384px if VRAM is tight. More steps do not automatically produce a better likeness; inspect results and adjust dataset/parameters.
 - The app uses a job ID and status polling for RunPod training so the browser request does not need to remain open for the entire training run.
+
+## Private workspace access gate
+
+The Flask application supports an optional single-workspace password gate. For any public deployment, configure all of the following in the hosting environment:
+
+- `APP_ENV=production`
+- `APP_SECRET_KEY`: a long random secret used to sign sessions
+- Either `APP_ACCESS_PASSWORD` or `APP_ACCESS_PASSWORD_HASH` (prefer the Werkzeug password hash)
+
+If production mode is enabled without both a password and session secret, application routes fail closed with HTTP 503. Unauthenticated browser requests are redirected to sign-in; API and generation requests receive HTTP 401. State-changing requests are restricted to same-origin browser requests. Sign out from the top navigation.
+
+This is a **single shared workspace password**, not a multi-user account system. It does not provide per-user media isolation, roles or billing. Do not expose the app as a multi-tenant service until individual accounts, ownership checks and tenant-scoped database queries are implemented and security-tested. Keep the GPU worker separately protected by its bearer token.
 
 ## Security and privacy
 

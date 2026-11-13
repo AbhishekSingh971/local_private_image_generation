@@ -42,7 +42,7 @@
     }
     if (key === "cloud_gpu" || key === "runpod") {
       const gpu = options.cloud_gpu || {};
-      return "GHive / Colab GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
+      return "Remote GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
     }
     return "Local CPU (fallback)";
   }
@@ -60,13 +60,13 @@
     if (selected === "local_gpu") {
       gpuStatus.textContent = "GPU acceleration is ON. Image generation will run on the detected System GPU: " + (computeAvailability?.local_gpu?.name || "CUDA GPU") + ".";
     } else if (selected === "cloud_gpu" || selected === "runpod") {
-      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected remote GPU: " + (computeAvailability?.cloud_gpu?.name || "GHive / Colab GPU") + ". Requests are sent securely from the app to your configured worker.";
+      gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected remote GPU: " + (computeAvailability?.cloud_gpu?.name || "configured remote GPU") + ". Requests are sent securely from the app to your configured worker.";
     } else if (requested === "auto") {
       gpuStatus.textContent = "GPU acceleration is ON, but no usable GPU is available. Auto mode is falling back to local CPU; image generation may be very slow. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
     } else {
       gpuStatus.textContent = "CPU fallback selected explicitly. Generation will run on the local CPU, not a GPU.";
     }
-    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " GHive / Colab GPU unavailable: " + computeAvailability.cloud_error;
+    if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " Remote GPU unavailable: " + computeAvailability.cloud_error;
   }
   function renderComputeOptions(options) {
     computeAvailability = options;
@@ -202,6 +202,42 @@
         badges.append(makeTag("Local: " + (profile.local_model_ready ? "trained" : (profile.local_training_state || "not trained")), profile.local_model_ready));
         badges.append(makeTag("Cloud: " + (profile.runpod_model_ready ? "trained" : (profile.runpod_training_state || "not trained")), profile.runpod_model_ready));
         const actions = document.createElement("div"); actions.className = "profile-actions";
+        const historyButton = document.createElement("button"); historyButton.type="button"; historyButton.className="secondary-button"; historyButton.textContent="Model versions";
+        const historyPanel = document.createElement("div"); historyPanel.className="model-version-panel"; historyPanel.hidden=true;
+        historyButton.addEventListener("click", async () => {
+          if (!historyPanel.hidden) { historyPanel.hidden=true; return; }
+          historyPanel.hidden=false; historyPanel.textContent="Loading model versions…"; historyButton.disabled=true;
+          try {
+            const data=await readJson(await fetch("/api/face-profiles/"+profile.id+"/model-versions",{cache:"no-store"}));
+            historyPanel.replaceChildren();
+            if (!data.versions?.length) {
+              const empty=document.createElement("p");empty.className="field-help";empty.textContent="No versioned model bundles are stored yet. Train this profile with PostgreSQL connected to create rollback points.";historyPanel.appendChild(empty);
+            } else {
+              data.versions.forEach(version=>{
+                const item=document.createElement("div");item.className="model-version-item";
+                const summary=document.createElement("div");summary.className="model-version-summary";
+                const name=document.createElement("strong");name.textContent=(version.backend==="local"?"Local":"Cloud")+" · v"+version.version_number;
+                const detail=document.createElement("span");detail.textContent=new Date(version.created_at).toLocaleString()+" · "+(version.file_count||0)+" files · SHA-256 "+String(version.sha256||"").slice(0,12);
+                summary.append(name,detail);item.appendChild(summary);
+                const restore=document.createElement("button");restore.type="button";restore.className="secondary-button";
+                restore.textContent=version.backend==="local"?"Restore local version":"Restore cloud version";
+                restore.addEventListener("click",async()=>{
+                  const target=version.backend==="local"?"local":"cloud GPU";
+                  if(!confirm("Restore "+target+" face model version "+version.version_number+" for "+profile.name+"? The current "+target+" LoRA will be replaced."))return;
+                  restore.disabled=true;restore.textContent="Restoring…";
+                  try {
+                    await readJson(await fetch("/api/face-profiles/"+profile.id+"/model-versions/"+version.id+"/restore",{method:"POST"}));
+                    await refreshProfiles();historyPanel.hidden=true;
+                    alert("Face model version "+version.version_number+" restored to "+target+".");
+                  } catch(error){alert(error.message);restore.disabled=false;restore.textContent=version.backend==="local"?"Restore local version":"Restore cloud version";}
+                });
+                item.appendChild(restore);
+                historyPanel.appendChild(item);
+              });
+            }
+          } catch(error) { historyPanel.textContent=error.message; }
+          finally { historyButton.disabled=false; }
+        });
         const useButton = document.createElement("button"); useButton.type="button"; useButton.className="secondary-button"; useButton.textContent="Use for training";
         useButton.addEventListener("click", () => {
           if ($("#trainProfile")) $("#trainProfile").value = profile.id;
@@ -221,8 +257,8 @@
           } catch (error) { alert(error.message); }
           finally { deleteButton.disabled = false; }
         });
-        actions.append(useButton, deleteButton);
-        card.append(top, badges, actions); profileList.appendChild(card);
+        actions.append(useButton, historyButton, deleteButton);
+        card.append(top, badges, actions, historyPanel); profileList.appendChild(card);
       });
     }
     loadGeneratedPhotoPicker();
@@ -774,14 +810,14 @@
     try {
       globalBodyStatusCache=await readJson(await fetch("/api/global-body/status",{cache:"no-store"}));
       const info=globalBodyStatusCache;
-      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · GHive / Colab GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
+      if(bodyStatus)bodyStatus.textContent="Shared body model · "+info.image_count+" training photo(s) · local: "+(info.local_model_ready?"trained":"not trained")+" · Remote GPU: "+(info.runpod_model_ready?"trained":"not trained")+". Train after adding at least five samples."; 
       if(generateStatus)generateStatus.textContent="Shared body model status — local: "+(info.local_model_ready?"ready":"not trained")+", remote GPU: "+(info.runpod_model_ready?"ready":"not trained")+". Enable the option only after training on the selected backend.";
       const requestedBackend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
       const selectedBackend=requestedBackend==="auto"?(computeAvailability?.auto_backend||"auto"):requestedBackend;
       const backendReady=(selectedBackend==="runpod"||selectedBackend==="cloud_gpu")?info.runpod_model_ready:(selectedBackend==="auto"?false:info.local_model_ready);
       const generationBodyCheckbox=$("#useGlobalBodyModel");
-      if(generationBodyCheckbox){generationBodyCheckbox.disabled=!backendReady;if(!backendReady)generationBodyCheckbox.checked=false;}
-      if(editBodyCheckbox){editBodyCheckbox.disabled=!backendReady;if(editBodyCheckbox.disabled)editBodyCheckbox.checked=false;}
+      if(generationBodyCheckbox){generationBodyCheckbox.disabled=false;}
+      if(editBodyCheckbox){editBodyCheckbox.disabled=false;}
       const trainBodyButton=$("#trainGlobalBodyButton");
       if(trainBodyButton)trainBodyButton.disabled=Number(info.image_count||0)<5;
       return info;
@@ -803,7 +839,6 @@
     const title=(titleInput?.value||"").trim()||("Shared body type · "+new Date().toLocaleString());
     const bodyPrompt=(promptInput?.value||"").trim();
     if(!bodyPrompt){if(status)status.textContent="Describe the adult body type or figure before generating samples.";return;}
-    if(bodyPrompt.length>1000){if(status)status.textContent="The body prompt must be 1000 characters or fewer.";return;}
     generateBodyDatasetButton.disabled=true;
     const originalText=generateBodyDatasetButton.textContent;
     generateBodyDatasetButton.textContent="Generating body samples…";
@@ -976,7 +1011,7 @@
     if(step){
       step.textContent=Number(data.total_steps)>0
         ? "Denoising step "+Number(data.current_step||0)+" of "+Number(data.total_steps)
-        : (data.backend==="cloud_gpu"||data.backend==="runpod"?"GHive / Colab GPU":"Local compute");
+        : (data.backend==="cloud_gpu"||data.backend==="runpod"?"Remote GPU":"Local compute");
       if(data.status==="completed")step.textContent="All steps finished · Saved to your library";
       if(data.status==="failed")step.textContent="The task ended before completion.";
     }
@@ -1024,21 +1059,129 @@
   });
   const generationForm = $("#generationForm");
   const finalPromptInput = $("#finalPrompt");
+  const modelFamilySelect = $("#imageModelFamily");
+  const negativePromptInput = $("#negativePrompt");
+  const strengthGroup = $("#strengthGroup");
+  const faceProfileInput = $("#faceProfile");
+  const globalBodyModelInput = $("#useGlobalBodyModel");
+  const globalBodyModelStatus = $("#globalBodyGenerationStatus");
+  const faceAngleGroup = $("#faceAngleGroup");
+  const faceExpressionGroup = $("#faceExpressionGroup");
+  const negativePromptHelp = $("#negativePromptHelp");
+  const modelFamilyHelp = $("#modelFamilyHelp");
+  const finalPromptLabel = $("#finalPromptLabel");
+  const finalPromptHelp = $("#finalPromptHelp");
+  const aspectRatioSelect = $("#aspectRatio");
+  const imagePresetSelect = $("#imagePreset");
+  const generationProfileSelect = $("#generationProfile");
+  const strengthInput = $("#strength");
+  const strengthNumberInput = $("#strengthNumber");
+
+  function updateImageModelControls() {
+    const family = modelFamilySelect?.value || "sd15";
+    const isFlux2 = family === "flux2_klein";
+    const stepsInput = $("#steps");
+    if (stepsInput) {
+      stepsInput.min = isFlux2 ? "4" : "5";
+      stepsInput.max = isFlux2 ? "4" : "25";
+      if (isFlux2) {
+        stepsInput.value = "4";
+        stepsInput.disabled = true;
+      } else {
+        stepsInput.disabled = false;
+        if (Number(stepsInput.value) > 25 || Number(stepsInput.value) < 5) stepsInput.value = "25";
+      }
+    }
+    if (negativePromptInput) negativePromptInput.disabled = isFlux2;
+    if (strengthGroup) strengthGroup.hidden = isFlux2;
+    if (strengthInput) strengthInput.disabled = isFlux2;
+    if (strengthNumberInput) strengthNumberInput.disabled = isFlux2;
+    if (imagePresetSelect) imagePresetSelect.disabled = isFlux2;
+    if (generationProfileSelect) generationProfileSelect.disabled = isFlux2;
+    const faceControlsEnabled = family === "sd15";
+    if (faceProfileInput) faceProfileInput.disabled = !faceControlsEnabled;
+    if (globalBodyModelInput) {
+      globalBodyModelInput.disabled = !faceControlsEnabled;
+      if (!faceControlsEnabled) globalBodyModelInput.checked = false;
+    }
+    if (globalBodyModelStatus) {
+      globalBodyModelStatus.textContent = faceControlsEnabled
+        ? "Optional SD 1.5 adapter. Generate body samples and train the shared model before applying it."
+        : "This model uses its built-in anatomy. The SD 1.5 body adapter is unavailable here and is not required.";
+    }
+    if (faceAngleGroup) {
+      faceAngleGroup.hidden = !faceControlsEnabled;
+      const angleField = faceAngleGroup.querySelector("select");
+      if (angleField) {
+        angleField.disabled = !faceControlsEnabled;
+        if (!faceControlsEnabled) angleField.value = "";
+      }
+    }
+    if (faceExpressionGroup) {
+      faceExpressionGroup.hidden = !faceControlsEnabled;
+      const expressionField = faceExpressionGroup.querySelector("select");
+      if (expressionField) {
+        expressionField.disabled = !faceControlsEnabled;
+        if (!faceControlsEnabled) expressionField.value = "";
+      }
+    }
+    if (negativePromptHelp) negativePromptHelp.hidden = !isFlux2;
+    if (finalPromptLabel) finalPromptLabel.textContent = isFlux2 ? "Prompt sent to FLUX.2 Klein · editable" : "Final prompt sent to model · editable";
+    if (finalPromptHelp) finalPromptHelp.textContent = isFlux2
+      ? "Your full text is sent directly to FLUX.2 Klein without automatic caption rewriting. The app checks the exact Qwen chat-template input against the 512-token limit and rejects overflow rather than shortening it. Image preset, generation profile and denoising strength are disabled because this distilled pipeline does not expose those controls."
+      : "Review or edit the compiled prompt before generating. The original prompt and compiled prompt are stored separately.";
+    if (aspectRatioSelect) {
+      const labels = family === "flux2_klein"
+        ? ["Portrait 2:3 · 832 × 1216", "Square · 1024 × 1024", "Landscape 3:2 · 1216 × 832"]
+        : family === "sdxl"
+          ? ["Portrait 2:3 · 832 × 1216", "Square · 1024 × 1024", "Landscape 3:2 · 1216 × 832"]
+          : ["Portrait 2:3 · 512 × 768", "Square · 512 × 512", "Landscape 3:2 · 768 × 512"];
+      Array.from(aspectRatioSelect.options).forEach((option, index) => {
+        if (labels[index]) option.textContent = labels[index];
+      });
+    }
+    if (modelFamilyHelp) {
+      if (isFlux2) {
+        modelFamilyHelp.textContent = "FLUX.2 Klein 4B is the advanced Apache-2.0 text-to-image and reference-image editing backend. It is designed for consumer GPUs (around 13 GB VRAM with suitable settings). The distilled checkpoint uses 4 steps. Your prompt is passed directly without automatic caption rewriting; prompts exceeding its 512-token text context are rejected. Existing SD 1.5 face/body LoRAs and the SD 1.5 face-pose ControlNet are not compatible. It does not accept a negative prompt or denoising-strength control. The app does not add clothing or hide anatomy, but the model has its own safety fine-tuning and may still refuse or under-depict some requests.";
+      } else if (family === "sdxl") {
+        modelFamilyHelp.textContent = "SDXL uses a larger native canvas and typically needs more GPU memory. Existing SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible with SDXL.";
+      } else {
+        modelFamilyHelp.textContent = "Stable Diffusion 1.5 is the current identity-training backend. Your existing face/body LoRAs and face-pose ControlNet are compatible with this model family.";
+      }
+    }
+  }
+
+  modelFamilySelect?.addEventListener("change", () => {
+    updateImageModelControls();
+    refreshFinalPromptPreview();
+  });
+  updateImageModelControls();
+
   let promptPreviewRequest = 0;
   let finalNegativePrompt = "";
+  let promptPreviewValid = false;
   async function refreshFinalPromptPreview() {
     if (!generationForm || !finalPromptInput) return;
     const requestId = ++promptPreviewRequest;
     const prompt = $("#prompt")?.value || "";
-    if (!prompt.trim()) { finalPromptInput.value = ""; finalNegativePrompt = ""; return; }
+    if (!prompt.trim()) { finalPromptInput.value = ""; finalNegativePrompt = ""; promptPreviewValid = false; return; }
     try {
       const response = await fetch("/api/generation-prompt-preview", {
         method: "POST", headers: {"Content-Type":"application/json"},
         body: JSON.stringify({
           prompt,
+          model_family: $("#imageModelFamily")?.value || "sd15",
           negative_prompt: $("#negativePrompt")?.value || "",
           image_preset: $("#imagePreset")?.value || "standard",
-          has_reference_image: Boolean($("#referenceImage")?.files?.length)
+          has_reference_image: Boolean($("#referenceImage")?.files?.length),
+          style: $("#styleControl")?.value || "",
+          composition: $("#compositionControl")?.value || "",
+          camera: $("#cameraControl")?.value || "",
+          lighting: $("#lightingControl")?.value || "",
+          pose: $("#poseControl")?.value || "",
+          expression: $("#expressionControl")?.value || "",
+          body_shape: $("#bodyShapeControl")?.value || "",
+          environment: $("#environmentControl")?.value || ""
         })
       });
       const data = await readJson(response);
@@ -1048,15 +1191,17 @@
         // preview back into the textarea caused the realism prefix to be added
         // again on every preview refresh, eventually exceeding the worker limit.
         finalNegativePrompt = data.negative_prompt ?? ($("#negativePrompt")?.value || "");
+        promptPreviewValid = true;
       }
     } catch (error) {
       if (requestId === promptPreviewRequest) {
         finalPromptInput.value = prompt;
         finalNegativePrompt = $("#negativePrompt")?.value || "";
+        promptPreviewValid = false;
       }
     }
   }
-  ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage"].forEach(selector => {
+  ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage", "#imageModelFamily", "#styleControl", "#compositionControl", "#cameraControl", "#lightingControl", "#poseControl", "#expressionControl", "#bodyShapeControl", "#environmentControl"].forEach(selector => {
     $(selector)?.addEventListener("input", refreshFinalPromptPreview);
     $(selector)?.addEventListener("change", refreshFinalPromptPreview);
   });
@@ -1076,9 +1221,10 @@
     // the latest form values and the worker receives each enhancement exactly once.
     await refreshFinalPromptPreview();
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
+    formData.set("original_prompt", $("#prompt")?.value || "");
     formData.set("prompt", finalPromptInput?.value || $("#prompt")?.value || "");
-    formData.set("negative_prompt", finalNegativePrompt || $("#negativePrompt")?.value || "");
-    formData.set("prompt_is_final", "true");
+    formData.set("negative_prompt", modelFamilySelect?.value === "flux2_klein" ? "" : (finalNegativePrompt || $("#negativePrompt")?.value || ""));
+    formData.set("prompt_is_final", promptPreviewValid ? "true" : "false");
     const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
       const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
@@ -1167,7 +1313,28 @@
       const title=document.createElement("h3");title.textContent=asset.title;card.appendChild(title);
       const prompt=document.createElement("p");prompt.className="asset-prompt";prompt.textContent=asset.prompt||"No prompt details saved.";card.appendChild(prompt);
       const meta=document.createElement("div");meta.className="asset-meta";
-      [asset.backend||"unknown backend",asset.profile_name||"Base model",asset.created_at?new Date(asset.created_at).toLocaleString(): "Saved",formatBytes(asset.media_size||0)].forEach(text=>{const tag=document.createElement("span");tag.textContent=text;meta.appendChild(tag);});
+      const generation=asset.generation_metadata||{};
+      const sampling=generation.sampling||{};
+      const upscaling=generation.upscaling||{};
+      const faceRestoration=generation.face_restoration||{};
+      const quality=generation.quality||{};
+      const identity=quality.identity_similarity||{};
+      const videoIdentity=quality.identity_consistency||{};
+      const metadataLabels=[
+        asset.backend||"unknown backend",
+        asset.model_family||generation.model?.family||"Base model",
+        asset.profile_name||"No trained identity",
+        Number.isInteger(sampling.seed)?"Seed "+sampling.seed:"",
+        Number.isInteger(sampling.steps)?sampling.steps+" steps":"",
+        upscaling.enabled?"AI upscale: "+(upscaling.status||"requested"):"",
+        faceRestoration.enabled?"Face restoration: "+(faceRestoration.status||"requested"):"",
+        quality.status&&quality.status!=="not_assessed"?"Quality: "+quality.status:"",
+        Number.isFinite(identity.cosine_similarity)?"Identity similarity: "+identity.cosine_similarity.toFixed(3):"",
+        Number.isFinite(videoIdentity.mean_cosine_similarity)?"Video identity mean: "+videoIdentity.mean_cosine_similarity.toFixed(3):"",
+        asset.created_at?new Date(asset.created_at).toLocaleString():"Saved",
+        formatBytes(asset.media_size||0),
+      ].filter(Boolean);
+      metadataLabels.forEach(text=>{const tag=document.createElement("span");tag.textContent=text;meta.appendChild(tag);});
       card.appendChild(meta);
       const actions=document.createElement("div");actions.className="asset-actions";
       const download=document.createElement("a");download.className="button-link";download.textContent="Download ↓";download.href="/assets/"+asset.id+"/content?download=1";
@@ -1392,7 +1559,10 @@
         const headingCopy=document.createElement("div");headingCopy.append(title);
         const caption=document.createElement("p");caption.className="dataset-group-caption";
         const date=group.created_at?new Date(group.created_at).toLocaleString():"Saved";
-        caption.textContent=(group.profile_name||"Face profile")+" · "+(group.photo_count||0)+" photo(s) · "+(group.generated_count||0)+"/"+(group.expected_count||5)+" generated · "+date;
+        const groupPhotos=group.photos||[];
+        const approvedPhotoCount=groupPhotos.filter(photo=>(photo.training_approval_status||"pending")==="approved").length;
+        const pendingPhotoCount=groupPhotos.filter(photo=>(photo.training_approval_status||"pending")==="pending").length;
+        caption.textContent=(group.profile_name||"Face profile")+" · "+(group.photo_count||0)+" photo(s) · "+approvedPhotoCount+" approved · "+pendingPhotoCount+" pending · "+(group.generated_count||0)+"/"+(group.expected_count||5)+" generated · "+date;
         headingCopy.append(caption);
         if(group.prompt){
           const promptNote=document.createElement("p");promptNote.className="dataset-group-prompt";
@@ -1408,12 +1578,30 @@
           const validation=document.createElement("span");
           const validationStatus=photo.validation_status||"not_checked";
           validation.className="photo-validation-badge "+validationStatus.replace(/_/g,"-");
-          validation.textContent=validationStatus==="passed"?"Pose verified":validationStatus==="needs_review"?"Needs review":validationStatus==="not_applicable"?"Source photo":"Not checked";
+          validation.textContent=validationStatus==="passed"?"Pose target met":validationStatus==="needs_review"?"Pose needs review":validationStatus==="not_applicable"?"Source photo":"Pose unverified";
           if(photo.validation_message)validation.title=photo.validation_message;
+          const identityValidation=document.createElement("span");
+          identityValidation.className="photo-validation-badge not-checked identity-validation-badge";
+          identityValidation.textContent="Identity unverified";
+          identityValidation.title="No identity-similarity score is recorded for this dataset photo. Pose validation and technical image checks do not establish identity. Review the image visually before approving it for training.";
           const validationDetail=document.createElement("span");validationDetail.className="photo-validation-details";
           if(photo.validation_message)validationDetail.textContent=photo.validation_message;
           else if(Number.isFinite(Number(photo.actual_yaw)))validationDetail.textContent="Estimated yaw "+Number(photo.actual_yaw).toFixed(0)+"°, pitch "+Number(photo.actual_pitch||0).toFixed(0)+"°.";
+          const approvalStatus=photo.training_approval_status||"pending";
+          const approvalBadge=document.createElement("span");
+          approvalBadge.className="photo-validation-badge training-approval-badge "+approvalStatus;
+          approvalBadge.textContent=approvalStatus==="approved"?"Approved for training":approvalStatus==="rejected"?"Rejected from training":"Pending human approval";
           const photoActions=document.createElement("div");photoActions.className="dataset-photo-actions";
+          const setApproval=async(nextStatus)=>{
+            try{
+              await mutateDatasetPhoto(photo,"PATCH",{training_approval_status:nextStatus});
+              if(status)status.textContent=nextStatus==="approved"?"Photo approved for face-model training.":nextStatus==="rejected"?"Photo rejected and excluded from training.":"Photo returned to pending review.";
+              await loadDatasetGroups();
+            }catch(error){if(status)status.textContent=error.message;}
+          };
+          const approvePhoto=document.createElement("button");approvePhoto.type="button";approvePhoto.className="secondary-button";approvePhoto.textContent=approvalStatus==="approved"?"Approved":"Approve";approvePhoto.disabled=busy||approvalStatus==="approved";approvePhoto.addEventListener("click",()=>setApproval("approved"));
+          const rejectPhoto=document.createElement("button");rejectPhoto.type="button";rejectPhoto.className="secondary-button danger-button";rejectPhoto.textContent=approvalStatus==="rejected"?"Rejected":"Reject";rejectPhoto.disabled=busy||approvalStatus==="rejected";rejectPhoto.addEventListener("click",()=>setApproval("rejected"));
+          const reopenPhoto=document.createElement("button");reopenPhoto.type="button";reopenPhoto.className="secondary-button";reopenPhoto.textContent="Reopen review";reopenPhoto.disabled=busy||approvalStatus==="pending";reopenPhoto.addEventListener("click",()=>setApproval("pending"));
           const renamePhoto=document.createElement("button");renamePhoto.type="button";renamePhoto.className="secondary-button";renamePhoto.textContent="Edit label";renamePhoto.disabled=busy;
           renamePhoto.addEventListener("click",async()=>{
             const next=window.prompt("Photo label",photo.angle_label||"Training photo");
@@ -1451,8 +1639,8 @@
             }catch(error){if(status)status.textContent=error.message;deletePhoto.disabled=false;}
           });
           const editWithPrompt=document.createElement("button");editWithPrompt.type="button";editWithPrompt.className="secondary-button";editWithPrompt.textContent="Edit with prompt";editWithPrompt.disabled=busy;editWithPrompt.addEventListener("click",()=>openTrainingPhotoEdit(photo,group));
-          photoActions.append(editWithPrompt,renamePhoto,replacePhoto,deletePhoto);
-          figure.append(image,label,validation);
+          photoActions.append(approvePhoto,rejectPhoto,reopenPhoto,editWithPrompt,renamePhoto,replacePhoto,deletePhoto);
+          figure.append(image,label,validation,identityValidation,approvalBadge);
           if(validationDetail.textContent)figure.append(validationDetail);
           figure.append(photoActions,replaceInput);photos.appendChild(figure);
         });
@@ -1505,11 +1693,64 @@
   }
   $("#datasetRefresh")?.addEventListener("click",loadDatasetGroups);
 
+  // ---------- Face and body geometry ----------
+  const geometryPage = $("#geometryPage");
+  if (geometryPage) {
+    const imageInput = $("#geometryImage");
+    const button = $("#analyzeGeometry");
+    const status = $("#geometryStatus");
+    const output = $("#geometryResult");
+    button?.addEventListener("click", async () => {
+      if (!imageInput?.files?.length) { if(status)status.textContent="Choose an image first."; return; }
+      const form = new FormData(); form.append("image", imageInput.files[0]);
+      button.disabled=true;button.textContent="Analyzing…";
+      if(status)status.textContent="Extracting face mesh and body-pose landmarks…";
+      try {
+        const data=await readJson(await fetch("/api/geometry/analyze",{method:"POST",body:form}));
+        if(output)output.textContent=JSON.stringify(data.analysis,null,2);
+        if(status)status.textContent=(data.analysis?.status||"unknown")+" · Image processed in memory; no file saved.";
+      } catch(error) { if(status)status.textContent=error.message; }
+      finally { button.disabled=false;button.textContent="Analyze face and body landmarks"; }
+    });
+  }
+
+  // ---------- Operational diagnostics ----------
+  const diagnosticsPage = $("#diagnosticsPage");
+  if (diagnosticsPage) {
+    const status = $("#diagnosticsStatus");
+    const summary = $("#diagnosticsSummary");
+    const details = $("#diagnosticsDetails");
+    const refresh = $("#refreshDiagnostics");
+    const renderDiagnostics = async () => {
+      refresh.disabled = true;
+      if (status) status.textContent = "Checking system components…";
+      try {
+        const data = await readJson(await fetch("/api/system/diagnostics", {cache:"no-store"}));
+        summary.replaceChildren();
+        const components = data.components || {};
+        Object.entries(components).forEach(([key, value]) => {
+          const card = document.createElement("article"); card.className="diagnostic-card";
+          const heading = document.createElement("strong"); heading.textContent=key.replaceAll("_"," ");
+          const badge = document.createElement("span"); badge.className="diagnostic-state "+(value.status||"unknown");
+          badge.textContent=value.status||"unknown";
+          const body = document.createElement("pre"); body.textContent=JSON.stringify(value,null,2);
+          card.append(heading,badge,body);summary.appendChild(card);
+        });
+        if (details) details.textContent=JSON.stringify({app_version:data.app_version,python_version:data.python_version,platform:data.platform},null,2);
+        if (status) status.textContent=(data.status||"unknown").toUpperCase()+" · Updated "+new Date().toLocaleTimeString();
+      } catch(error) {
+        if (status) status.textContent="Diagnostics unavailable: "+error.message;
+      } finally { refresh.disabled=false; }
+    };
+    refresh?.addEventListener("click",renderDiagnostics);
+    renderDiagnostics();
+  }
+
   async function loadStatus() {
     try{
       const data=await readJson(await fetch("/health"));
       const gpu=data.local_gpu||{};
-      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"GHive / Colab GPU worker is configured; enable GPU acceleration to check availability.":"GHive / Colab GPU worker is not configured; local CPU remains available.");
+      if(gpuStatus && !useGpuAcceleration?.checked)gpuStatus.textContent="GPU acceleration is off. "+(gpu.available?"System GPU detected: "+gpu.name+".":"No local CUDA GPU is available to this PyTorch installation. ")+(data.gpu_worker_configured?"A remote GPU worker is configured; enable GPU acceleration to check availability.":"No remote GPU worker is configured; local CPU remains available.");
     }catch(error){if(gpuStatus)gpuStatus.textContent=error.message;}
   }
   loadStatus();

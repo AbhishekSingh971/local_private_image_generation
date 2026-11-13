@@ -12,7 +12,7 @@ import studio_db
 
 @pytest.fixture
 def postgres_database(monkeypatch):
-    url = os.environ.get("DATABASE_URL", "").strip()
+    url = (os.environ.get("CI_POSTGRES_TEST_URL") or os.environ.get("DATABASE_URL") or "").strip()
     if not url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
         pytest.skip("A PostgreSQL DATABASE_URL is required for this integration test.")
     monkeypatch.setenv("DATABASE_URL", url)

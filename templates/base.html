@@ -20,14 +20,17 @@
         <div class="nav-label nav-label-spaced">YOUR LIBRARY</div>
         <a class="nav-link {{ 'active' if active_page == 'images' else '' }}" href="{{ url_for('library_images_page') }}"><span>▦</span> Generated images</a>
         <a class="nav-link {{ 'active' if active_page == 'videos' else '' }}" href="{{ url_for('library_videos_page') }}"><span>▣</span> Generated videos</a>
+        <a class="nav-link {{ 'active' if active_page == 'geometry' else '' }}" href="{{ url_for('geometry_page') }}"><span>◇</span> Geometry tools</a>
+        <a class="nav-link {{ 'active' if active_page == 'diagnostics' else '' }}" href="{{ url_for('diagnostics_page') }}"><span>◉</span> Diagnostics</a>
       </nav>
       <div class="sidebar-foot">
-        <span class="online-dot"></span><div><strong>Private workspace</strong><small>Only run locally unless GHive or Colab GPU is selected.</small></div>
+        <span class="online-dot"></span><div><strong>Private workspace</strong><small>Only run locally unless a configured remote GPU is selected.</small></div>
       </div>
     </aside>
     <main class="main-area">
       <header class="topbar">
         <div><div class="eyebrow">PRIVATE FACE STUDIO</div><div class="topbar-title">{% block page_heading %}Your creative workspace{% endblock %}</div></div>
+        {% if access_gate_enabled and workspace_authenticated %}<form method="post" action="{{ url_for('logout') }}" class="workspace-signout"><button type="submit" class="secondary-button">Sign out</button></form>{% endif %}
         <div class="storage-chip {{ 'connected' if storage_status.connected and storage_status.configured_postgresql else 'warning' }}"><span></span>{{ 'PostgreSQL connected' if storage_status.connected and storage_status.configured_postgresql else ('Local DB · set DATABASE_URL' if storage_status.connected else 'Database unavailable') }}</div>
       </header>
 
@@ -35,7 +38,7 @@
         <div class="compute-copy">
           <div class="eyebrow">Compute preference</div>
           <label class="switchline" for="useGpuAcceleration"><input id="useGpuAcceleration" type="checkbox" checked> Enable GPU acceleration</label>
-          <p class="tiny">Off always uses the local CPU (slower; progress is shown). On uses the selected backend: Auto prefers System GPU, then GHive/Colab GPU, then CPU if no GPU is available. Explicit GPU selections require that GPU to be reachable.</p>
+          <p class="tiny">Off always uses the local CPU (slower; progress is shown). On uses the selected backend: Auto prefers System GPU, then the configured remote GPU, then CPU if no GPU is available. Explicit GPU selections require that GPU to be reachable.</p>
         </div>
         <div class="compute-controls">
           <div class="pill" id="gpuModePill">LOCAL · CPU</div>
@@ -63,6 +66,6 @@
       <footer class="app-footer">Private Face Studio · Keep your .env, face photos and model weights private. GPU routing does not start or stop cloud runtimes.</footer>
     </main>
   </div>
-  <script src="{{ url_for('static', filename='studio.js', v='20261029-02') }}" defer></script>
+  <script src="{{ url_for('static', filename='studio.js', v='20261112-04') }}" defer></script>
 </body>
 </html>
