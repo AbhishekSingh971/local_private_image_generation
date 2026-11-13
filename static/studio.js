@@ -934,8 +934,12 @@
         const state=data.status||"running";
         const status=$("#trainStatus");
         if(state!==previous&&status){status.textContent="Training status: "+state+(data.error?"\n"+data.error:"");previous=state;}
-        if(state==="completed"){if(status)status.textContent="Training completed successfully.";await refreshProfiles();return;}
-        if(state==="failed"){if(status)status.textContent="Training failed.\n"+(data.error||data.profile?.local_training_error||data.profile?.runpod_training_error||"No error details returned.");await refreshProfiles();return;}
+        const report=data.job?.feedback?.evaluation;
+        const feedbackText=report?"\nReward: "+Number(report.reward||0).toFixed(3)
+          +(report.penalties?.length?"\nPenalties: "+report.penalties.join(" "):"")
+          +(report.needs_human_review?.length?"\nHuman review required: "+report.needs_human_review.join(", "):""):"";
+        if(state==="completed"){if(status)status.textContent="Training completed successfully."+feedbackText;await refreshProfiles();return;}
+        if(state==="failed"){if(status)status.textContent="Training failed.\n"+(data.error||data.profile?.local_training_error||data.profile?.runpod_training_error||"No error details returned.")+feedbackText;await refreshProfiles();return;}
       }catch(error){const status=$("#trainStatus");if(status)status.textContent="Training may still be running; status polling had an issue: "+error.message;}
     }
     if($("#trainStatus"))$("#trainStatus").textContent="Stopped polling after 8 hours. Check the worker logs and profile state.";
@@ -1272,7 +1276,33 @@
       const download=document.createElement("a");download.className="button-link";download.textContent="Download ↓";download.href="/assets/"+asset.id+"/content?download=1";
       const edit=document.createElement("button");edit.type="button";edit.className="secondary-button";edit.textContent="Edit details";edit.addEventListener("click",()=>openEditAsset(asset));
       const remove=document.createElement("button");remove.type="button";remove.className="danger-button";remove.textContent="Delete";remove.addEventListener("click",()=>deleteAsset(asset,remove));
-      actions.append(download,edit,remove);card.appendChild(actions);assetGrid.appendChild(card);
+      actions.append(download,edit,remove);card.appendChild(actions);
+      const feedbackPanel=document.createElement("section");feedbackPanel.className="feedback-panel";
+      const feedbackHeading=document.createElement("strong");feedbackHeading.textContent="Reward / penalty feedback";feedbackPanel.appendChild(feedbackHeading);
+      const feedbackHelp=document.createElement("p");feedbackHelp.className="field-help";feedbackHelp.textContent="Rate this result from 1 (poor) to 5 (excellent). Feedback improves configuration ranking; it does not change model weights.";feedbackPanel.appendChild(feedbackHelp);
+      const feedbackForm=document.createElement("form");feedbackForm.className="asset-feedback-form";
+      const scoreFields=[["sample_quality","Visual quality"],["identity","Identity match"],["prompt_adherence","Prompt adherence"]];
+      scoreFields.forEach(([key,labelText])=>{
+        const label=document.createElement("label");label.textContent=labelText;
+        const select=document.createElement("select");select.name=key;select.setAttribute("aria-label",labelText);
+        for(let score=1;score<=5;score++){const option=document.createElement("option");option.value=String(score);option.textContent=score+" / 5";if(score===3)option.selected=true;select.appendChild(option);}
+        label.appendChild(select);feedbackForm.appendChild(label);
+      });
+      const feedbackButton=document.createElement("button");feedbackButton.type="submit";feedbackButton.className="secondary-button";feedbackButton.textContent="Submit rating";
+      const feedbackStatus=document.createElement("p");feedbackStatus.className="field-help";feedbackStatus.setAttribute("role","status");
+      feedbackForm.append(feedbackButton,feedbackStatus);
+      feedbackForm.addEventListener("submit",async event=>{
+        event.preventDefault();feedbackButton.disabled=true;feedbackStatus.textContent="Saving feedback…";
+        try{
+          const scores={};scoreFields.forEach(([key])=>{scores[key]=Number(feedbackForm.elements[key].value);});
+          const result=await readJson(await fetch("/api/assets/"+asset.id+"/feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scores})}));
+          const report=result.feedback?.evaluation||{};
+          const penalties=Array.isArray(report.penalties)?report.penalties:[];
+          feedbackStatus.textContent="Reward: "+Number(report.reward||0).toFixed(3)+(penalties.length?" · Penalties: "+penalties.join(" "):"")+(report.needs_human_review?.length?" · Still needs review: "+report.needs_human_review.join(", "):"");
+        }catch(error){feedbackStatus.textContent="Could not save rating: "+error.message;}
+        finally{feedbackButton.disabled=false;}
+      });
+      feedbackPanel.appendChild(feedbackForm);card.appendChild(feedbackPanel);assetGrid.appendChild(card);
     });
   }
   function formatBytes(bytes) {
