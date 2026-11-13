@@ -3600,6 +3600,9 @@ def api_regional_inpaint(asset_id):
             request.form.get("title") or ("Regional repair · " + (source_asset.get("title") or "image")),
             "Title", 160,
         )
+        task_id = (request.form.get("task_id") or uuid.uuid4().hex).strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+            raise ValueError("Invalid regional repair task ID. Refresh the page and retry.")
     except (ValueError, TypeError) as exc:
         return jsonify(error=str(exc) or "Invalid regional repair settings."), 400
     if backend not in {"local_gpu", "cloud_gpu"}:
@@ -3635,10 +3638,30 @@ def api_regional_inpaint(asset_id):
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         return jsonify(error=str(exc) or "Source image or repair mask is invalid."), 400
 
+    _set_generation_progress(
+        task_id, asset_type="image", backend=backend, status="running", progress=1,
+        current_step=0, total_steps=steps, stage="starting", message="Preparing regional repair…",
+    )
     if not generation_lock.acquire(blocking=False):
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="failed", progress=0,
+            total_steps=steps, stage="busy", message="Another image or video generation is running.",
+        )
         return jsonify(error="Another image or video generation is running. Try the repair again when it finishes."), 429
     output_filename = None
     try:
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="running", progress=3,
+            current_step=0, total_steps=steps, stage="loading_inpaint_model",
+            message="Loading the dedicated inpainting checkpoint…",
+        )
+        def on_inpaint_step(current, total):
+            percent = min(92, 5 + round(87 * current / max(total, 1)))
+            _set_generation_progress(
+                task_id, asset_type="image", backend=backend, status="running", progress=percent,
+                current_step=current, total_steps=total, stage="inpainting",
+                message=f"Repairing selected area · step {current} of {total}",
+            )
         inpaint_metadata = {
             "model_id": (
                 (os.environ.get("INPAINT_MODEL_PATH") or "").strip()
@@ -3667,6 +3690,7 @@ def api_regional_inpaint(asset_id):
                 "strength": str(strength),
                 "seed": str(seed),
                 "face_profile_id": profile_id or "",
+                "task_id": task_id,
             }
             files = {
                 "source_image": ("source.png", source_buffer, "image/png"),
@@ -3678,11 +3702,19 @@ def api_regional_inpaint(asset_id):
                     data=data, files=files, timeout=(20, 900),
                 )
             except RuntimeError as exc:
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="failed", progress=0,
+                    total_steps=steps, stage="failed", message="Cloud regional inpainting failed.",
+                )
                 return jsonify(error=str(exc)), 502
             with Image.open(io.BytesIO(response.content)) as opened_result:
                 result = opened_result.convert("RGB")
                 result.load()
             if result.size != source_image.size:
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="failed", progress=0,
+                    total_steps=steps, stage="failed", message="Cloud inpainting returned unexpected dimensions.",
+                )
                 return jsonify(error="Cloud inpainting returned unexpected image dimensions; source image was not replaced."), 502
             try:
                 worker_metadata = json.loads(response.headers.get("X-Inpaint-Metadata", "{}"))
@@ -3705,13 +3737,23 @@ def api_regional_inpaint(asset_id):
                     steps=steps,
                     strength=strength,
                     device="cuda",
+                    progress_callback=on_inpaint_step,
                 )
                 inpaint_metadata.update(run_metadata)
             except Exception as exc:
                 app.logger.exception("Regional inpainting failed; original source asset remains unchanged")
                 return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
 
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="running", progress=94,
+            current_step=steps, total_steps=steps, stage="validating",
+            message="Checking the repaired image and preserving the original…",
+        )
         if result.size != source_image.size:
+            _set_generation_progress(
+                task_id, asset_type="image", backend=backend, status="failed", progress=0,
+                total_steps=steps, stage="failed", message="Regional repair returned unexpected dimensions.",
+            )
             return jsonify(error="Regional repair did not preserve the source canvas size."), 500
         quality_report = assess_image_quality(result).to_dict()
         quality_report["scene_integrity"] = evaluate_scene_integrity(
@@ -3734,6 +3776,11 @@ def api_regional_inpaint(asset_id):
             "regional_inpainting": inpaint_metadata,
             "quality": quality_report,
         }
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="running", progress=97,
+            current_step=steps, total_steps=steps, stage="saving",
+            message="Saving the repaired image as a new library asset…",
+        )
         output_filename = _save_generated_png(result)
         try:
             saved = _persist_generated_asset(
@@ -3752,10 +3799,20 @@ def api_regional_inpaint(asset_id):
             )
         except RuntimeError as exc:
             (OUTPUT_DIR / output_filename).unlink(missing_ok=True)
+            _set_generation_progress(
+                task_id, asset_type="image", backend=backend, status="failed", progress=0,
+                total_steps=steps, stage="failed", message="The repaired image could not be saved to the library.",
+            )
             return jsonify(error=str(exc)), 503
 
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="completed", progress=100,
+            current_step=steps, total_steps=steps, stage="completed",
+            message="Regional repair saved as a new library image.",
+        )
         return jsonify(
             status="completed",
+            task_id=task_id,
             asset_id=saved["id"],
             parent_asset_id=asset_id,
             title=saved["title"],
@@ -3768,6 +3825,10 @@ def api_regional_inpaint(asset_id):
         )
     except Exception as exc:
         app.logger.exception("Regional inpainting request failed")
+        _set_generation_progress(
+            task_id, asset_type="image", backend=backend, status="failed", progress=0,
+            total_steps=steps, stage="failed", message="Regional repair failed.",
+        )
         if output_filename:
             (OUTPUT_DIR / output_filename).unlink(missing_ok=True)
         return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
