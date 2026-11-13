@@ -14,6 +14,7 @@ import time
 import uuid
 import zipfile
 import json
+import gc
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -553,7 +554,14 @@ def remote_regional_inpaint():
     if not local_engine.generation_lock.acquire(blocking=False):
         return jsonify(error="Another GPU generation is running on this worker. Try the regional repair again when it finishes."), 429
     try:
+        global VIDEO_PIPE, VIDEO_ACTIVE_LORA
+        with VIDEO_LOCK:
+            VIDEO_PIPE = None
+            VIDEO_ACTIVE_LORA = None
         local_engine._release_cached_generation_pipelines_for_inpainting()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         result, _metadata = run_sd15_regional_inpainting(
             source_image,
             mask_image,
