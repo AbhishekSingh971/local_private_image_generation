@@ -636,39 +636,47 @@ def _run_async_remote_regional_inpaint(job_id, form_data, file_data):
             return
         job["status"] = "queued"
     try:
-        while local_engine.generation_lock.locked():
-            time.sleep(0.5)
-        payload = dict(form_data)
-        for field, (filename, content, content_type) in file_data.items():
-            payload[field] = (io.BytesIO(content), filename, content_type)
-        with worker.test_request_context(
-            "/api/remote/regional-inpaint", method="POST", data=payload
-        ):
-            response = worker.make_response(remote_regional_inpaint())
-            response.direct_passthrough = False
-            status_code = response.status_code
-            body = response.get_data()
-            content_type = response.mimetype
-            metadata_header = response.headers.get("X-Inpaint-Metadata", "")
-        if status_code < 200 or status_code >= 300:
-            try:
-                error_payload = json.loads(body.decode("utf-8", errors="replace"))
-                error = error_payload.get("error") or body[:2000].decode("utf-8", errors="replace")
-            except (ValueError, AttributeError):
-                error = body[:2000].decode("utf-8", errors="replace")
+        while True:
+            while local_engine.generation_lock.locked():
+                time.sleep(0.5)
+            payload = dict(form_data)
+            for field, (filename, content, content_type) in file_data.items():
+                payload[field] = (io.BytesIO(content), filename, content_type)
+            with worker.test_request_context(
+                "/api/remote/regional-inpaint", method="POST", data=payload
+            ):
+                response = worker.make_response(remote_regional_inpaint())
+                response.direct_passthrough = False
+                status_code = response.status_code
+                body = response.get_data()
+                content_type = response.mimetype
+                metadata_header = response.headers.get("X-Inpaint-Metadata", "")
+            if status_code == 429:
+                # A video or synchronous image request may win the GPU lock
+                # between the wait above and route acquisition. Retry safely
+                # with fresh upload streams rather than failing the queued job.
+                time.sleep(1.0)
+                continue
+            if status_code < 200 or status_code >= 300:
+                try:
+                    error_payload = json.loads(body.decode("utf-8", errors="replace"))
+                    error = error_payload.get("error") or body[:2000].decode("utf-8", errors="replace")
+                except (ValueError, AttributeError):
+                    error = body[:2000].decode("utf-8", errors="replace")
+                with REMOTE_GENERATION_JOBS_LOCK:
+                    job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                    job.update(status="failed", error=str(error)[:2500], finished_at=time.time())
+                return
             with REMOTE_GENERATION_JOBS_LOCK:
                 job = REMOTE_GENERATION_JOBS.get(job_id, {})
-                job.update(status="failed", error=str(error)[:2500], finished_at=time.time())
+                job.update(
+                    status="completed",
+                    result=body,
+                    content_type=content_type,
+                    result_headers={"X-Inpaint-Metadata": metadata_header} if metadata_header else {},
+                    finished_at=time.time(),
+                )
             return
-        with REMOTE_GENERATION_JOBS_LOCK:
-            job = REMOTE_GENERATION_JOBS.get(job_id, {})
-            job.update(
-                status="completed",
-                result=body,
-                content_type=content_type,
-                result_headers={"X-Inpaint-Metadata": metadata_header} if metadata_header else {},
-                finished_at=time.time(),
-            )
     except Exception as exc:
         worker.logger.exception("Queued remote regional inpainting failed")
         with REMOTE_GENERATION_JOBS_LOCK:
