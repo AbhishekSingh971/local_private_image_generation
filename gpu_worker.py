@@ -477,8 +477,8 @@ def remote_generate_async():
                 uploaded.mimetype or "application/octet-stream",
             )
         REMOTE_GENERATION_JOBS[task_id] = {
-            "job_id": task_id, "task_id": task_id, "status": "queued",
-            "created_at": time.time(), "error": None,
+            "job_id": task_id, "task_id": task_id, "job_type": "image",
+            "status": "queued", "created_at": time.time(), "error": None,
         }
     REMOTE_GENERATION_POOL.submit(_run_async_remote_generation, task_id, form_data, file_data)
     return jsonify(job_id=task_id, status="queued"), 202
@@ -708,6 +708,8 @@ def remote_regional_inpaint_async():
     with REMOTE_GENERATION_JOBS_LOCK:
         existing = REMOTE_GENERATION_JOBS.get(task_id)
         if existing:
+            if existing.get("job_type") not in {None, "image"}:
+                return jsonify(error="Task ID is already assigned to a different GPU job."), 409
             return jsonify(job_id=task_id, status=existing.get("status", "queued")), 202
         if len(REMOTE_GENERATION_JOBS) >= 40:
             completed = [
