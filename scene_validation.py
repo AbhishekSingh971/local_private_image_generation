@@ -243,11 +243,18 @@ def evaluate_scene_integrity(
             "format": "json",
             "options": {"temperature": 0},
         }
-        response = requests.post(
-            endpoint,
-            json=payload,
-            timeout=(2, timeout_seconds),
-        )
+        # Do not honor system proxy variables or follow redirects: both could
+        # otherwise forward private reference/generated images off this machine.
+        with requests.Session() as local_session:
+            local_session.trust_env = False
+            response = local_session.post(
+                endpoint,
+                json=payload,
+                timeout=(2, timeout_seconds),
+                allow_redirects=False,
+            )
+        if 300 <= response.status_code < 400:
+            raise ValueError("Local vision service returned a redirect; redirects are blocked for privacy.")
         response.raise_for_status()
         body = response.json()
         raw = body.get("response") if isinstance(body, dict) else None
