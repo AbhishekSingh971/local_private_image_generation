@@ -22,6 +22,7 @@ A local-first Windows/Flask application for image generation, separate face-iden
 - Authenticated provider-neutral cloud worker endpoints for face training, photo generation, video generation and status polling.
 - Local output copies saved under `data/outputs/` and `data/videos/`.
 - Optional local visual scene review after image generation. When a vision-capable Ollama model is configured on loopback, it compares generated output with the user's request and optional reference, then reports possible instruction mismatches, malformed objects and targeted correction suggestions. The review is advisory and never deletes an image or starts an automatic retry.
+- Mask-based SD 1.5 regional repair: paint the exact area to replace, provide a local correction prompt, run the dedicated inpainting checkpoint on the selected GPU, and save the result as a new library image. Identity LoRA loading is required when the source image belongs to a trained face profile; the original asset is retained.
 
 Use your own face or images of a person who has given permission. A LoRA adapter is not a guarantee of perfect identity consistency, and identity may drift between video frames.
 
@@ -214,6 +215,31 @@ The validator resizes images before sending them to Ollama and accepts only loop
 The reviewer checks the original request, whether requested edits appear to have been applied, obvious unintended changes, and visible object/anatomy integrity. For reference editing, it receives the reference first and the generated result second. It returns a confidence estimate, short issue list and (when possible) a bounded correction hint. Model judgments can be wrong: a pass is advisory, not proof of identity, anatomy or object correctness. The normal technical image-quality and optional identity checks remain separate.
 
 **Retry behavior:** this first stage does not automatically regenerate or overwrite a result. A full-image rerender can damage details the user did not ask to change, and the current pipeline does not yet create reliable object-part masks for true regional inpainting. A suggested correction is therefore saved/displayed as a recommendation only. A later masked-inpainting stage should use a localized mask, preserve the rest of the frame, and require a separate user action before saving a replacement.
+
+## Regional image repair (SD 1.5)
+
+The image-generation result page includes a **Repair only a selected area** tool for SD 1.5 images. Paint over the part that is malformed (the browser shows the selection in red), describe what should replace it, and submit the repair to the System GPU or connected cloud GPU.
+
+The application uses a dedicated inpainting checkpoint rather than the ordinary text-to-image checkpoint. The default model is \`stable-diffusion-v1-5/stable-diffusion-inpainting\`, which is specifically fine-tuned for inpainting. It is downloaded by Diffusers on first use. See the [Hugging Face inpainting model and pipeline documentation](https://huggingface.co/docs/diffusers/main/en/api/pipelines/stable_diffusion/inpaint).
+
+Configuration in your private \`.env\`:
+
+\`\`\`dotenv
+INPAINT_MODEL_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
+# Optional: use an existing local Diffusers inpainting folder instead.
+# INPAINT_MODEL_PATH=C:/models/stable-diffusion-inpainting
+INPAINT_CROP_PADDING_PX=128
+INPAINT_MASK_GROW_PX=8
+INPAINT_MASK_BLUR_PX=2
+\`\`\`
+
+Set the same model ID/path on the app and remote GPU worker. The first repair on each compute host may download several GB of model weights, so check free disk space and Hugging Face connectivity before testing. No segmentation package or additional Python dependency is required for this first brush-based version.
+
+**Preservation behavior:** the server gets the source image from its saved library asset, not from an arbitrary browser upload. It validates that the PNG mask matches the image dimensions and that no more than 65% of the canvas is selected. The model is given a padded crop so it can see surrounding context. The generated patch is resized to the original crop size and blended through a mask expanded by \`INPAINT_MASK_GROW_PX\` and feathered by \`INPAINT_MASK_BLUR_PX\`. Pixels outside that composite boundary are copied directly from the original image. A thin transition band can still change around the painted area; inspect the result at full resolution.
+
+**Identity behavior:** if the parent image has a trained face profile, the corresponding LoRA must be available on the selected compute backend and load successfully into the inpainting pipeline. The repair fails closed if that adapter is missing or incompatible rather than silently repairing without identity conditioning. The selected profile does not make identity mathematically guaranteed.
+
+**Current limits:** the first implementation uses a manual brush mask. It does not yet automatically segment a clock hand, finger, wheel or other object component from a text label. It currently supports SD 1.5 only and requires a CUDA System GPU or configured cloud GPU; CPU repair is disabled. The parent image is never overwritten: every successful repair is saved as a new asset, so you can compare versions or return to the previous one.
 
 ## Optional face restoration
 
