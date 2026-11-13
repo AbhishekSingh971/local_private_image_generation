@@ -3522,7 +3522,11 @@ def generate():
 def generate_video():
     try:
         prompt = _clean_generation_text(request.form.get("prompt"), "Prompt")
-        negative_prompt = _clean_generation_text(request.form.get("negative_prompt"), "Negative prompt")
+        # The user supplies one prompt; temporal-stability constraints stay internal.
+        negative_prompt = _clean_generation_text(request.form.get("negative_prompt"), "Negative prompt") or (
+            "flicker, temporal jitter, unstable identity, face distortion, warped motion, "
+            "duplicate limbs, inconsistent background, blurry frames, compression artifacts, watermark"
+        )
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     try:
