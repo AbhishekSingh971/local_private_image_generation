@@ -521,6 +521,8 @@ def remote_regional_inpaint():
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         if not prompt.strip():
             raise ValueError("Describe what should replace the painted region.")
+        if len(prompt) > 1200 or len(negative_prompt) > 1200:
+            raise ValueError("Repair and negative-repair instructions must be 1,200 characters or fewer.")
         if not 8 <= steps <= 40:
             raise ValueError("Regional repair steps must be between 8 and 40.")
         if not 0.55 <= strength <= 1.0:
@@ -576,7 +578,9 @@ def remote_regional_inpaint():
         output = io.BytesIO()
         result.save(output, format="PNG", optimize=True)
         output.seek(0)
-        return send_file(output, mimetype="image/png", download_name="regional-repair.png")
+        response = send_file(output, mimetype="image/png", download_name="regional-repair.png")
+        response.headers["X-Inpaint-Metadata"] = json.dumps(_metadata, separators=(",", ":"))[:1800]
+        return response
     except Exception as exc:
         worker.logger.exception("Remote regional inpainting failed; original source remains unchanged")
         return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
