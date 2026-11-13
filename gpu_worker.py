@@ -519,6 +519,9 @@ def remote_regional_inpaint():
         strength = float(request.form.get("strength", "0.88"))
         seed = resolve_generation_seed(request.form.get("seed"))
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
+        task_id = (request.form.get("task_id") or "").strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+            raise ValueError("Invalid regional repair task ID.")
         if not prompt.strip():
             raise ValueError("Describe what should replace the painted region.")
         if len(prompt) > 1200 or len(negative_prompt) > 1200:
@@ -553,7 +556,15 @@ def remote_regional_inpaint():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and (not profile or not profile.get("local_model_ready")):
         return jsonify(error="The selected face LoRA is not trained on this GPU worker. Repair stopped to avoid silently dropping identity conditioning."), 409
+    _set_generation_progress(
+        task_id, asset_type="image", status="running", progress=3, total_steps=steps,
+        stage="loading_inpaint_model", message="Loading the inpainting checkpoint on the remote GPU…",
+    )
     if not local_engine.generation_lock.acquire(blocking=False):
+        _set_generation_progress(
+            task_id, asset_type="image", status="failed", progress=0, total_steps=steps,
+            stage="busy", message="Another GPU generation is running on this worker.",
+        )
         return jsonify(error="Another GPU generation is running on this worker. Try the regional repair again when it finishes."), 429
     try:
         global VIDEO_PIPE, VIDEO_ACTIVE_LORA
@@ -564,6 +575,13 @@ def remote_regional_inpaint():
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        def on_inpaint_step(current, total):
+            percent = min(92, 5 + round(87 * current / max(total, 1)))
+            _set_generation_progress(
+                task_id, asset_type="image", status="running", progress=percent,
+                current_step=current, total_steps=total, stage="inpainting",
+                message=f"Repairing selected area on the cloud GPU · step {current} of {total}",
+            )
         result, _metadata = run_sd15_regional_inpainting(
             source_image,
             mask_image,
@@ -574,15 +592,30 @@ def remote_regional_inpaint():
             steps=steps,
             strength=strength,
             device="cuda",
+            progress_callback=on_inpaint_step,
+        )
+        _set_generation_progress(
+            task_id, asset_type="image", status="running", progress=95,
+            current_step=steps, total_steps=steps, stage="encoding",
+            message="Encoding repaired image and returning it to the app…",
         )
         output = io.BytesIO()
         result.save(output, format="PNG", optimize=True)
         output.seek(0)
         response = send_file(output, mimetype="image/png", download_name="regional-repair.png")
-        response.headers["X-Inpaint-Metadata"] = json.dumps(_metadata, separators=(",", ":"))[:1800]
+        response.headers["X-Inpaint-Metadata"] = json.dumps(_metadata, separators=(",", ":"), ensure_ascii=True)[:1800]
+        _set_generation_progress(
+            task_id, asset_type="image", status="completed", progress=100,
+            current_step=steps, total_steps=steps, stage="completed",
+            message="Regional repair finished on the remote GPU.",
+        )
         return response
     except Exception as exc:
         worker.logger.exception("Remote regional inpainting failed; original source remains unchanged")
+        _set_generation_progress(
+            task_id, asset_type="image", status="failed", progress=0, total_steps=steps,
+            stage="failed", message="Remote regional inpainting failed.",
+        )
         return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
     finally:
         local_engine.generation_lock.release()
