@@ -97,7 +97,7 @@ def test_small_mask_near_image_edge_stays_inside_source_bounds():
     assert right <= source.width and bottom <= source.height
 
 
-def test_merge_rejects_bad_crop_box_by_pillow_validation():
+def test_merge_rejects_mask_size_mismatch():
     source = Image.new("RGB", (256, 256), "gray")
     mask = Image.new("L", (100, 100), 255)
     generated = Image.new("RGB", (100, 100), "red")
