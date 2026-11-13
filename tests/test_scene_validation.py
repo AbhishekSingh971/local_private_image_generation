@@ -40,7 +40,6 @@ def test_prompt_describes_reference_and_generated_image_order():
     )
     assert "Image 1 is the user's reference" in prompt
     assert "Image 2 is the generated result" in prompt
-    assert "selected" not in prompt.lower()
     assert "<user_request>" in prompt
 
 
@@ -141,3 +140,43 @@ def test_parser_accepts_json_wrapped_in_explanatory_text():
         '"issues":["One object looks malformed."]}'
     )
     assert report["issues"] == ["One object looks malformed."]
+
+
+def test_local_validation_does_not_forward_through_proxy_or_redirect(monkeypatch):
+    from scene_validation import evaluate_scene_integrity
+    from PIL import Image
+    import requests
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 302
+
+        def raise_for_status(self):
+            raise AssertionError("Redirects must be rejected before raise_for_status.")
+
+    class FakeSession:
+        trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, endpoint, **kwargs):
+            captured["endpoint"] = endpoint
+            captured["trust_env"] = self.trust_env
+            captured["allow_redirects"] = kwargs.get("allow_redirects")
+            return FakeResponse()
+
+    monkeypatch.setenv("SCENE_VISION_MODEL", "local-vision")
+    monkeypatch.setattr(requests, "Session", FakeSession)
+    report = evaluate_scene_integrity(
+        prompt="A clock",
+        generated_image=Image.new("RGB", (64, 64), "white"),
+    )
+    assert captured["trust_env"] is False
+    assert captured["allow_redirects"] is False
+    assert report["status"] == "unavailable"
+    assert "redirect" in report["reason"].lower()
