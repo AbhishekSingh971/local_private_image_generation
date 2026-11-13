@@ -1058,19 +1058,14 @@
     }
   });
   const generationForm = $("#generationForm");
-  const finalPromptInput = $("#finalPrompt");
   const modelFamilySelect = $("#imageModelFamily");
-  const negativePromptInput = $("#negativePrompt");
   const strengthGroup = $("#strengthGroup");
   const faceProfileInput = $("#faceProfile");
   const globalBodyModelInput = $("#useGlobalBodyModel");
   const globalBodyModelStatus = $("#globalBodyGenerationStatus");
   const faceAngleGroup = $("#faceAngleGroup");
   const faceExpressionGroup = $("#faceExpressionGroup");
-  const negativePromptHelp = $("#negativePromptHelp");
   const modelFamilyHelp = $("#modelFamilyHelp");
-  const finalPromptLabel = $("#finalPromptLabel");
-  const finalPromptHelp = $("#finalPromptHelp");
   const aspectRatioSelect = $("#aspectRatio");
   const imagePresetSelect = $("#imagePreset");
   const generationProfileSelect = $("#generationProfile");
@@ -1092,7 +1087,6 @@
         if (Number(stepsInput.value) > 25 || Number(stepsInput.value) < 5) stepsInput.value = "25";
       }
     }
-    if (negativePromptInput) negativePromptInput.disabled = isFlux2;
     if (strengthGroup) strengthGroup.hidden = isFlux2;
     if (strengthInput) strengthInput.disabled = isFlux2;
     if (strengthNumberInput) strengthNumberInput.disabled = isFlux2;
@@ -1125,11 +1119,6 @@
         if (!faceControlsEnabled) expressionField.value = "";
       }
     }
-    if (negativePromptHelp) negativePromptHelp.hidden = !isFlux2;
-    if (finalPromptLabel) finalPromptLabel.textContent = isFlux2 ? "Prompt sent to FLUX.2 Klein · editable" : "Final prompt sent to model · editable";
-    if (finalPromptHelp) finalPromptHelp.textContent = isFlux2
-      ? "Your full text is sent directly to FLUX.2 Klein without automatic caption rewriting. The app checks the exact Qwen chat-template input against the 512-token limit and rejects overflow rather than shortening it. Image preset, generation profile and denoising strength are disabled because this distilled pipeline does not expose those controls."
-      : "Review or edit the compiled prompt before generating. The original prompt and compiled prompt are stored separately.";
     if (aspectRatioSelect) {
       const labels = family === "flux2_klein"
         ? ["Portrait 2:3 · 832 × 1216", "Square · 1024 × 1024", "Landscape 3:2 · 1216 × 832"]
@@ -1153,59 +1142,9 @@
 
   modelFamilySelect?.addEventListener("change", () => {
     updateImageModelControls();
-    refreshFinalPromptPreview();
   });
   updateImageModelControls();
 
-  let promptPreviewRequest = 0;
-  let finalNegativePrompt = "";
-  let promptPreviewValid = false;
-  async function refreshFinalPromptPreview() {
-    if (!generationForm || !finalPromptInput) return;
-    const requestId = ++promptPreviewRequest;
-    const prompt = $("#prompt")?.value || "";
-    if (!prompt.trim()) { finalPromptInput.value = ""; finalNegativePrompt = ""; promptPreviewValid = false; return; }
-    try {
-      const response = await fetch("/api/generation-prompt-preview", {
-        method: "POST", headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({
-          prompt,
-          model_family: $("#imageModelFamily")?.value || "sd15",
-          negative_prompt: $("#negativePrompt")?.value || "",
-          image_preset: $("#imagePreset")?.value || "standard",
-          has_reference_image: Boolean($("#referenceImage")?.files?.length),
-          style: $("#styleControl")?.value || "",
-          composition: $("#compositionControl")?.value || "",
-          camera: $("#cameraControl")?.value || "",
-          lighting: $("#lightingControl")?.value || "",
-          pose: $("#poseControl")?.value || "",
-          expression: $("#expressionControl")?.value || "",
-          body_shape: $("#bodyShapeControl")?.value || "",
-          environment: $("#environmentControl")?.value || ""
-        })
-      });
-      const data = await readJson(response);
-      if (requestId === promptPreviewRequest) {
-        finalPromptInput.value = data.prompt || prompt;
-        // Keep the user's editable negative prompt raw. Writing the enhanced
-        // preview back into the textarea caused the realism prefix to be added
-        // again on every preview refresh, eventually exceeding the worker limit.
-        finalNegativePrompt = data.negative_prompt ?? ($("#negativePrompt")?.value || "");
-        promptPreviewValid = true;
-      }
-    } catch (error) {
-      if (requestId === promptPreviewRequest) {
-        finalPromptInput.value = prompt;
-        finalNegativePrompt = $("#negativePrompt")?.value || "";
-        promptPreviewValid = false;
-      }
-    }
-  }
-  ["#prompt", "#negativePrompt", "#imagePreset", "#referenceImage", "#imageModelFamily", "#styleControl", "#compositionControl", "#cameraControl", "#lightingControl", "#poseControl", "#expressionControl", "#bodyShapeControl", "#environmentControl"].forEach(selector => {
-    $(selector)?.addEventListener("input", refreshFinalPromptPreview);
-    $(selector)?.addEventListener("change", refreshFinalPromptPreview);
-  });
-  refreshFinalPromptPreview();
   generationForm?.addEventListener("submit",async event=>{
     event.preventDefault();
     const button=$("#generateButton");const status=$("#generationStatus");
@@ -1217,14 +1156,7 @@
     if(status)status.textContent=useGpuAcceleration?.checked?"Sending this image task to the selected GPU worker…":"Loading the model and generating locally. CPU inference may be slow.";
     const preview=$("#resultPreview");const placeholder=$("#resultPlaceholder");const download=$("#downloadImage");const pill=$("#imageSavedPill");
     preview.hidden=true;placeholder.hidden=false;download.hidden=true;
-    // Refresh synchronously before submitting so the prompt pair belongs to
-    // the latest form values and the worker receives each enhancement exactly once.
-    await refreshFinalPromptPreview();
     const formData=addComputeData(new FormData(generationForm));formData.set("task_id",taskId);
-    formData.set("original_prompt", $("#prompt")?.value || "");
-    formData.set("prompt", finalPromptInput?.value || $("#prompt")?.value || "");
-    formData.set("negative_prompt", modelFamilySelect?.value === "flux2_klein" ? "" : (finalNegativePrompt || $("#negativePrompt")?.value || ""));
-    formData.set("prompt_is_final", promptPreviewValid ? "true" : "false");
     const progressWatcher=watchGenerationProgress(taskId,"image",progressController);
     try{
       const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
