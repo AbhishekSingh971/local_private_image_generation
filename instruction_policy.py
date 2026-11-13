@@ -84,7 +84,7 @@ _OBJECT_RULES = (
         re.compile(r"\b(?:car|cars|vehicle|vehicles|automobile|truck|van)\b", re.I),
         "a coherent vehicle body with connected panels and plausible proportions",
         (
-            (re.compile(r"\b(?:wheel|wheels|tyres?|tires?)\b", re.I), "aligned, correctly attached wheels"),
+            (re.compile(r"\b(?:wheel|wheels|tyres?|tires?)\b", re.I), "aligned wheels, correctly attached to the vehicle body"),
             (re.compile(r"\b(?:windows?|windshield|windscreen)\b", re.I), "properly fitted windows"),
         ),
     ),
