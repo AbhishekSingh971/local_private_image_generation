@@ -189,6 +189,9 @@ def build_instruction_guidance(
     source = str(prompt or "").strip()
     if not source:
         return ""
+    # Prompt preview may already have compiled this policy. Recompute from the
+    # user's original prompt only, so the final generation handoff is idempotent.
+    source = source.split("Instruction-aware guidance:", 1)[0].strip()
 
     changed = {
         name for name, pattern in _CHANGE_PATTERNS.items()
