@@ -1188,6 +1188,162 @@
     target.textContent=summary;
   }
 
+  const regionalRepairPanel=$("#regionalRepairPanel");
+  const repairSourceImage=$("#repairMaskSource");
+  const repairCanvas=$("#repairMaskCanvas");
+  const repairPromptInput=$("#repairPrompt");
+  const repairStatus=$("#regionalRepairStatus");
+  const repairSubmitButton=$("#submitRegionalRepair");
+  const repairClearButton=$("#clearRepairMask");
+  let currentImageAssetId="";
+  let currentImageModelFamily="";
+  let currentImageBackend="";
+  let repairMaskCanvas=null;
+  let repairMaskContext=null;
+  let repairOverlayContext=null;
+  let repairDrawing=false;
+  let previousRepairPoint=null;
+
+  function clearRegionalRepairMask(){
+    if(!repairCanvas || !repairMaskCanvas || !repairMaskContext || !repairOverlayContext)return;
+    repairOverlayContext.clearRect(0,0,repairCanvas.width,repairCanvas.height);
+    repairMaskContext.fillStyle="#000";
+    repairMaskContext.fillRect(0,0,repairMaskCanvas.width,repairMaskCanvas.height);
+    repairStatus && (repairStatus.textContent="Paint the exact area you want to replace.");
+  }
+
+  function setRegionalRepairSource(assetId,imageUrl,modelFamily,backend){
+    currentImageAssetId=assetId||"";
+    currentImageModelFamily=modelFamily||"";
+    currentImageBackend=backend||"";
+    const supported=Boolean(currentImageAssetId && currentImageModelFamily==="sd15" && ["local_gpu","cloud_gpu"].includes(currentImageBackend));
+    if(regionalRepairPanel)regionalRepairPanel.hidden=!supported;
+    if(!supported || !repairSourceImage || !repairCanvas)return;
+    repairSourceImage.onload=()=>{
+      const width=repairSourceImage.naturalWidth;
+      const height=repairSourceImage.naturalHeight;
+      if(!width || !height || width*height>40000000){
+        if(repairStatus)repairStatus.textContent="This image is too large or could not be read for regional repair.";
+        if(regionalRepairPanel)regionalRepairPanel.hidden=true;
+        return;
+      }
+      repairCanvas.width=width;
+      repairCanvas.height=height;
+      repairMaskCanvas=document.createElement("canvas");
+      repairMaskCanvas.width=width;
+      repairMaskCanvas.height=height;
+      repairMaskContext=repairMaskCanvas.getContext("2d",{willReadFrequently:true});
+      repairOverlayContext=repairCanvas.getContext("2d");
+      repairClearButton && (repairClearButton.disabled=false);
+      clearRegionalRepairMask();
+      if(repairStatus)repairStatus.textContent="Paint over the part that needs correction. Keep the brush inside the object where possible.";
+    };
+    repairSourceImage.onerror=()=>{
+      if(repairStatus)repairStatus.textContent="Could not load the saved source image for regional repair.";
+    };
+    repairSourceImage.src=imageUrl;
+  }
+
+  function repairPointerPosition(event){
+    const rect=repairCanvas.getBoundingClientRect();
+    return {
+      x:Math.max(0,Math.min(repairCanvas.width,(event.clientX-rect.left)*repairCanvas.width/rect.width)),
+      y:Math.max(0,Math.min(repairCanvas.height,(event.clientY-rect.top)*repairCanvas.height/rect.height))
+    };
+  }
+
+  function paintRepairStroke(from,to){
+    if(!repairOverlayContext || !repairMaskContext)return;
+    const size=Math.max(8,Number($("#repairBrushSize")?.value||42));
+    repairOverlayContext.beginPath();
+    repairOverlayContext.moveTo(from.x,from.y);
+    repairOverlayContext.lineTo(to.x,to.y);
+    repairOverlayContext.strokeStyle="rgba(255,55,55,0.52)";
+    repairOverlayContext.lineWidth=size;
+    repairOverlayContext.lineCap="round";
+    repairOverlayContext.lineJoin="round";
+    repairOverlayContext.stroke();
+    repairMaskContext.beginPath();
+    repairMaskContext.moveTo(from.x,from.y);
+    repairMaskContext.lineTo(to.x,to.y);
+    repairMaskContext.strokeStyle="#fff";
+    repairMaskContext.lineWidth=size;
+    repairMaskContext.lineCap="round";
+    repairMaskContext.lineJoin="round";
+    repairMaskContext.stroke();
+  }
+
+  repairCanvas?.addEventListener("pointerdown",event=>{
+    if(regionalRepairPanel?.hidden || !repairMaskContext)return;
+    event.preventDefault();
+    repairDrawing=true;
+    repairCanvas.setPointerCapture?.(event.pointerId);
+    previousRepairPoint=repairPointerPosition(event);
+    paintRepairStroke(previousRepairPoint,previousRepairPoint);
+  });
+  repairCanvas?.addEventListener("pointermove",event=>{
+    if(!repairDrawing || !previousRepairPoint)return;
+    event.preventDefault();
+    const point=repairPointerPosition(event);
+    paintRepairStroke(previousRepairPoint,point);
+    previousRepairPoint=point;
+  });
+  const stopRepairDrawing=()=>{
+    repairDrawing=false;
+    previousRepairPoint=null;
+  };
+  repairCanvas?.addEventListener("pointerup",stopRepairDrawing);
+  repairCanvas?.addEventListener("pointercancel",stopRepairDrawing);
+  repairCanvas?.addEventListener("lostpointercapture",stopRepairDrawing);
+  repairClearButton?.addEventListener("click",clearRegionalRepairMask);
+
+  repairSubmitButton?.addEventListener("click",async()=>{
+    if(!currentImageAssetId || !repairMaskCanvas || !repairMaskContext){
+      if(repairStatus)repairStatus.textContent="Generate an SD 1.5 image first, then paint the repair area.";
+      return;
+    }
+    const repairText=repairPromptInput?.value.trim()||"";
+    if(!repairText){
+      if(repairStatus)repairStatus.textContent="Describe what should replace the painted area.";
+      repairPromptInput?.focus();
+      return;
+    }
+    repairSubmitButton.disabled=true;
+    repairSubmitButton.textContent="Repairing selected area…";
+    if(repairStatus)repairStatus.textContent="Loading the dedicated inpainting model and repairing only the selected region…";
+    try{
+      const maskBlob=await new Promise((resolve,reject)=>{
+        repairMaskCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Could not encode the repair mask.")),"image/png");
+      });
+      const formData=addComputeData(new FormData(generationForm));
+      formData.set("prompt",repairText);
+      formData.set("negative_prompt",$("#repairNegativePrompt")?.value.trim()||"");
+      formData.set("strength",$("#repairStrength")?.value||"0.88");
+      formData.set("steps",$("#repairSteps")?.value||"24");
+      formData.set("seed",$("#repairSeed")?.value.trim()||"");
+      formData.set("mask_image",new File([maskBlob],"regional-mask.png",{type:"image/png"}));
+      const data=await readJson(await fetch("/api/assets/"+currentImageAssetId+"/regional-inpaint",{method:"POST",body:formData}));
+      currentImageAssetId=data.asset_id;
+      currentImageModelFamily=data.model_family;
+      currentImageBackend=data.backend;
+      const refreshedUrl=data.image_url+"?v="+Date.now();
+      const preview=$("#resultPreview");
+      const download=$("#downloadImage");
+      if(preview){preview.src=refreshedUrl;preview.hidden=false;}
+      if(download){download.href=data.image_url+"?download=1";download.hidden=false;}
+      const pill=$("#imageSavedPill");
+      if(pill)pill.textContent="Repair saved as new image";
+      renderSceneValidation(data.quality_report?.scene_integrity);
+      setRegionalRepairSource(data.asset_id,refreshedUrl,data.model_family,data.backend);
+      if(repairStatus)repairStatus.textContent=data.message||"Regional repair saved as a new library image.";
+    }catch(error){
+      if(repairStatus)repairStatus.textContent="Regional repair failed: "+error.message;
+    }finally{
+      repairSubmitButton.disabled=false;
+      repairSubmitButton.textContent="Repair selected area";
+    }
+  });
+
   generationForm?.addEventListener("submit",async event=>{
     event.preventDefault();
     const button=$("#generateButton");const status=$("#generationStatus");
@@ -1209,6 +1365,7 @@
       const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
       preview.src=data.image_url;preview.hidden=false;placeholder.hidden=true;
       renderSceneValidation(data.quality_report?.scene_integrity);
+      setRegionalRepairSource(data.asset_id,data.image_url,data.model_family,data.backend);
       download.href=data.image_url+"?download=1";download.hidden=false;
       pill.textContent="Saved to library";
       setFinalGenerationProgress("image",true,data.message||"Image generated and saved to the library.");
