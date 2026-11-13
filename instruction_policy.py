@@ -52,6 +52,14 @@ def _requests_attribute_change(
         ):
             continue
         if category == "identity":
+            after = prompt[match.end():]
+            if re.match(
+                r"\s*(?:'s|’s)\s*(?:expression|pose|posture|clothing|outfit|body shape|"
+                r"body proportions|hair|hairstyle|makeup)\b",
+                after,
+                re.I,
+            ):
+                continue
             if re.search(r"\b(?:change|replace|alter|swap|different|new)\b", clause, re.I):
                 return True
             if re.search(r"\bmake\b[^,.;!?]{0,60}\b(?:look\s+like|into)\b", clause, re.I):
@@ -151,7 +159,7 @@ def _whole_object_removed(prompt: str, subject_pattern: re.Pattern[str]) -> bool
         # target a component, not the entire object.
         if _COMPONENT_WORDS.search(before_subject):
             continue
-        if _COMPONENT_WORDS.match(after_subject.strip().lstrip("'’")):
+        if _COMPONENT_WORDS.match(after_subject.strip().lstrip(" '’s")):
             continue
         return True
     return False
@@ -187,20 +195,20 @@ def build_instruction_guidance(
     }
     guidance: list[str] = []
 
+    if has_trained_identity and "identity" not in changed:
+        guidance.append(
+            "Keep the selected trained person's identity and stable facial structure consistent; "
+            "a requested expression change is allowed without changing who the person is."
+        )
+    elif has_reference_image and "identity" not in changed:
+        guidance.append("Keep the reference subject's identity and stable facial structure consistent.")
+
     if has_reference_image:
         guidance.append(
             "Edit the supplied reference selectively: change only what the user explicitly requested; "
             "keep all other visible details, object count, spatial relationships and scene structure consistent. "
             "Do not silently add, remove, duplicate or rearrange unrequested elements."
         )
-        if "identity" not in changed:
-            if has_trained_identity:
-                guidance.append(
-                    "Keep the selected trained person's identity and stable facial structure consistent; "
-                    "a requested expression change is allowed without changing who the person is."
-                )
-            else:
-                guidance.append("Keep the reference subject's identity and stable facial structure consistent.")
         if "pose" not in changed:
             guidance.append("Keep the original body pose and posture.")
         elif "body_shape" not in changed:
