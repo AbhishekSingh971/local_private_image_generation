@@ -1217,6 +1217,17 @@
     currentImageModelFamily=modelFamily||"";
     currentImageBackend=backend||"";
     const supported=Boolean(currentImageAssetId && currentImageModelFamily==="sd15" && ["local_gpu","cloud_gpu"].includes(currentImageBackend));
+    const unavailable=$("#regionalRepairUnavailable");
+    let unavailableMessage="";
+    if(currentImageAssetId && currentImageModelFamily!=="sd15"){
+      unavailableMessage="Regional inpainting currently supports SD 1.5 images only. This image was generated with "+currentImageModelFamily+".";
+    } else if(currentImageAssetId && !["local_gpu","cloud_gpu"].includes(currentImageBackend)){
+      unavailableMessage="Regional inpainting requires a CUDA System GPU or connected cloud GPU. The source image was generated without a GPU backend.";
+    }
+    if(unavailable){
+      unavailable.hidden=!unavailableMessage;
+      unavailable.textContent=unavailableMessage;
+    }
     if(regionalRepairPanel)regionalRepairPanel.hidden=!supported;
     if(!supported || !repairSourceImage || !repairCanvas)return;
     repairSourceImage.onload=()=>{
@@ -1256,16 +1267,28 @@
     if(!repairOverlayContext || !repairMaskContext)return;
     const size=Math.max(8,Number($("#repairBrushSize")?.value||42));
     repairOverlayContext.beginPath();
-    repairOverlayContext.moveTo(from.x,from.y);
-    repairOverlayContext.lineTo(to.x,to.y);
+    if(from.x===to.x && from.y===to.y){
+      repairOverlayContext.arc(from.x,from.y,size/2,0,Math.PI*2);
+      repairOverlayContext.fillStyle="rgba(255,55,55,0.52)";
+      repairOverlayContext.fill();
+    } else {
+      repairOverlayContext.moveTo(from.x,from.y);
+      repairOverlayContext.lineTo(to.x,to.y);
+    }
     repairOverlayContext.strokeStyle="rgba(255,55,55,0.52)";
     repairOverlayContext.lineWidth=size;
     repairOverlayContext.lineCap="round";
     repairOverlayContext.lineJoin="round";
     repairOverlayContext.stroke();
     repairMaskContext.beginPath();
-    repairMaskContext.moveTo(from.x,from.y);
-    repairMaskContext.lineTo(to.x,to.y);
+    if(from.x===to.x && from.y===to.y){
+      repairMaskContext.arc(from.x,from.y,size/2,0,Math.PI*2);
+      repairMaskContext.fillStyle="#fff";
+      repairMaskContext.fill();
+    } else {
+      repairMaskContext.moveTo(from.x,from.y);
+      repairMaskContext.lineTo(to.x,to.y);
+    }
     repairMaskContext.strokeStyle="#fff";
     repairMaskContext.lineWidth=size;
     repairMaskContext.lineCap="round";
@@ -1316,6 +1339,7 @@
         repairMaskCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error("Could not encode the repair mask.")),"image/png");
       });
       const formData=addComputeData(new FormData(generationForm));
+      formData.delete("image");
       formData.set("prompt",repairText);
       formData.set("negative_prompt",$("#repairNegativePrompt")?.value.trim()||"");
       formData.set("strength",$("#repairStrength")?.value||"0.88");
