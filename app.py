@@ -48,6 +48,7 @@ from private_data_crypto import encryption_configured
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
 from prompt_compiler import build_structured_prompt
 from instruction_policy import build_instruction_guidance
+from scene_validation import evaluate_scene_integrity
 from generation_contracts import preserve_generation_text
 from geometry_analysis import analyze_geometry
 from face_profiles import (
@@ -3300,6 +3301,12 @@ def generate():
                     if profile:
                         quality_report["face_geometry"] = assess_face_geometry(saved_image)
                         quality_report["identity_similarity"] = _evaluate_profile_identity(profile["id"], saved_image)
+                    quality_report["scene_integrity"] = evaluate_scene_integrity(
+                        prompt=original_prompt,
+                        generated_image=saved_image,
+                        reference_image=init_image,
+                        has_trained_identity=bool(profile),
+                    )
             except Exception as quality_exc:
                 app.logger.warning("Cloud generated-image quality assessment unavailable: %s", quality_exc)
                 output_width, output_height = width, height
@@ -3479,6 +3486,12 @@ def generate():
                 if profile:
                     quality_report["face_geometry"] = assess_face_geometry(saved_image)
                     quality_report["identity_similarity"] = _evaluate_profile_identity(profile["id"], saved_image)
+                quality_report["scene_integrity"] = evaluate_scene_integrity(
+                    prompt=original_prompt,
+                    generated_image=saved_image,
+                    reference_image=init_image,
+                    has_trained_identity=bool(profile),
+                )
         except Exception as quality_exc:
             app.logger.warning("Generated-image quality assessment was unavailable: %s", quality_exc)
             output_width, output_height = result.size
