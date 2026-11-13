@@ -38,7 +38,7 @@
         <div class="compute-copy">
           <div class="eyebrow">Compute preference</div>
           <label class="switchline" for="useGpuAcceleration"><input id="useGpuAcceleration" type="checkbox" checked> Enable GPU acceleration</label>
-          <p class="tiny">Off always uses the local CPU (slower; progress is shown). On uses the selected backend: Auto prefers System GPU, then the configured remote GPU, then CPU if no GPU is available. Explicit GPU selections require that GPU to be reachable.</p>
+          <p class="tiny">Off always uses the local CPU. For image/video generation, Auto prefers the connected GHive GPU; if unavailable, images fall back to your local SD 1.5 files on CPU (video requires GHive). Other GPU-enabled workflows retain their selected backend behavior.</p>
         </div>
         <div class="compute-controls">
           <div class="pill" id="gpuModePill">LOCAL · CPU</div>
