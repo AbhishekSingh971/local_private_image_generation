@@ -236,6 +236,12 @@ def build_instruction_guidance(
             "plausible joints, complete hands and naturally formed fingers unless the user explicitly requests otherwise."
         )
 
+    guidance.append(
+        "For every other depicted object, keep a recognizable complete form, coherent parts, "
+        "plausible connections and physically consistent geometry; apply explicit removals or "
+        "transformations exactly as requested."
+    )
+
     object_guidance: list[str] = []
     for subject_pattern, structural_core, components in _OBJECT_RULES:
         if not subject_pattern.search(source) or _whole_object_removed(source, subject_pattern):
