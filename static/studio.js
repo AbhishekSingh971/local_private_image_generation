@@ -35,7 +35,9 @@
     return formData;
   }
   function backendLabel(key, options) {
-    if (key === "auto") return "Auto · use available GPU";
+    if (key === "auto") return (page === "image" || page === "video")
+      ? "Auto · GHive GPU → local CPU"
+      : "Auto · use available GPU";
     if (key === "local_gpu") {
       const gpu = options.local_gpu || {};
       return "System GPU" + (gpu.name ? " · " + gpu.name : "") + (gpu.vram_gb ? " · " + gpu.vram_gb + " GB VRAM" : "");
@@ -62,7 +64,12 @@
     } else if (selected === "cloud_gpu" || selected === "runpod") {
       gpuStatus.textContent = "GPU acceleration is ON. Generation will run on the connected remote GPU: " + (computeAvailability?.cloud_gpu?.name || "configured remote GPU") + ". Requests are sent securely from the app to your configured worker.";
     } else if (requested === "auto") {
-      gpuStatus.textContent = "GPU acceleration is ON, but no usable GPU is available. Auto mode is falling back to local CPU; image generation may be very slow. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
+      gpuStatus.textContent = (page === "image" || page === "video")
+        ? (page === "image"
+          ? "GHive GPU is unavailable. Image generation will use your existing local Stable Diffusion 1.5 files on CPU; generation may be slow. "
+          : "GHive GPU is unavailable. Video generation cannot run on CPU; start the GHive worker to generate videos. ")
+          + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.")
+        : "GPU acceleration is ON, but no usable GPU is available. Auto mode is falling back to local CPU; image generation may be very slow. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
     } else {
       gpuStatus.textContent = "CPU fallback selected explicitly. Generation will run on the local CPU, not a GPU.";
     }
@@ -77,13 +84,17 @@
     autoOption.value = "auto";
     autoOption.textContent = backendLabel("auto", options);
     computeBackend.appendChild(autoOption);
-    (options.available_backends || ["cpu"]).forEach(key => {
+    const generationPage = page === "image" || page === "video";
+    const availableBackends = generationPage
+      ? ["cpu", ...(options.cloud_gpu?.available ? ["cloud_gpu"] : [])]
+      : (options.available_backends || ["cpu"]);
+    availableBackends.forEach(key => {
       const option = document.createElement("option");
       option.value = key;
       option.textContent = backendLabel(key, options);
       computeBackend.appendChild(option);
     });
-    const choices = ["auto", ...(options.available_backends || ["cpu"])];
+    const choices = ["auto", ...availableBackends];
     computeBackend.value = choices.includes(previous) ? previous : "auto";
     applyComputeStatus();
   }
@@ -107,6 +118,15 @@
         headers: { "Accept": "application/json" }
       });
       const data = await readJson(response);
+      if (page === "image" || page === "video") {
+        // Generation always prefers GHive. The laptop's integrated/local CUDA
+        // device is intentionally not selected; image fallback is local CPU.
+        data.auto_backend = data.cloud_gpu?.available ? "cloud_gpu" : "cpu";
+        data.available_backends = [
+          "cpu",
+          ...(data.cloud_gpu?.available ? ["cloud_gpu"] : [])
+        ];
+      }
       renderComputeOptions(data);
     } catch (error) {
       const message = error.name === "AbortError"
