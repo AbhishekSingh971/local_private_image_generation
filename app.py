@@ -2923,6 +2923,30 @@ def api_restore_face_model_version(profile_id, version_id):
         return jsonify(error="Face-model version restore failed. The previous model was preserved when possible."), 500
 
 
+def _latest_training_feedback_payload(job_id: str | None) -> dict | None:
+    if not job_id:
+        return None
+    try:
+        from prompt_intelligence.feedback_store import list_feedback_for_source
+        rows = list_feedback_for_source(job_id, limit=1)
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "feedback_id": row.get("id"),
+            "evaluation": {
+                "reward": row.get("reward", 0.0),
+                "scores": row.get("scores") or {},
+                "sources": row.get("sources") or {},
+                "penalties": row.get("penalties") or [],
+                "needs_human_review": row.get("needs_human_review") or [],
+            },
+        }
+    except Exception:
+        app.logger.warning("Could not reload persisted training feedback for job %s", job_id, exc_info=True)
+        return None
+
+
 @app.get("/api/face-profiles/<profile_id>/train-status")
 def api_face_train_status(profile_id):
     try:
@@ -2936,7 +2960,9 @@ def api_face_train_status(profile_id):
     if backend == "local":
         job_id = profile.get("local_training_job_id")
         with LOCAL_TRAIN_JOBS_LOCK:
-            local_job = LOCAL_TRAIN_JOBS.get(job_id, {}) if job_id else {}
+            local_job = dict(LOCAL_TRAIN_JOBS.get(job_id, {}) if job_id else {})
+        if job_id and not local_job.get("feedback"):
+            local_job["feedback"] = _latest_training_feedback_payload(job_id)
         return jsonify(
             status=profile.get("local_training_state", "not_trained"),
             error=profile.get("local_training_error"),
@@ -2997,6 +3023,8 @@ def api_face_train_status(profile_id):
             runpod_training_error=(payload.get("error") or "Cloud GPU training failed")[-3500:],
             runpod_model_ready=False,
         )
+    if not payload.get("feedback"):
+        payload["feedback"] = _latest_training_feedback_payload(job_id)
     updated_profile = get_profile(profile_id)
     return jsonify(status=state, error=payload.get("error"), job=payload, profile=updated_profile)
 
