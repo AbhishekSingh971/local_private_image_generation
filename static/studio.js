@@ -1334,6 +1334,14 @@
         finally{feedbackButton.disabled=false;}
       });
       feedbackPanel.appendChild(feedbackForm);card.appendChild(feedbackPanel);assetGrid.appendChild(card);
+      fetch("/api/assets/"+asset.id+"/feedback").then(readJson).then(data=>{
+        const latest=(data.feedback||[])[0];
+        if(latest){
+          feedbackStatus.textContent="Latest reward: "+Number(latest.reward||0).toFixed(3)
+            +(latest.penalties?.length?" · Penalties: "+latest.penalties.join(" "):"")
+            +(latest.needs_human_review?.length?" · Needs review: "+latest.needs_human_review.join(", "):"");
+        }else feedbackStatus.textContent="No feedback recorded yet.";
+      }).catch(()=>{feedbackStatus.textContent="Automatic feedback is not available yet.";});
     });
   }
   function formatBytes(bytes) {
