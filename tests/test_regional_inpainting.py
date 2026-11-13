@@ -51,8 +51,10 @@ def test_prepare_inpaint_crop_adds_scene_context_and_bounds_resolution():
     source = Image.new("RGB", (1200, 900), "navy")
     mask = _paint_mask((1200, 900), (580, 430, 620, 470))
     work = prepare_inpaint_crop(source, mask, padding=128, max_edge=768)
-    left, top, right, bottom = work["bbox"]
-    assert left < 580 and top < 430 and right > 620 and bottom > 470
+    crop_left, crop_top, crop_right, crop_bottom = work["crop_box"]
+    mask_left, mask_top, mask_right, mask_bottom = work["mask_bbox"]
+    assert crop_left < mask_left and crop_top < mask_top
+    assert crop_right > mask_right and crop_bottom > mask_bottom
     assert max(work["work_size"]) <= 768
     assert min(work["work_size"]) >= 512
     assert work["work_source"].size == work["work_mask"].size
