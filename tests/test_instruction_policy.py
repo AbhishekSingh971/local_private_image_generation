@@ -97,3 +97,38 @@ def test_prompt_compiler_keeps_original_prompt_and_explicit_controls():
     assert result.startswith("A clock on a table")
     assert "Lighting: golden hour." in result
     assert "properly formed dial" in result
+
+
+def test_descriptive_reference_details_are_not_mistaken_for_edit_requests():
+    guidance = build_instruction_guidance(
+        "A woman wearing a red dress, standing in a room",
+        has_reference_image=True,
+    )
+    assert "original clothing" in guidance
+    assert "original body pose" in guidance
+    assert "original background" in guidance
+
+
+def test_change_background_does_not_release_outfit_preservation():
+    guidance = build_instruction_guidance(
+        "Change the background to a beach but keep the red dress",
+        has_reference_image=True,
+    )
+    assert "original background" not in guidance
+    assert "original clothing" in guidance
+
+
+def test_remove_hands_before_clock_does_not_remove_whole_clock():
+    guidance = build_instruction_guidance(
+        "Remove the hands from the clock",
+    )
+    assert "properly formed dial" in guidance
+    assert "correctly attached hour/minute hands" not in guidance
+
+
+def test_negated_change_is_not_treated_as_a_requested_change():
+    guidance = build_instruction_guidance(
+        "Do not change the clothing",
+        has_reference_image=True,
+    )
+    assert "original clothing" in guidance
