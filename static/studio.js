@@ -1310,7 +1310,7 @@
       actions.append(download,edit,remove);card.appendChild(actions);
       const feedbackPanel=document.createElement("section");feedbackPanel.className="feedback-panel";
       const feedbackHeading=document.createElement("strong");feedbackHeading.textContent="Reward / penalty feedback";feedbackPanel.appendChild(feedbackHeading);
-      const feedbackHelp=document.createElement("p");feedbackHelp.className="field-help";feedbackHelp.textContent="Rate this result from 1 (poor) to 5 (excellent). Feedback improves configuration ranking; it does not change model weights.";feedbackPanel.appendChild(feedbackHelp);
+      const feedbackHelp=document.createElement("p");feedbackHelp.className="field-help";feedbackHelp.textContent="Rate this result from 1 (poor) to 5 (excellent). Feedback is stored for future configuration comparisons; it does not change model weights or settings.";feedbackPanel.appendChild(feedbackHelp);
       const feedbackForm=document.createElement("form");feedbackForm.className="asset-feedback-form";
       const scoreFields=[["sample_quality","Visual quality"],["identity","Identity match"],["prompt_adherence","Prompt adherence"]];
       scoreFields.forEach(([key,labelText])=>{
