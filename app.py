@@ -3590,6 +3590,8 @@ def api_regional_inpaint(asset_id):
         negative_prompt = _clean_generation_text(request.form.get("negative_prompt"), "Negative repair instruction")
         if not prompt.strip():
             raise ValueError("Describe what should replace the painted area.")
+        if len(prompt) > 1200 or len(negative_prompt) > 1200:
+            raise ValueError("Repair and negative-repair instructions must be 1,200 characters or fewer.")
         seed = resolve_generation_seed(request.form.get("seed"))
         steps = int(request.form.get("steps", "24"))
         strength = float(request.form.get("strength", "0.88"))
