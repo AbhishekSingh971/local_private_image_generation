@@ -9,16 +9,34 @@ from __future__ import annotations
 import re
 
 
+_CHANGE_ACTION = re.compile(
+    r"\b(?:change|replace|alter|different|new|make|give|put|turn|move|reposition|"
+    r"add|remove|delete|erase|hide|crop|zoom|reframe|switch|set|adjust|rotate|"
+    r"transform|brighten|darken)\b",
+    re.I,
+)
+
 _CHANGE_PATTERNS = {
-    "identity": re.compile(r"\b(?:change|replace|alter|different|new)\s+(?:the\s+)?(?:person|identity|face|facial identity)\b|\bmake\s+(?:them|the person)\s+(?:look like|into)\b", re.I),
-    "expression": re.compile(r"\b(?:expression|smil(?:e|ing)|laugh(?:ing)?|frown(?:ing)?|angry|sad|surprised|serious|happy)\b", re.I),
-    "pose": re.compile(r"\b(?:pose|body position|posture|sitting|seated|standing|lying|kneeling|crouching|leaning|walking|running|jumping|turn(?:ed|ing)? around|raise(?:d|ing)? (?:an? )?(?:arm|hand|leg)|lower(?:ed|ing)? (?:an? )?(?:arm|hand|leg))\b", re.I),
-    "body_shape": re.compile(r"\b(?:body shape|body type|body proportions|build|muscular|athletic build|slim(?:mer)?|thicker|curvier|weight|height|broader shoulders|narrower waist)\b", re.I),
+    "identity": re.compile(r"\b(?:person|identity|face|facial identity)\b", re.I),
+    "expression": re.compile(r"\b(?:expression|smil(?:e|ing)|laugh(?:ing)?|frown(?:ing)?|angry|sad|surprised|serious|happy|happier)\b", re.I),
+    "pose": re.compile(r"\b(?:pose|body position|posture|sitting|seated|standing|lying|kneeling|crouching|leaning|walking|running|jumping|turn(?:ed|ing)? around|face left|face right|head turn|raise(?:d|ing)? (?:an? )?(?:arm|hand|leg)|lower(?:ed|ing)? (?:an? )?(?:arm|hand|leg))\b", re.I),
+    "body_shape": re.compile(r"\b(?:body shape|body type|body proportions|build|muscular|athletic build|slim(?:mer)?|thinner|thicker|curvier|weight|height|taller|shorter|heavier|broader shoulders|narrower waist)\b", re.I),
     "clothing": re.compile(r"\b(?:clothes|clothing|outfit|dress|shirt|jacket|coat|trousers|pants|jeans|skirt|shoes|boots|uniform|costume|wearing)\b", re.I),
     "background": re.compile(r"\b(?:background|backdrop|setting|environment|location|scenery|room|sky|landscape)\b", re.I),
-    "camera": re.compile(r"\b(?:camera|lens|close[ -]?up|wide shot|headshot|waist[ -]?up|full[ -]?body|framing|crop|zoom|viewpoint|perspective|angle of view)\b", re.I),
+    "camera": re.compile(r"\b(?:camera|lens|close[ -]?up|wide shot|headshot|waist[ -]?up|full[ -]?body|framing|crop|zoom|viewpoint|perspective|angle)\b", re.I),
     "lighting": re.compile(r"\b(?:lighting|light|shadows|brighten|darken|exposure|golden hour|neon)\b", re.I),
 }
+
+
+def _requests_attribute_change(prompt: str, attribute_pattern: re.Pattern[str]) -> bool:
+    """Require a nearby edit/action verb; merely describing an existing detail is not an edit."""
+    for match in attribute_pattern.finditer(prompt):
+        prefix = prompt[max(0, match.start() - 100):match.start()]
+        # Do not let an action in a previous sentence/list item affect this attribute.
+        clause = re.split(r"[,.;!?]\s*", prefix)[-1]
+        if _CHANGE_ACTION.search(clause):
+            return True
+    return False
 
 # Each object has a non-removable structural core plus individually removable
 # components. This avoids asking the model to restore a part the user removed.
@@ -139,7 +157,7 @@ def build_instruction_guidance(
 
     changed = {
         name for name, pattern in _CHANGE_PATTERNS.items()
-        if pattern.search(source)
+        if _requests_attribute_change(source, pattern)
     }
     guidance: list[str] = []
 
