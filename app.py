@@ -2947,6 +2947,49 @@ def _latest_training_feedback_payload(job_id: str | None) -> dict | None:
         return None
 
 
+@app.post("/api/face-profiles/<profile_id>/train-feedback")
+def api_face_training_feedback(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile not found."), 404
+    payload = request.get_json(silent=True) or {}
+    backend = str(payload.get("backend") or "local").strip().lower()
+    if backend in {"cloud_gpu", "runpod"}:
+        backend_key = "runpod"
+        state = profile.get("runpod_training_state")
+        job_id = profile.get("runpod_training_job_id")
+    elif backend == "local":
+        backend_key = "local"
+        state = profile.get("local_training_state")
+        job_id = profile.get("local_training_job_id")
+    else:
+        return jsonify(error="Backend must be local or cloud_gpu."), 400
+    if state != "completed" or not job_id:
+        return jsonify(error="Human training ratings are available only after a completed LoRA training run."), 409
+    scores = payload.get("scores")
+    if not isinstance(scores, dict) or not scores:
+        return jsonify(error="Provide identity and/or sample_quality ratings from 1 to 5."), 400
+    try:
+        result = record_training_run_feedback(
+            profile_id=profile_id, job_id=job_id, status="completed",
+            configuration_id=f"lora:sd15:{backend_key}:human_review",
+            context={"task": "face_training", "model_family": "sd15",
+                     "backend_class": "cloud_gpu" if backend_key == "runpod" else "local_gpu",
+                     "control_mode": "lora"},
+            human_scores=scores,
+        )
+        return jsonify(status="recorded", feedback=result), 201
+    except (TypeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not save human LoRA training feedback")
+        return jsonify(error="Could not save training feedback. Check the database connection."), 503
+
+
 @app.get("/api/face-profiles/<profile_id>/train-status")
 def api_face_train_status(profile_id):
     try:
