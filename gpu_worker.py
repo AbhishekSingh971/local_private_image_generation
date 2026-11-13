@@ -452,7 +452,15 @@ def remote_generate_async():
     with REMOTE_GENERATION_JOBS_LOCK:
         existing = REMOTE_GENERATION_JOBS.get(task_id)
         if existing:
+            if existing.get("job_type") not in {None, "regional_inpaint"}:
+                return jsonify(error="Task ID is already assigned to a different GPU job."), 409
             return jsonify(job_id=task_id, status=existing.get("status", "queued")), 202
+        active_jobs = sum(
+            job.get("status") in {"queued", "running"}
+            for job in REMOTE_GENERATION_JOBS.values()
+        )
+        if active_jobs >= 8:
+            return jsonify(error="The cloud GPU queue is full. Wait for an existing GPU job to finish."), 429
         if len(REMOTE_GENERATION_JOBS) >= 40:
             completed = [
                 key for key, value in REMOTE_GENERATION_JOBS.items()
