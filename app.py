@@ -3724,6 +3724,10 @@ def api_regional_inpaint(asset_id):
                 app.logger.warning("Cloud inpaint worker returned invalid optional metadata; using app-side request metadata.")
         else:
             if not torch.cuda.is_available():
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="failed", progress=0,
+                    total_steps=steps, stage="failed", message="System CUDA became unavailable before inpainting.",
+                )
                 return jsonify(error="System GPU was selected but CUDA is unavailable to this Python environment."), 400
             _release_cached_generation_pipelines_for_inpainting()
             try:
@@ -3742,6 +3746,10 @@ def api_regional_inpaint(asset_id):
                 inpaint_metadata.update(run_metadata)
             except Exception as exc:
                 app.logger.exception("Regional inpainting failed; original source asset remains unchanged")
+                _set_generation_progress(
+                    task_id, asset_type="image", backend=backend, status="failed", progress=0,
+                    total_steps=steps, stage="failed", message="Local regional inpainting failed.",
+                )
                 return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
 
         _set_generation_progress(
