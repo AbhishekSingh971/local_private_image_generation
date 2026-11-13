@@ -1145,6 +1145,33 @@
   });
   updateImageModelControls();
 
+  function renderSceneValidation(report) {
+    const target=$("#sceneValidationSummary");
+    if(!target)return;
+    if(!report){
+      target.textContent="Visual scene review was not returned. Check the saved generation metadata.";
+      return;
+    }
+    if(report.status==="not_configured"){
+      target.textContent="Local visual scene review is not configured. Technical checks do not verify object completeness or whether the requested edits were applied.";
+      return;
+    }
+    if(report.status==="unavailable"){
+      target.textContent="Local visual scene review was unavailable: "+(report.reason||"check the local vision service.");
+      return;
+    }
+    if(report.status==="passed"){
+      target.textContent="Local visual review found no obvious scene or instruction mismatch (advisory only; not a guarantee).";
+      return;
+    }
+    const issues=[...(report.issues||[]),...(report.unintended_changes||[])].slice(0,6);
+    let summary="Visual review recommends checking this image.";
+    if(issues.length)summary+=" Possible issues: "+issues.join(" · ");
+    if(report.targeted_retry_hint)summary+=" Suggested targeted correction (not automatically applied): "+report.targeted_retry_hint;
+    else if(report.recommendation==="manual_review")summary+=" Please inspect the result manually.";
+    target.textContent=summary;
+  }
+
   generationForm?.addEventListener("submit",async event=>{
     event.preventDefault();
     const button=$("#generateButton");const status=$("#generationStatus");
@@ -1161,6 +1188,7 @@
     try{
       const data=await readJson(await fetch("/generate",{method:"POST",body:formData}));
       preview.src=data.image_url;preview.hidden=false;placeholder.hidden=true;
+      renderSceneValidation(data.quality_report?.scene_integrity);
       download.href=data.image_url+"?download=1";download.hidden=false;
       pill.textContent="Saved to library";
       setFinalGenerationProgress("image",true,data.message||"Image generated and saved to the library.");
