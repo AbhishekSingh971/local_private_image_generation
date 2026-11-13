@@ -501,7 +501,12 @@ def remote_generation_job_result(job_id):
             return jsonify(error="Generation result is not ready."), 409
         result = job["result"]
         content_type = job.get("content_type") or "image/png"
-    return send_file(io.BytesIO(result), mimetype=content_type, download_name="generated.png")
+        result_headers = dict(job.get("result_headers") or {})
+    response = send_file(io.BytesIO(result), mimetype=content_type, download_name="generated.png")
+    for header, value in result_headers.items():
+        if header == "X-Inpaint-Metadata":
+            response.headers[header] = value
+    return response
 
 
 
@@ -619,6 +624,94 @@ def remote_regional_inpaint():
         return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
     finally:
         local_engine.generation_lock.release()
+
+
+
+
+def _run_async_remote_regional_inpaint(job_id, form_data, file_data):
+    """Run regional inpainting off-request so Cloudflare never waits for GPU inference."""
+    with REMOTE_GENERATION_JOBS_LOCK:
+        job = REMOTE_GENERATION_JOBS.get(job_id)
+        if not job:
+            return
+        job["status"] = "queued"
+    try:
+        while local_engine.generation_lock.locked():
+            time.sleep(0.5)
+        payload = dict(form_data)
+        for field, (filename, content, content_type) in file_data.items():
+            payload[field] = (io.BytesIO(content), filename, content_type)
+        with worker.test_request_context(
+            "/api/remote/regional-inpaint", method="POST", data=payload
+        ):
+            response = worker.make_response(remote_regional_inpaint())
+            response.direct_passthrough = False
+            status_code = response.status_code
+            body = response.get_data()
+            content_type = response.mimetype
+            metadata_header = response.headers.get("X-Inpaint-Metadata", "")
+        if status_code < 200 or status_code >= 300:
+            try:
+                error_payload = json.loads(body.decode("utf-8", errors="replace"))
+                error = error_payload.get("error") or body[:2000].decode("utf-8", errors="replace")
+            except (ValueError, AttributeError):
+                error = body[:2000].decode("utf-8", errors="replace")
+            with REMOTE_GENERATION_JOBS_LOCK:
+                job = REMOTE_GENERATION_JOBS.get(job_id, {})
+                job.update(status="failed", error=str(error)[:2500], finished_at=time.time())
+            return
+        with REMOTE_GENERATION_JOBS_LOCK:
+            job = REMOTE_GENERATION_JOBS.get(job_id, {})
+            job.update(
+                status="completed",
+                result=body,
+                content_type=content_type,
+                result_headers={"X-Inpaint-Metadata": metadata_header} if metadata_header else {},
+                finished_at=time.time(),
+            )
+    except Exception as exc:
+        worker.logger.exception("Queued remote regional inpainting failed")
+        with REMOTE_GENERATION_JOBS_LOCK:
+            job = REMOTE_GENERATION_JOBS.get(job_id, {})
+            job.update(status="failed", error=str(exc)[:2500], finished_at=time.time())
+
+
+@worker.post("/api/remote/regional-inpaint-async")
+def remote_regional_inpaint_async():
+    if not torch.cuda.is_available():
+        return jsonify(error="This cloud GPU worker has no CUDA GPU attached."), 503
+    task_id = (request.form.get("task_id") or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+        return jsonify(error="Invalid regional repair task ID."), 400
+    with REMOTE_GENERATION_JOBS_LOCK:
+        existing = REMOTE_GENERATION_JOBS.get(task_id)
+        if existing:
+            return jsonify(job_id=task_id, status=existing.get("status", "queued")), 202
+        if len(REMOTE_GENERATION_JOBS) >= 40:
+            completed = [
+                key for key, value in REMOTE_GENERATION_JOBS.items()
+                if value.get("status") in {"completed", "failed", "cancelled"}
+            ]
+            for key in completed[:20]:
+                REMOTE_GENERATION_JOBS.pop(key, None)
+        form_data = request.form.to_dict(flat=True)
+        file_data = {}
+        for field, uploaded in request.files.items():
+            file_data[field] = (
+                Path(uploaded.filename or "upload.bin").name,
+                uploaded.stream.read(),
+                uploaded.mimetype or "application/octet-stream",
+            )
+        REMOTE_GENERATION_JOBS[task_id] = {
+            "job_id": task_id,
+            "task_id": task_id,
+            "job_type": "regional_inpaint",
+            "status": "queued",
+            "created_at": time.time(),
+            "error": None,
+        }
+    REMOTE_GENERATION_POOL.submit(_run_async_remote_regional_inpaint, task_id, form_data, file_data)
+    return jsonify(job_id=task_id, status="queued"), 202
 
 
 @worker.post("/api/remote/generate")
