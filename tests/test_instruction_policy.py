@@ -156,3 +156,9 @@ def test_digital_clock_gets_display_not_analog_hands():
     guidance = build_instruction_guidance("A digital clock on a bedside table")
     assert "digital time display" in guidance
     assert "hour/minute hands" not in guidance
+
+
+def test_unlisted_objects_receive_general_integrity_guidance():
+    guidance = build_instruction_guidance("A brass desk lamp beside a notebook")
+    assert "recognizable complete form" in guidance
+    assert "physically consistent geometry" in guidance
