@@ -31,6 +31,7 @@ from image_upscaling import resolve_upscale_options, upscale_image
 from face_restoration import resolve_face_restoration_options, restore_faces
 from generation_contracts import preserve_generation_text
 from model_artifacts import safe_extract_lora_bundle, sha256_bytes
+from regional_inpainting import run_sd15_regional_inpainting
 import shutil
 import tempfile
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
@@ -500,6 +501,79 @@ def remote_generation_job_result(job_id):
         result = job["result"]
         content_type = job.get("content_type") or "image/png"
     return send_file(io.BytesIO(result), mimetype=content_type, download_name="generated.png")
+
+
+
+
+@worker.post("/api/remote/regional-inpaint")
+def remote_regional_inpaint():
+    if not torch.cuda.is_available():
+        return jsonify(error="This cloud GPU worker has no CUDA GPU attached."), 503
+    try:
+        prompt = local_engine._clean_generation_text(request.form.get("prompt"), "Repair instruction")
+        negative_prompt = local_engine._clean_generation_text(
+            request.form.get("negative_prompt"), "Negative repair instruction"
+        )
+        steps = int(request.form.get("steps", "24"))
+        strength = float(request.form.get("strength", "0.88"))
+        seed = resolve_generation_seed(request.form.get("seed"))
+        profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
+        if not prompt.strip():
+            raise ValueError("Describe what should replace the painted region.")
+        if not 8 <= steps <= 40:
+            raise ValueError("Regional repair steps must be between 8 and 40.")
+        if not 0.55 <= strength <= 1.0:
+            raise ValueError("Regional repair strength must be between 0.55 and 1.00.")
+    except (ValueError, TypeError, KeyError) as exc:
+        return jsonify(error=str(exc) or "Invalid regional repair settings."), 400
+
+    source_file = request.files.get("source_image")
+    mask_file = request.files.get("mask_image")
+    if not source_file or not mask_file:
+        return jsonify(error="Both source_image and mask_image are required."), 400
+    try:
+        source_bytes = source_file.stream.read(64 * 1024 * 1024 + 1)
+        mask_bytes = mask_file.stream.read(8 * 1024 * 1024 + 1)
+        if len(source_bytes) > 64 * 1024 * 1024:
+            raise ValueError("Source image must be 64 MB or smaller.")
+        if len(mask_bytes) > 8 * 1024 * 1024:
+            raise ValueError("Repair mask must be 8 MB or smaller.")
+        with Image.open(io.BytesIO(source_bytes)) as opened_source:
+            source_image = ImageOps.exif_transpose(opened_source).convert("RGB")
+            source_image.load()
+        with Image.open(io.BytesIO(mask_bytes)) as opened_mask:
+            mask_image = ImageOps.exif_transpose(opened_mask).convert("L")
+            mask_image.load()
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        return jsonify(error=str(exc) or "Source image or repair mask is invalid."), 400
+
+    profile = get_profile(profile_id) if profile_id else None
+    if profile_id and (not profile or not profile.get("local_model_ready")):
+        return jsonify(error="The selected face LoRA is not trained on this GPU worker. Repair stopped to avoid silently dropping identity conditioning."), 409
+    if not local_engine.generation_lock.acquire(blocking=False):
+        return jsonify(error="Another GPU generation is running on this worker. Try the regional repair again when it finishes."), 429
+    try:
+        local_engine._release_cached_generation_pipelines_for_inpainting()
+        result, _metadata = run_sd15_regional_inpainting(
+            source_image,
+            mask_image,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            identity_lora_path=model_path(profile_id) if profile_id else None,
+            seed=seed,
+            steps=steps,
+            strength=strength,
+            device="cuda",
+        )
+        output = io.BytesIO()
+        result.save(output, format="PNG", optimize=True)
+        output.seek(0)
+        return send_file(output, mimetype="image/png", download_name="regional-repair.png")
+    except Exception as exc:
+        worker.logger.exception("Remote regional inpainting failed; original source remains unchanged")
+        return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
+    finally:
+        local_engine.generation_lock.release()
 
 
 @worker.post("/api/remote/generate")
