@@ -1386,7 +1386,7 @@
     }finally{
       repairProgressController.abort();
       await repairProgressWatcher;
-      repairSubmitButton.disabled=false;
+      updateRegionalRepairComputeAvailability();
       repairSubmitButton.textContent="Repair selected area";
     }
   });
