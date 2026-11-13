@@ -7,9 +7,9 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 from .reward import PreferenceBandit
 
-DIMENSIONS = ("identity", "angle", "expression", "body_proportions", "image_quality", "prompt_adherence")
+DIMENSIONS = ("identity", "angle", "expression", "body_proportions", "image_quality", "prompt_adherence", "training_stability", "loss_trend", "sample_quality")
 DEFAULT_WEIGHTS = {"identity": 2.0, "angle": 1.5, "expression": 1.5,
-                   "body_proportions": 1.5, "image_quality": 1.0, "prompt_adherence": 1.5}
+                   "body_proportions": 1.5, "image_quality": 1.0, "prompt_adherence": 1.5,\n                   "training_stability": 1.5, "loss_trend": 1.0, "sample_quality": 2.0}
 
 @dataclass(frozen=True)
 class EvaluationReport:
