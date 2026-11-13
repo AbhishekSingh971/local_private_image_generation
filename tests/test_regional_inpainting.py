@@ -98,8 +98,8 @@ def test_merge_rejects_bad_crop_box_by_pillow_validation():
     source = Image.new("RGB", (256, 256), "gray")
     mask = Image.new("L", (100, 100), 255)
     generated = Image.new("RGB", (100, 100), "red")
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         merge_inpainted_crop(
             source, generated, crop_box=(0, 0, 100, 100),
-            crop_mask=mask, grow_px=8, blur_px=2,
+            crop_mask=Image.new("L", (64, 64), 255), grow_px=8, blur_px=2,
         )
