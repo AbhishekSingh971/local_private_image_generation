@@ -923,6 +923,37 @@
   });
 
   const trainForm=$("#trainForm");
+  function renderTrainingFeedback(profileId, backend, statusNode) {
+    if(!statusNode?.parentElement)return;
+    statusNode.parentElement.querySelector(".training-feedback-panel")?.remove();
+    const panel=document.createElement("section");panel.className="training-feedback-panel panel";
+    const heading=document.createElement("strong");heading.textContent="Review the trained LoRA";
+    const help=document.createElement("p");help.className="field-help";help.textContent="Generate a test image using this profile, then rate likeness and overall sample quality. Training loss alone cannot prove identity fidelity.";
+    const form=document.createElement("form");form.className="asset-feedback-form";
+    const fields=[["identity","Identity likeness"],["sample_quality","Generated sample quality"]];
+    fields.forEach(([key,labelText])=>{
+      const label=document.createElement("label");label.textContent=labelText;
+      const select=document.createElement("select");select.name=key;select.setAttribute("aria-label",labelText);
+      for(let score=1;score<=5;score++){const option=document.createElement("option");option.value=String(score);option.textContent=score+" / 5";if(score===3)option.selected=true;select.appendChild(option);}
+      label.appendChild(select);form.appendChild(label);
+    });
+    const button=document.createElement("button");button.type="submit";button.className="secondary-button";button.textContent="Save training review";
+    const result=document.createElement("p");result.className="field-help";result.setAttribute("role","status");
+    form.append(button,result);
+    form.addEventListener("submit",async event=>{
+      event.preventDefault();button.disabled=true;result.textContent="Saving training review…";
+      try{
+        const scores={};fields.forEach(([key])=>{scores[key]=Number(form.elements[key].value);});
+        const data=await readJson(await fetch("/api/face-profiles/"+profileId+"/train-feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({backend,scores})}));
+        const report=data.feedback?.evaluation||{};
+        result.textContent="Human review saved · reward: "+Number(report.reward||0).toFixed(3)
+          +(report.penalties?.length?" · "+report.penalties.join(" "):"");
+      }catch(error){result.textContent="Could not save review: "+error.message;}
+      finally{button.disabled=false;}
+    });
+    panel.append(heading,help,form);statusNode.insertAdjacentElement("afterend",panel);
+  }
+
   async function pollTraining(profileId, backend) {
     const started=Date.now();let previous="";
     while(Date.now()-started<8*60*60*1000){
@@ -938,7 +969,7 @@
         const feedbackText=report?"\nReward: "+Number(report.reward||0).toFixed(3)
           +(report.penalties?.length?"\nPenalties: "+report.penalties.join(" "):"")
           +(report.needs_human_review?.length?"\nHuman review required: "+report.needs_human_review.join(", "):""):"";
-        if(state==="completed"){if(status)status.textContent="Training completed successfully."+feedbackText;await refreshProfiles();return;}
+        if(state==="completed"){if(status){status.textContent="Training completed successfully."+feedbackText;renderTrainingFeedback(profileId,backend,status);}await refreshProfiles();return;}
         if(state==="failed"){if(status)status.textContent="Training failed.\n"+(data.error||data.profile?.local_training_error||data.profile?.runpod_training_error||"No error details returned.")+feedbackText;await refreshProfiles();return;}
       }catch(error){const status=$("#trainStatus");if(status)status.textContent="Training may still be running; status polling had an issue: "+error.message;}
     }
@@ -946,7 +977,7 @@
   }
   trainForm?.addEventListener("submit",async event=>{
     event.preventDefault();const id=$("#trainProfile")?.value;
-    const status=$("#trainStatus");const button=$("#trainButton");
+    const status=$("#trainStatus");const button=$("#trainButton");status?.parentElement?.querySelector(".training-feedback-panel")?.remove();
     const profile=profiles.find(item=>item.id===id);
     if(!id){if(status)status.textContent="Create or select a face profile first.";return;}
     if(!profile||profile.image_count<5){if(status)status.textContent="Add at least 5 good photos to this profile before training.";return;}
