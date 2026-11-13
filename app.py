@@ -74,6 +74,8 @@ from pose_validation import assess_face_geometry, build_pose_control_image, esti
 from training_generation import targets_for_dataset_type
 from image_quality import assess_image_quality
 from safe_diagnostics import format_exception_detail
+from prompt_intelligence.feedback_service import record_generation_feedback
+from prompt_intelligence.training_feedback import record_training_run_feedback
 
 from studio_db import (
     count_assets,
@@ -607,7 +609,7 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
     folder = OUTPUT_DIR if asset_type == "image" else VIDEO_OUTPUT_DIR
     path = folder / Path(filename).name
     try:
-        return create_asset(
+        asset = create_asset(
             asset_type=asset_type,
             title=title or prompt[:100] or ("Generated image" if asset_type == "image" else "Generated video"),
             filename=path.name,
@@ -624,6 +626,21 @@ def _persist_generated_asset(asset_type, filename, *, title, prompt, negative_pr
             generation_mode=generation_mode,
             generation_metadata=generation_metadata or {},
         )
+        metadata = generation_metadata if isinstance(generation_metadata, dict) else {}
+        quality = metadata.get("quality") if isinstance(metadata.get("quality"), dict) else {}
+        try:
+            record_generation_feedback(
+                asset_id=asset["id"], profile_id=profile["id"] if profile else None,
+                source_id=asset["id"], source_type="asset", task=asset_type,
+                configuration_id=f"{model_family}:{backend}:{generation_mode}",
+                context={"task": asset_type, "model_family": model_family,
+                         "backend_class": backend, "control_mode": generation_mode},
+                technical_quality=quality,
+            )
+        except Exception:
+            # Feedback is advisory; it must never turn a successfully saved generation into a failed job.
+            app.logger.warning("Automatic generation reward evaluation was unavailable for asset %s", asset.get("id"), exc_info=True)
+        return asset
     except Exception as exc:
         app.logger.exception("Could not persist generated media to the database")
         raise RuntimeError(
@@ -776,6 +793,27 @@ def _approved_profile_training_paths(profile_id: str) -> list[Path]:
     return [path for path in dataset_images(profile_id) if path.name in approved_names]
 
 
+def _record_training_feedback_safe(profile_id: str, job_id: str, status: str, logs: str, steps: int, resolution: int) -> dict | None:
+    """Persist conservative training diagnostics; never gate artifact saving on feedback availability."""
+    losses = []
+    for match in re.finditer(r"step\s+\d+\s*/\s*\d+\s*,\s*loss=([0-9.eE+-]+)", logs or "", re.IGNORECASE):
+        try:
+            losses.append(float(match.group(1)))
+        except ValueError:
+            continue
+    try:
+        return record_training_run_feedback(
+            profile_id=profile_id, job_id=job_id, status=status,
+            configuration_id=f"lora:sd15:steps{steps}:res{resolution}",
+            context={"task": "face_training", "model_family": "sd15",
+                     "backend_class": "local_gpu", "control_mode": "lora"},
+            losses=losses,
+        )
+    except Exception:
+        app.logger.warning("Training reward/penalty evaluation was unavailable for job %s", job_id, exc_info=True)
+        return None
+
+
 def _run_local_training(
     profile_id: str, steps: int, resolution: int, job_id: str, approved_filenames: list[str]
 ) -> None:
@@ -805,24 +843,27 @@ def _run_local_training(
                 profile_id, local_training_state="failed",
                 local_training_error=error, local_model_ready=False,
             )
+            feedback = _record_training_feedback_safe(profile_id, job_id, "failed", logs, steps, resolution)
             with LOCAL_TRAIN_JOBS_LOCK:
-                LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
+                LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error, "feedback": feedback}
             return
         _persist_face_model_bundle(profile_id, "local")
         update_profile(
             profile_id, local_training_state="completed",
             local_training_error=None, local_model_ready=True,
         )
+        feedback = _record_training_feedback_safe(profile_id, job_id, "completed", logs, steps, resolution)
         with LOCAL_TRAIN_JOBS_LOCK:
-            LOCAL_TRAIN_JOBS[job_id] = {"status": "completed", "message": "Face LoRA trained locally."}
+            LOCAL_TRAIN_JOBS[job_id] = {"status": "completed", "message": "Face LoRA trained locally.", "feedback": feedback}
     except Exception as exc:
         error = str(exc)
         update_profile(
             profile_id, local_training_state="failed",
             local_training_error=error, local_model_ready=False,
         )
+        feedback = _record_training_feedback_safe(profile_id, job_id, "failed", error, steps, resolution)
         with LOCAL_TRAIN_JOBS_LOCK:
-            LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
+            LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error, "feedback": feedback}
 
 
 def _request_is_same_origin() -> bool:
@@ -1028,6 +1069,46 @@ def api_list_assets():
     except Exception:
         app.logger.exception("Could not list media from the database")
         return jsonify(error="Could not read the media library. Check DATABASE_URL and database connectivity."), 503
+
+
+@app.route("/api/assets/<asset_id>/feedback", methods=["GET", "POST"])
+def api_asset_feedback(asset_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", asset_id or ""):
+        return jsonify(error="Invalid media ID."), 400
+    try:
+        asset = get_asset(asset_id)
+        if not asset:
+            return jsonify(error="Saved media not found."), 404
+        from prompt_intelligence.feedback_store import list_feedback_for_source
+        if request.method == "GET":
+            return jsonify(feedback=list_feedback_for_source(asset_id, limit=30))
+        payload = request.get_json(silent=True) or {}
+        scores = payload.get("scores")
+        if not isinstance(scores, dict) or not scores:
+            return jsonify(error="Provide at least one human score in the scores object."), 400
+        metadata = asset.get("generation_metadata") or {}
+        context = {
+            "task": asset.get("asset_type") or "image",
+            "model_family": asset.get("model_family") or "sd15",
+            "backend_class": asset.get("backend") or "any",
+            "control_mode": asset.get("generation_mode") or "default",
+        }
+        result = record_generation_feedback(
+            asset_id=asset_id, profile_id=asset.get("profile_id"),
+            source_id=asset_id, source_type="asset",
+            task=asset.get("asset_type") or "image",
+            configuration_id=":".join(str(context[key]) for key in ("model_family", "backend_class", "control_mode")),
+            context=context, human_scores=scores,
+            pose_status=payload.get("pose_status"),
+            technical_quality=(metadata.get("quality") if isinstance(metadata.get("quality"), dict) else None),
+            requested_dimensions=payload.get("requested_dimensions"),
+        )
+        return jsonify(status="recorded", feedback=result), 201
+    except (TypeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not save media reward/penalty feedback")
+        return jsonify(error="Could not save feedback. Check the database connection."), 503
 
 
 @app.get("/assets/<asset_id>/content")
@@ -2842,6 +2923,73 @@ def api_restore_face_model_version(profile_id, version_id):
         return jsonify(error="Face-model version restore failed. The previous model was preserved when possible."), 500
 
 
+def _latest_training_feedback_payload(job_id: str | None) -> dict | None:
+    if not job_id:
+        return None
+    try:
+        from prompt_intelligence.feedback_store import list_feedback_for_source
+        rows = list_feedback_for_source(job_id, limit=1)
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "feedback_id": row.get("id"),
+            "evaluation": {
+                "reward": row.get("reward", 0.0),
+                "scores": row.get("scores") or {},
+                "sources": row.get("sources") or {},
+                "penalties": row.get("penalties") or [],
+                "needs_human_review": row.get("needs_human_review") or [],
+            },
+        }
+    except Exception:
+        app.logger.warning("Could not reload persisted training feedback for job %s", job_id, exc_info=True)
+        return None
+
+
+@app.post("/api/face-profiles/<profile_id>/train-feedback")
+def api_face_training_feedback(profile_id):
+    try:
+        profile_id = validate_profile_id(profile_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    profile = get_profile(profile_id)
+    if not profile:
+        return jsonify(error="Face profile not found."), 404
+    payload = request.get_json(silent=True) or {}
+    backend = str(payload.get("backend") or "local").strip().lower()
+    if backend in {"cloud_gpu", "runpod"}:
+        backend_key = "runpod"
+        state = profile.get("runpod_training_state")
+        job_id = profile.get("runpod_training_job_id")
+    elif backend == "local":
+        backend_key = "local"
+        state = profile.get("local_training_state")
+        job_id = profile.get("local_training_job_id")
+    else:
+        return jsonify(error="Backend must be local or cloud_gpu."), 400
+    if state != "completed" or not job_id:
+        return jsonify(error="Human training ratings are available only after a completed LoRA training run."), 409
+    scores = payload.get("scores")
+    if not isinstance(scores, dict) or not scores:
+        return jsonify(error="Provide identity and/or sample_quality ratings from 1 to 5."), 400
+    try:
+        result = record_training_run_feedback(
+            profile_id=profile_id, job_id=job_id, status="completed",
+            configuration_id=f"lora:sd15:{backend_key}:human_review",
+            context={"task": "face_training", "model_family": "sd15",
+                     "backend_class": "cloud_gpu" if backend_key == "runpod" else "local_gpu",
+                     "control_mode": "lora"},
+            human_scores=scores,
+        )
+        return jsonify(status="recorded", feedback=result), 201
+    except (TypeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        app.logger.exception("Could not save human LoRA training feedback")
+        return jsonify(error="Could not save training feedback. Check the database connection."), 503
+
+
 @app.get("/api/face-profiles/<profile_id>/train-status")
 def api_face_train_status(profile_id):
     try:
@@ -2855,7 +3003,9 @@ def api_face_train_status(profile_id):
     if backend == "local":
         job_id = profile.get("local_training_job_id")
         with LOCAL_TRAIN_JOBS_LOCK:
-            local_job = LOCAL_TRAIN_JOBS.get(job_id, {}) if job_id else {}
+            local_job = dict(LOCAL_TRAIN_JOBS.get(job_id, {}) if job_id else {})
+        if job_id and not local_job.get("feedback"):
+            local_job["feedback"] = _latest_training_feedback_payload(job_id)
         return jsonify(
             status=profile.get("local_training_state", "not_trained"),
             error=profile.get("local_training_error"),
@@ -2875,25 +3025,49 @@ def api_face_train_status(profile_id):
         return jsonify(error=str(exc), status="running", profile=profile), 502
     state = payload.get("status", "running")
     if state == "completed":
-        if database_url_configured() and profile.get("runpod_training_state") != "completed":
+        if profile.get("runpod_training_state") != "completed":
+            if database_url_configured():
+                try:
+                    model_response = cloud_worker_request(
+                        "GET", f"/api/remote/models/{profile_id}", timeout=(15, 120)
+                    )
+                    file_count = int(model_response.headers.get("X-Model-File-Count", "1"))
+                    _persist_face_model_bundle(profile_id, "runpod", model_response.content, file_count)
+                except Exception as exc:
+                    app.logger.warning("Could not back up cloud GPU LoRA bundle to PostgreSQL: %s", type(exc).__name__)
             try:
-                model_response = cloud_worker_request(
-                    "GET", f"/api/remote/models/{profile_id}", timeout=(15, 120)
+                payload["feedback"] = record_training_run_feedback(
+                    profile_id=profile_id, job_id=job_id, status="completed",
+                    configuration_id="lora:sd15:cloud_gpu",
+                    context={"task": "face_training", "model_family": "sd15",
+                             "backend_class": "cloud_gpu", "control_mode": "lora"},
+                    losses=payload.get("losses") if isinstance(payload.get("losses"), list) else [],
                 )
-                file_count = int(model_response.headers.get("X-Model-File-Count", "1"))
-                _persist_face_model_bundle(profile_id, "runpod", model_response.content, file_count)
-            except Exception as exc:
-                app.logger.warning("Could not back up cloud GPU LoRA bundle to PostgreSQL: %s", type(exc).__name__)
+            except Exception:
+                app.logger.warning("Cloud training reward evaluation was unavailable for job %s", job_id, exc_info=True)
         update_profile(
             profile_id, runpod_training_state="completed", runpod_training_error=None,
             runpod_model_ready=True,
         )
     elif state == "failed":
+        if profile.get("runpod_training_state") != "failed":
+            try:
+                payload["feedback"] = record_training_run_feedback(
+                    profile_id=profile_id, job_id=job_id, status="failed",
+                    configuration_id="lora:sd15:cloud_gpu",
+                    context={"task": "face_training", "model_family": "sd15",
+                             "backend_class": "cloud_gpu", "control_mode": "lora"},
+                    losses=payload.get("losses") if isinstance(payload.get("losses"), list) else [],
+                )
+            except Exception:
+                app.logger.warning("Cloud training penalty evaluation was unavailable for job %s", job_id, exc_info=True)
         update_profile(
             profile_id, runpod_training_state="failed",
             runpod_training_error=(payload.get("error") or "Cloud GPU training failed")[-3500:],
             runpod_model_ready=False,
         )
+    if not payload.get("feedback"):
+        payload["feedback"] = _latest_training_feedback_payload(job_id)
     updated_profile = get_profile(profile_id)
     return jsonify(status=state, error=payload.get("error"), job=payload, profile=updated_profile)
 

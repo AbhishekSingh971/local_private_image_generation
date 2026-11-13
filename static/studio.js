@@ -923,6 +923,37 @@
   });
 
   const trainForm=$("#trainForm");
+  function renderTrainingFeedback(profileId, backend, statusNode) {
+    if(!statusNode?.parentElement)return;
+    statusNode.parentElement.querySelector(".training-feedback-panel")?.remove();
+    const panel=document.createElement("section");panel.className="training-feedback-panel panel";
+    const heading=document.createElement("strong");heading.textContent="Review the trained LoRA";
+    const help=document.createElement("p");help.className="field-help";help.textContent="Generate a test image using this profile, then rate likeness and overall sample quality. Training loss alone cannot prove identity fidelity.";
+    const form=document.createElement("form");form.className="asset-feedback-form";
+    const fields=[["identity","Identity likeness"],["sample_quality","Generated sample quality"]];
+    fields.forEach(([key,labelText])=>{
+      const label=document.createElement("label");label.textContent=labelText;
+      const select=document.createElement("select");select.name=key;select.setAttribute("aria-label",labelText);
+      for(let score=1;score<=5;score++){const option=document.createElement("option");option.value=String(score);option.textContent=score+" / 5";if(score===3)option.selected=true;select.appendChild(option);}
+      label.appendChild(select);form.appendChild(label);
+    });
+    const button=document.createElement("button");button.type="submit";button.className="secondary-button";button.textContent="Save training review";
+    const result=document.createElement("p");result.className="field-help";result.setAttribute("role","status");
+    form.append(button,result);
+    form.addEventListener("submit",async event=>{
+      event.preventDefault();button.disabled=true;result.textContent="Saving training review…";
+      try{
+        const scores={};fields.forEach(([key])=>{scores[key]=Number(form.elements[key].value);});
+        const data=await readJson(await fetch("/api/face-profiles/"+profileId+"/train-feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({backend,scores})}));
+        const report=data.feedback?.evaluation||{};
+        result.textContent="Human review saved · reward: "+Number(report.reward||0).toFixed(3)
+          +(report.penalties?.length?" · "+report.penalties.join(" "):"");
+      }catch(error){result.textContent="Could not save review: "+error.message;}
+      finally{button.disabled=false;}
+    });
+    panel.append(heading,help,form);statusNode.insertAdjacentElement("afterend",panel);
+  }
+
   async function pollTraining(profileId, backend) {
     const started=Date.now();let previous="";
     while(Date.now()-started<8*60*60*1000){
@@ -934,15 +965,19 @@
         const state=data.status||"running";
         const status=$("#trainStatus");
         if(state!==previous&&status){status.textContent="Training status: "+state+(data.error?"\n"+data.error:"");previous=state;}
-        if(state==="completed"){if(status)status.textContent="Training completed successfully.";await refreshProfiles();return;}
-        if(state==="failed"){if(status)status.textContent="Training failed.\n"+(data.error||data.profile?.local_training_error||data.profile?.runpod_training_error||"No error details returned.");await refreshProfiles();return;}
+        const report=data.job?.feedback?.evaluation;
+        const feedbackText=report?"\nReward: "+Number(report.reward||0).toFixed(3)
+          +(report.penalties?.length?"\nPenalties: "+report.penalties.join(" "):"")
+          +(report.needs_human_review?.length?"\nHuman review required: "+report.needs_human_review.join(", "):""):"";
+        if(state==="completed"){if(status){status.textContent="Training completed successfully."+feedbackText;renderTrainingFeedback(profileId,backend,status);}await refreshProfiles();return;}
+        if(state==="failed"){if(status)status.textContent="Training failed.\n"+(data.error||data.profile?.local_training_error||data.profile?.runpod_training_error||"No error details returned.")+feedbackText;await refreshProfiles();return;}
       }catch(error){const status=$("#trainStatus");if(status)status.textContent="Training may still be running; status polling had an issue: "+error.message;}
     }
     if($("#trainStatus"))$("#trainStatus").textContent="Stopped polling after 8 hours. Check the worker logs and profile state.";
   }
   trainForm?.addEventListener("submit",async event=>{
     event.preventDefault();const id=$("#trainProfile")?.value;
-    const status=$("#trainStatus");const button=$("#trainButton");
+    const status=$("#trainStatus");const button=$("#trainButton");status?.parentElement?.querySelector(".training-feedback-panel")?.remove();
     const profile=profiles.find(item=>item.id===id);
     if(!id){if(status)status.textContent="Create or select a face profile first.";return;}
     if(!profile||profile.image_count<5){if(status)status.textContent="Add at least 5 good photos to this profile before training.";return;}
@@ -1272,7 +1307,41 @@
       const download=document.createElement("a");download.className="button-link";download.textContent="Download ↓";download.href="/assets/"+asset.id+"/content?download=1";
       const edit=document.createElement("button");edit.type="button";edit.className="secondary-button";edit.textContent="Edit details";edit.addEventListener("click",()=>openEditAsset(asset));
       const remove=document.createElement("button");remove.type="button";remove.className="danger-button";remove.textContent="Delete";remove.addEventListener("click",()=>deleteAsset(asset,remove));
-      actions.append(download,edit,remove);card.appendChild(actions);assetGrid.appendChild(card);
+      actions.append(download,edit,remove);card.appendChild(actions);
+      const feedbackPanel=document.createElement("section");feedbackPanel.className="feedback-panel";
+      const feedbackHeading=document.createElement("strong");feedbackHeading.textContent="Reward / penalty feedback";feedbackPanel.appendChild(feedbackHeading);
+      const feedbackHelp=document.createElement("p");feedbackHelp.className="field-help";feedbackHelp.textContent="Rate this result from 1 (poor) to 5 (excellent). Feedback is stored for future configuration comparisons; it does not change model weights or settings.";feedbackPanel.appendChild(feedbackHelp);
+      const feedbackForm=document.createElement("form");feedbackForm.className="asset-feedback-form";
+      const scoreFields=[["sample_quality","Visual quality"],["identity","Identity match"],["prompt_adherence","Prompt adherence"]];
+      scoreFields.forEach(([key,labelText])=>{
+        const label=document.createElement("label");label.textContent=labelText;
+        const select=document.createElement("select");select.name=key;select.setAttribute("aria-label",labelText);
+        for(let score=1;score<=5;score++){const option=document.createElement("option");option.value=String(score);option.textContent=score+" / 5";if(score===3)option.selected=true;select.appendChild(option);}
+        label.appendChild(select);feedbackForm.appendChild(label);
+      });
+      const feedbackButton=document.createElement("button");feedbackButton.type="submit";feedbackButton.className="secondary-button";feedbackButton.textContent="Submit rating";
+      const feedbackStatus=document.createElement("p");feedbackStatus.className="field-help";feedbackStatus.setAttribute("role","status");
+      feedbackForm.append(feedbackButton,feedbackStatus);
+      feedbackForm.addEventListener("submit",async event=>{
+        event.preventDefault();feedbackButton.disabled=true;feedbackStatus.textContent="Saving feedback…";
+        try{
+          const scores={};scoreFields.forEach(([key])=>{scores[key]=Number(feedbackForm.elements[key].value);});
+          const result=await readJson(await fetch("/api/assets/"+asset.id+"/feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scores})}));
+          const report=result.feedback?.evaluation||{};
+          const penalties=Array.isArray(report.penalties)?report.penalties:[];
+          feedbackStatus.textContent="Reward: "+Number(report.reward||0).toFixed(3)+(penalties.length?" · Penalties: "+penalties.join(" "):"")+(report.needs_human_review?.length?" · Still needs review: "+report.needs_human_review.join(", "):"");
+        }catch(error){feedbackStatus.textContent="Could not save rating: "+error.message;}
+        finally{feedbackButton.disabled=false;}
+      });
+      feedbackPanel.appendChild(feedbackForm);card.appendChild(feedbackPanel);assetGrid.appendChild(card);
+      fetch("/api/assets/"+asset.id+"/feedback").then(readJson).then(data=>{
+        const latest=(data.feedback||[])[0];
+        if(latest){
+          feedbackStatus.textContent="Latest reward: "+Number(latest.reward||0).toFixed(3)
+            +(latest.penalties?.length?" · Penalties: "+latest.penalties.join(" "):"")
+            +(latest.needs_human_review?.length?" · Needs review: "+latest.needs_human_review.join(", "):"");
+        }else feedbackStatus.textContent="No feedback recorded yet.";
+      }).catch(()=>{feedbackStatus.textContent="Automatic feedback is not available yet.";});
     });
   }
   function formatBytes(bytes) {
