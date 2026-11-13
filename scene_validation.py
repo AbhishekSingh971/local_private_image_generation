@@ -71,10 +71,15 @@ def build_scene_validation_prompt(
         else "The only image is the generated result. Judge it against the requested description."
     )
     identity_context = (
-        "A trained identity was selected. Check visible identity consistency where the face is clear, "
-        "but do not claim biometric certainty."
-        if has_trained_identity
-        else "No trained identity constraint was supplied."
+        "A trained identity was selected, but no identity reference is visible in this comparison. "
+        "Do not claim identity consistency; assess scene and anatomy only."
+        if has_trained_identity and not has_reference_image
+        else (
+            "A trained identity was selected. Compare visible facial consistency to the supplied reference "
+            "where the face is clear, but do not claim biometric certainty."
+            if has_trained_identity
+            else "No trained identity constraint was supplied."
+        )
     )
     return (
         "You are a cautious visual quality reviewer. Inspect the image(s), not hidden metadata. "
