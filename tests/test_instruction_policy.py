@@ -132,3 +132,21 @@ def test_negated_change_is_not_treated_as_a_requested_change():
         has_reference_image=True,
     )
     assert "original clothing" in guidance
+
+
+def test_expression_change_does_not_release_trained_identity():
+    guidance = build_instruction_guidance(
+        "Change the person's expression to a smile",
+        has_reference_image=True,
+        has_trained_identity=True,
+    )
+    assert "selected trained person's identity" in guidance
+    assert "original facial expression" not in guidance
+
+
+def test_trained_identity_is_preserved_without_reference_image():
+    guidance = build_instruction_guidance(
+        "A portrait of the trained person smiling",
+        has_trained_identity=True,
+    )
+    assert "selected trained person's identity" in guidance
