@@ -1195,6 +1195,8 @@
   const repairStatus=$("#regionalRepairStatus");
   const repairSubmitButton=$("#submitRegionalRepair");
   const repairClearButton=$("#clearRepairMask");
+  const repairEraserToggle=$("#toggleRepairEraser");
+  let repairEraseMode=false;
   let currentImageAssetId="";
   let currentImageModelFamily="";
   let currentImageBackend="";
@@ -1219,6 +1221,8 @@
 
   function clearRegionalRepairMask(){
     if(!repairCanvas || !repairMaskCanvas || !repairMaskContext || !repairOverlayContext)return;
+    repairEraseMode=false;
+    if(repairEraserToggle)repairEraserToggle.textContent="Use eraser";
     repairOverlayContext.clearRect(0,0,repairCanvas.width,repairCanvas.height);
     repairMaskContext.fillStyle="#000";
     repairMaskContext.fillRect(0,0,repairMaskCanvas.width,repairMaskCanvas.height);
@@ -1278,8 +1282,11 @@
   function paintRepairStroke(from,to){
     if(!repairOverlayContext || !repairMaskContext)return;
     const size=Math.max(8,Number($("#repairBrushSize")?.value||42));
+    const pointStroke=from.x===to.x && from.y===to.y;
+    repairOverlayContext.save();
+    repairOverlayContext.globalCompositeOperation=repairEraseMode?"destination-out":"source-over";
     repairOverlayContext.beginPath();
-    if(from.x===to.x && from.y===to.y){
+    if(pointStroke){
       repairOverlayContext.arc(from.x,from.y,size/2,0,Math.PI*2);
       repairOverlayContext.fillStyle="rgba(255,55,55,0.52)";
       repairOverlayContext.fill();
@@ -1292,16 +1299,19 @@
     repairOverlayContext.lineCap="round";
     repairOverlayContext.lineJoin="round";
     repairOverlayContext.stroke();
+    repairOverlayContext.restore();
+
+    const maskColor=repairEraseMode?"#000":"#fff";
     repairMaskContext.beginPath();
-    if(from.x===to.x && from.y===to.y){
+    if(pointStroke){
       repairMaskContext.arc(from.x,from.y,size/2,0,Math.PI*2);
-      repairMaskContext.fillStyle="#fff";
+      repairMaskContext.fillStyle=maskColor;
       repairMaskContext.fill();
     } else {
       repairMaskContext.moveTo(from.x,from.y);
       repairMaskContext.lineTo(to.x,to.y);
     }
-    repairMaskContext.strokeStyle="#fff";
+    repairMaskContext.strokeStyle=maskColor;
     repairMaskContext.lineWidth=size;
     repairMaskContext.lineCap="round";
     repairMaskContext.lineJoin="round";
@@ -1331,6 +1341,13 @@
   repairCanvas?.addEventListener("pointercancel",stopRepairDrawing);
   repairCanvas?.addEventListener("lostpointercapture",stopRepairDrawing);
   repairClearButton?.addEventListener("click",clearRegionalRepairMask);
+  repairEraserToggle?.addEventListener("click",()=>{
+    repairEraseMode=!repairEraseMode;
+    repairEraserToggle.textContent=repairEraseMode?"Use paint brush":"Use eraser";
+    if(repairStatus)repairStatus.textContent=repairEraseMode
+      ?"Erase painted mask strokes where the selection went too far."
+      :"Paint the area to replace; white mask pixels are regenerated.";
+  });
 
   repairSubmitButton?.addEventListener("click",async()=>{
     if(!currentImageAssetId || !repairMaskCanvas || !repairMaskContext){
@@ -1377,10 +1394,12 @@
       const pill=$("#imageSavedPill");
       if(pill)pill.textContent="Repair saved as new image";
       renderSceneValidation(data.quality_report?.scene_integrity);
+      repairProgressController.abort();
       setRegionalRepairSource(data.asset_id,refreshedUrl,data.model_family,data.backend);
       setFinalGenerationProgress("image",true,data.message||"Regional repair saved as a new library image.");
       if(repairStatus)repairStatus.textContent=data.message||"Regional repair saved as a new library image.";
     }catch(error){
+      repairProgressController.abort();
       setFinalGenerationProgress("image",false,error.message);
       if(repairStatus)repairStatus.textContent="Regional repair failed: "+error.message;
     }finally{
