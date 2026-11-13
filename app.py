@@ -3973,6 +3973,12 @@ def api_regional_inpaint_async(asset_id):
             if existing.get("asset_id") != asset_id:
                 return jsonify(error="Regional repair task ID is already assigned to another source image."), 409
             return jsonify(task_id=task_id, status=existing.get("status", "queued")), 202
+        active_jobs = sum(
+            job.get("status") in {"queued", "running"}
+            for job in REGIONAL_INPAINT_JOBS.values()
+        )
+        if active_jobs >= 8:
+            return jsonify(error="The regional repair queue is full. Wait for an existing repair to finish."), 429
         if len(REGIONAL_INPAINT_JOBS) >= 40:
             completed = [
                 key for key, value in REGIONAL_INPAINT_JOBS.items()
