@@ -1382,7 +1382,23 @@
       formData.set("seed",$("#repairSeed")?.value.trim()||"");
       formData.set("task_id",repairTaskId);
       formData.set("mask_image",new File([maskBlob],"regional-mask.png",{type:"image/png"}));
-      const data=await readJson(await fetch("/api/assets/"+currentImageAssetId+"/regional-inpaint",{method:"POST",body:formData}));
+      const accepted=await readJson(await fetch("/api/assets/"+currentImageAssetId+"/regional-inpaint-async",{method:"POST",body:formData}));
+      let data=null;
+      const repairDeadline=Date.now()+Math.max(300000,Number(window.REGIONAL_REPAIR_TIMEOUT_MS||2400000));
+      while(Date.now()<repairDeadline){
+        const job=await readJson(await fetch("/api/regional-inpaint-jobs/"+repairTaskId,{cache:"no-store"}));
+        if(job.status==="completed" && job.result){
+          data=job.result;
+          break;
+        }
+        if(job.status==="failed"){
+          throw new Error(job.error||"Regional repair failed on the server.");
+        }
+        await new Promise(resolve=>setTimeout(resolve,1500));
+      }
+      if(!data){
+        throw new Error("Regional repair is taking longer than expected. The background job may still be running; check the latest job status before submitting it again.");
+      }
       currentImageAssetId=data.asset_id;
       currentImageModelFamily=data.model_family;
       currentImageBackend=data.backend;
