@@ -53,7 +53,9 @@
     const requested = useGpuAcceleration.checked ? (computeBackend?.value || "auto") : "cpu";
     if (!useGpuAcceleration.checked) {
       gpuModePill.textContent = "LOCAL · CPU";
-      gpuStatus.textContent = "GPU acceleration is off. Requests use the local CPU; no cloud request is made.";
+      gpuStatus.textContent = page === "video"
+        ? "GPU acceleration is off. Video generation requires the GHive GPU worker; CPU video generation is not supported."
+        : "GPU acceleration is off. Image requests use your local SD 1.5 files on CPU; no cloud request is made.";
       return;
     }
     const selected = requested === "auto" ? (computeAvailability?.auto_backend || "auto") : requested;
@@ -71,7 +73,9 @@
           + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.")
         : "GPU acceleration is ON, but no usable GPU is available. Auto mode is falling back to local CPU; image generation may be very slow. " + (computeAvailability?.cloud_error || "Check the cloud worker URL, shared token, and running runtime.");
     } else {
-      gpuStatus.textContent = "CPU fallback selected explicitly. Generation will run on the local CPU, not a GPU.";
+      gpuStatus.textContent = page === "video"
+        ? "Video generation requires the GHive GPU worker. Select Auto or Remote GPU and start the GHive worker."
+        : "Image generation will run on your local SD 1.5 files using CPU, not a GPU.";
     }
     if (computeAvailability?.cloud_error && selected !== "cloud_gpu" && selected !== "runpod") gpuStatus.textContent += " Remote GPU unavailable: " + computeAvailability.cloud_error;
   }
