@@ -1204,6 +1204,19 @@
   let repairDrawing=false;
   let previousRepairPoint=null;
 
+  function updateRegionalRepairComputeAvailability(){
+    const canUseGpu=Boolean(useGpuAcceleration?.checked);
+    const eligible=Boolean(currentImageAssetId && currentImageModelFamily==="sd15");
+    if(repairSubmitButton)repairSubmitButton.disabled=!eligible || !canUseGpu;
+    if(repairStatus && eligible && !canUseGpu){
+      repairStatus.textContent="Enable GPU acceleration and select a System GPU or connected cloud GPU to run regional inpainting.";
+    } else if(repairStatus && eligible && canUseGpu && !repairDrawing){
+      repairStatus.textContent="Paint over the part that needs correction, then submit the repair.";
+    }
+  }
+  useGpuAcceleration?.addEventListener("change",updateRegionalRepairComputeAvailability);
+  computeBackend?.addEventListener("change",updateRegionalRepairComputeAvailability);
+
   function clearRegionalRepairMask(){
     if(!repairCanvas || !repairMaskCanvas || !repairMaskContext || !repairOverlayContext)return;
     repairOverlayContext.clearRect(0,0,repairCanvas.width,repairCanvas.height);
@@ -1216,13 +1229,11 @@
     currentImageAssetId=assetId||"";
     currentImageModelFamily=modelFamily||"";
     currentImageBackend=backend||"";
-    const supported=Boolean(currentImageAssetId && currentImageModelFamily==="sd15" && ["local_gpu","cloud_gpu"].includes(currentImageBackend));
+    const supported=Boolean(currentImageAssetId && currentImageModelFamily==="sd15");
     const unavailable=$("#regionalRepairUnavailable");
     let unavailableMessage="";
     if(currentImageAssetId && currentImageModelFamily!=="sd15"){
       unavailableMessage="Regional inpainting currently supports SD 1.5 images only. This image was generated with "+currentImageModelFamily+".";
-    } else if(currentImageAssetId && !["local_gpu","cloud_gpu"].includes(currentImageBackend)){
-      unavailableMessage="Regional inpainting requires a CUDA System GPU or connected cloud GPU. The source image was generated without a GPU backend.";
     }
     if(unavailable){
       unavailable.hidden=!unavailableMessage;
@@ -1248,6 +1259,7 @@
       repairClearButton && (repairClearButton.disabled=false);
       clearRegionalRepairMask();
       if(repairStatus)repairStatus.textContent="Paint over the part that needs correction. Keep the brush inside the object where possible.";
+      updateRegionalRepairComputeAvailability();
     };
     repairSourceImage.onerror=()=>{
       if(repairStatus)repairStatus.textContent="Could not load the saved source image for regional repair.";
