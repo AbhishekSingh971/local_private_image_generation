@@ -54,8 +54,9 @@ def _requests_attribute_change(
         if category == "identity":
             after = prompt[match.end():]
             if re.match(
-                r"\s*(?:'s|’s)\s*(?:expression|pose|posture|clothing|outfit|body shape|"
-                r"body proportions|hair|hairstyle|makeup)\b",
+                r"\s*(?:(?:'s|’s)\s*)?(?:expression|pose|posture|clothing|outfit|body shape|"
+                r"body proportions|hair|hairstyle|makeup)\b|\s+to\s+(?:a\s+)?"
+                r"(?:smile|laugh|frown|angry|sad|surprised|serious|happy)\b",
                 after,
                 re.I,
             ):
