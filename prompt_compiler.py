@@ -1,7 +1,9 @@
-"""Deterministic structured prompt composition without hidden prompt rewriting."""
+"""Deterministic structured prompt composition with instruction-aware scene guidance."""
 from __future__ import annotations
 
 from collections.abc import Mapping
+
+from instruction_policy import build_instruction_guidance
 
 FIELD_LABELS = {
     "style": "Visual style",
@@ -23,8 +25,14 @@ ALLOWED_VALUES = {
 }
 
 
-def build_structured_prompt(prompt: str, controls: Mapping | None = None) -> str:
-    """Append only explicit user-selected controls; preserve original prompt verbatim."""
+def build_structured_prompt(
+    prompt: str,
+    controls: Mapping | None = None,
+    *,
+    has_reference_image: bool = False,
+    has_trained_identity: bool = False,
+) -> str:
+    """Append explicit controls and safe defaults without overriding the user's request."""
     original = str(prompt or "")
     if not original.strip():
         return original
@@ -48,4 +56,13 @@ def build_structured_prompt(prompt: str, controls: Mapping | None = None) -> str
             if len(value) > 240:
                 raise ValueError("Environment description must be 240 characters or fewer.")
         parts.append(f"{label}: {value}.")
+
+    # These are guidance, not hard constraints: explicit user edits take priority.
+    guidance = build_instruction_guidance(
+        original,
+        has_reference_image=has_reference_image,
+        has_trained_identity=has_trained_identity,
+    )
+    if guidance:
+        parts.append(guidance)
     return " ".join(parts)
