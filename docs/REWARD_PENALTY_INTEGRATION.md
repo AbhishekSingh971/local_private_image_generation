@@ -15,7 +15,7 @@
 - Failed training receives a -1.0 stability score and a non-promotion penalty.
 - Invalid/non-finite training loss observations are penalized.
 - Missing dimensions remain in `needs_human_review`; they are never silently treated as zero or as a pass.
-- Feedback is partitioned by task, model family, backend class, and control mode in the contextual bandit.
+- Feedback is partitioned by task, model family, backend class, and control mode in the contextual bandit. The current integration records reward statistics; it does not yet automatically select or change generation settings.
 
 ## Safety and model integrity
 
