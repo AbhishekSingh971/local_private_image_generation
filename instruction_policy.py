@@ -241,9 +241,16 @@ def build_instruction_guidance(
         if not subject_pattern.search(source) or _whole_object_removed(source, subject_pattern):
             continue
         details = [structural_core]
-        for component_pattern, component_description in components:
-            if not _component_removed(source, component_pattern):
-                details.append(component_description)
+        digital_timepiece = (
+            "clock" in structural_core.lower()
+            and bool(re.search(r"\bdigital\b", source, re.I))
+        )
+        if digital_timepiece:
+            details.append("a clear, correctly rendered digital time display")
+        else:
+            for component_pattern, component_description in components:
+                if not _component_removed(source, component_pattern):
+                    details.append(component_description)
         object_guidance.append(", ".join(details))
 
     if object_guidance:
