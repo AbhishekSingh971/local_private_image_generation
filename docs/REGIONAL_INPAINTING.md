@@ -11,7 +11,7 @@ This stage implements user-painted masks for SD 1.5 only. It is intentionally a 
 3. The browser sends the mask, prompt, steps, strength, seed and selected compute route to the Flask endpoint.
 4. Flask retrieves the parent image bytes from PostgreSQL using the asset ID. The source image is not accepted from the browser.
 5. Flask verifies the asset is an SD 1.5 image, checks the parent identity profile, validates the mask dimensions and coverage, and obtains a GPU.
-6. For a cloud route, Flask submits the source image and mask to an authenticated asynchronous GPU-worker job, then polls the existing job-status/result endpoints so the proxy request does not stay open during inference. For a local route, it runs the same inpainting engine locally.
+6. The browser submits a short request to an app-side background job and polls the app job-status endpoint. The app retrieves the saved source image and runs the repair off-request. For a cloud route, it submits an authenticated asynchronous GPU-worker job and polls the worker status/result endpoints too; neither browser nor Cloudflare-to-worker request stays open for the full inference. For a local route, the same inpainting engine runs in the app background thread.
 7. The engine creates a padded crop around the mask, bounds the inference crop to a maximum 768-pixel edge (with a 512-pixel minimum long edge), and uses a dedicated Diffusers StableDiffusionInpaintPipeline.
 8. The identity LoRA is loaded when the parent asset has a face profile. Failure to load the LoRA aborts the repair.
 9. The generated crop is resized back to its original crop size. A dilated and feathered mask blends the generated crop over the source crop. Outside that composite mask, pixels are copied directly from the original.
