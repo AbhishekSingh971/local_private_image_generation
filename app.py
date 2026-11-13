@@ -366,6 +366,8 @@ def cloud_worker_regional_inpaint_async(*, data, files, task_id, progress_callba
     remote_job_id = payload.get("job_id")
     if not remote_job_id:
         raise RuntimeError("Cloud GPU worker did not return a regional repair job ID.")
+    if remote_job_id != task_id:
+        raise RuntimeError("Cloud GPU worker returned a mismatched regional repair job ID.")
     deadline = time.monotonic() + max(300, int(os.environ.get("CLOUD_GPU_JOB_TIMEOUT_SECONDS", "2400")))
     while time.monotonic() < deadline:
         status_response = cloud_worker_request(
