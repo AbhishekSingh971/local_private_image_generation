@@ -72,6 +72,47 @@
     <div class="preview result-preview"><img id="resultPreview" alt="Generated photo" hidden><div id="resultPlaceholder" class="placeholder"><div class="empty-icon">✧</div>Your generated photo will appear here.</div></div>
     <p id="sceneValidationSummary" class="field-help" role="status" aria-live="polite">Visual scene review will appear here after generation. Without a configured local vision model, object integrity requires manual review.</p>
     <button id="applySceneRetryHint" class="secondary-button" type="button" hidden>Add suggested correction to prompt</button>
+    <section id="regionalRepairPanel" class="repair-panel" hidden>
+      <div class="eyebrow">SELECTIVE REPAIR · SD 1.5</div>
+      <h3>Repair only a selected area</h3>
+      <p class="field-help">Paint over the broken part in red. White pixels in the submitted mask are regenerated; black pixels are protected. The edited result is saved as a new image, never over the source.</p>
+      <div id="repairMaskStage" style="position:relative;width:100%;max-width:720px;margin:0 auto;line-height:0;touch-action:none;">
+        <img id="repairMaskSource" alt="Image to repair" style="display:block;width:100%;height:auto;border-radius:12px;" draggable="false">
+        <canvas id="repairMaskCanvas" aria-label="Paint the area to repair" style="position:absolute;left:0;top:0;width:100%;height:100%;touch-action:none;cursor:crosshair;"></canvas>
+      </div>
+      <div class="twocol">
+        <div>
+          <label for="repairBrushSize">Brush size</label>
+          <input id="repairBrushSize" type="range" min="8" max="160" step="2" value="42">
+          <p class="field-help">Brush size is measured in source-image pixels.</p>
+        </div>
+        <div>
+          <label for="repairStrength">Repair strength</label>
+          <input id="repairStrength" type="range" min="0.55" max="1.00" step="0.01" value="0.88">
+          <p class="field-help">Higher values allow a stronger replacement inside the mask.</p>
+        </div>
+      </div>
+      <div class="twocol">
+        <div>
+          <label for="repairSteps">Inpainting steps</label>
+          <input id="repairSteps" type="number" min="8" max="40" step="1" value="24">
+        </div>
+        <div>
+          <label for="repairSeed">Seed <span class="optional">optional</span></label>
+          <input id="repairSeed" type="number" min="0" max="2147483647" step="1" placeholder="Random">
+        </div>
+      </div>
+      <label for="repairPrompt">What should replace the painted area?</label>
+      <textarea id="repairPrompt" rows="3" maxlength="1200" placeholder="e.g. A clean, correctly attached clock minute hand pointing to twelve, matching the existing metal finish." required></textarea>
+      <label for="repairNegativePrompt">Avoid <span class="optional">optional</span></label>
+      <textarea id="repairNegativePrompt" rows="2" maxlength="1200" placeholder="e.g. extra hands, duplicate details, changed clock face"></textarea>
+      <div class="twocol">
+        <button id="clearRepairMask" type="button" class="secondary-button">Clear painted area</button>
+        <button id="submitRegionalRepair" type="button">Repair selected area</button>
+      </div>
+      <p id="regionalRepairStatus" class="status" role="status" aria-live="polite"></p>
+      <p class="field-help">This stage currently supports SD 1.5 only and requires a System GPU or connected cloud GPU. It loads the dedicated inpainting checkpoint on first use. Identity LoRA loading is mandatory when the source image belongs to a trained face profile.</p>
+    </section>
     <div class="result-actions"><a id="downloadImage" class="button-link" href="#" download hidden>Download image ↓</a><a class="button-link secondary-link" href="{{ url_for('library_images_page') }}">Browse image library →</a></div>
     
     <p class="field-help">Image bytes and details are saved to your database; a local output copy is kept for training and backup workflows.</p>
