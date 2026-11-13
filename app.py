@@ -49,6 +49,7 @@ from model_registry import model_configuration, resolve_model_family, supports_f
 from prompt_compiler import build_structured_prompt
 from instruction_policy import build_instruction_guidance
 from scene_validation import evaluate_scene_integrity
+from regional_inpainting import normalize_edit_mask, run_sd15_regional_inpainting
 from generation_contracts import preserve_generation_text
 from geometry_analysis import analyze_geometry
 from face_profiles import (
@@ -3544,6 +3545,224 @@ def generate():
             quality_report=quality_report, seed=seed,
             message=message + (" The optional body adapter was unavailable, so base-model anatomy was used." if body_model_fallback else "") + ((" " + upscale_warning) if upscale_warning else "") + ((" " + face_restore_warning) if face_restore_warning else ""),
         )
+    finally:
+        generation_lock.release()
+
+
+
+
+def _release_cached_generation_pipelines_for_inpainting():
+    """Free the regular generation/video pipelines before loading the larger 9-channel inpaint model."""
+    global pipe, pipeline_mode, pipeline_device, pipeline_family, active_lora, video_pipe, active_video_lora
+    with model_lock:
+        pipe = None
+        pipeline_mode = None
+        pipeline_device = None
+        pipeline_family = None
+        active_lora = None
+        video_pipe = None
+        active_video_lora = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+@app.post("/api/assets/<asset_id>/regional-inpaint")
+def api_regional_inpaint(asset_id):
+    if not re.fullmatch(r"[a-f0-9]{32}", asset_id or ""):
+        return jsonify(error="Invalid source image ID."), 400
+    try:
+        source_asset = get_asset(asset_id, include_content=True)
+    except Exception:
+        app.logger.exception("Could not load source asset for regional inpainting")
+        return jsonify(error="Could not read the source image from the library."), 503
+    if not source_asset or source_asset.get("asset_type") != "image":
+        return jsonify(error="The selected source image was not found in the image library."), 404
+    try:
+        family = resolve_model_family(source_asset.get("model_family") or "sd15")
+    except ValueError:
+        return jsonify(error="The source image uses an unsupported model family."), 400
+    if family != "sd15":
+        return jsonify(error="Regional repair is currently available for Stable Diffusion 1.5 images only."), 400
+
+    try:
+        prompt = _clean_generation_text(request.form.get("prompt"), "Repair instruction")
+        negative_prompt = _clean_generation_text(request.form.get("negative_prompt"), "Negative repair instruction")
+        if not prompt.strip():
+            raise ValueError("Describe what should replace the painted area.")
+        seed = resolve_generation_seed(request.form.get("seed"))
+        steps = int(request.form.get("steps", "24"))
+        strength = float(request.form.get("strength", "0.88"))
+        backend = _resolve_compute_backend(request.form)
+        title = _clean_prompt(
+            request.form.get("title") or ("Regional repair · " + (source_asset.get("title") or "image")),
+            "Title", 160,
+        )
+    except (ValueError, TypeError) as exc:
+        return jsonify(error=str(exc) or "Invalid regional repair settings."), 400
+    if backend not in {"local_gpu", "cloud_gpu"}:
+        return jsonify(error="Regional inpainting requires a CUDA System GPU or connected cloud GPU. CPU repair is disabled because it is very slow."), 400
+    if not 8 <= steps <= 40:
+        return jsonify(error="Regional repair steps must be between 8 and 40."), 400
+    if not 0.55 <= strength <= 1.0:
+        return jsonify(error="Regional repair strength must be between 0.55 and 1.00."), 400
+
+    profile_id = source_asset.get("profile_id")
+    profile = get_profile(profile_id) if profile_id else None
+    if profile_id and not profile:
+        return jsonify(error="The face profile linked to this source image is no longer available. Repair stopped to avoid losing identity conditioning."), 409
+    if profile_id:
+        profile_backend = "runpod" if backend == "cloud_gpu" else "local"
+        if not profile_ready_for_backend(profile_id, profile_backend):
+            return jsonify(error="The source image's face LoRA is not trained on the selected GPU. Use the matching backend or retrain/sync this profile first."), 409
+
+    mask_file = request.files.get("mask_image")
+    if not mask_file or not mask_file.filename:
+        return jsonify(error="Paint the area you want to repair before submitting."), 400
+    try:
+        mask_bytes = mask_file.stream.read(8 * 1024 * 1024 + 1)
+        if len(mask_bytes) > 8 * 1024 * 1024:
+            raise ValueError("Repair mask must be 8 MB or smaller.")
+        with Image.open(io.BytesIO(source_asset["media_data"])) as opened_source:
+            source_image = ImageOps.exif_transpose(opened_source).convert("RGB")
+            source_image.load()
+        with Image.open(io.BytesIO(mask_bytes)) as opened_mask:
+            mask_image = ImageOps.exif_transpose(opened_mask).convert("L")
+            mask_image.load()
+        _binary_mask, mask_bbox, mask_coverage = normalize_edit_mask(source_image, mask_image)
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        return jsonify(error=str(exc) or "Source image or repair mask is invalid."), 400
+
+    if not generation_lock.acquire(blocking=False):
+        return jsonify(error="Another image or video generation is running. Try the repair again when it finishes."), 429
+    output_filename = None
+    try:
+        inpaint_metadata = {
+            "model_id": (
+                (os.environ.get("INPAINT_MODEL_PATH") or "").strip()
+                or (os.environ.get("INPAINT_MODEL_ID") or "stable-diffusion-v1-5/stable-diffusion-inpainting").strip()
+            ),
+            "seed": seed,
+            "steps": steps,
+            "strength": round(strength, 3),
+            "mask_coverage": mask_coverage,
+            "mask_bbox": list(mask_bbox),
+            "identity_lora_applied": bool(profile_id),
+            "parent_asset_id": asset_id,
+            "backend": backend,
+        }
+        if backend == "cloud_gpu":
+            source_buffer = io.BytesIO()
+            source_image.save(source_buffer, format="PNG")
+            source_buffer.seek(0)
+            mask_buffer = io.BytesIO()
+            mask_image.save(mask_buffer, format="PNG")
+            mask_buffer.seek(0)
+            data = {
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "steps": str(steps),
+                "strength": str(strength),
+                "seed": str(seed),
+                "face_profile_id": profile_id or "",
+            }
+            files = {
+                "source_image": ("source.png", source_buffer, "image/png"),
+                "mask_image": ("mask.png", mask_buffer, "image/png"),
+            }
+            try:
+                response = cloud_worker_request(
+                    "POST", "/api/remote/regional-inpaint",
+                    data=data, files=files, timeout=(20, 900),
+                )
+            except RuntimeError as exc:
+                return jsonify(error=str(exc)), 502
+            with Image.open(io.BytesIO(response.content)) as opened_result:
+                result = opened_result.convert("RGB")
+                result.load()
+            if result.size != source_image.size:
+                return jsonify(error="Cloud inpainting returned unexpected image dimensions; source image was not replaced."), 502
+        else:
+            if not torch.cuda.is_available():
+                return jsonify(error="System GPU was selected but CUDA is unavailable to this Python environment."), 400
+            _release_cached_generation_pipelines_for_inpainting()
+            try:
+                result, run_metadata = run_sd15_regional_inpainting(
+                    source_image,
+                    mask_image,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    identity_lora_path=model_path(profile_id) if profile_id else None,
+                    seed=seed,
+                    steps=steps,
+                    strength=strength,
+                    device="cuda",
+                )
+                inpaint_metadata.update(run_metadata)
+            except Exception as exc:
+                app.logger.exception("Regional inpainting failed; original source asset remains unchanged")
+                return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
+
+        if result.size != source_image.size:
+            return jsonify(error="Regional repair did not preserve the source canvas size."), 500
+        quality_report = assess_image_quality(result).to_dict()
+        quality_report["scene_integrity"] = evaluate_scene_integrity(
+            prompt=prompt,
+            generated_image=result,
+            reference_image=source_image,
+            has_trained_identity=bool(profile_id),
+        )
+        quality_report["regional_inpainting"] = inpaint_metadata
+        generation_metadata = {
+            "schema_version": 1,
+            "model": {
+                "family": "sd15",
+                "model_id": inpaint_metadata.get("model_id"),
+            },
+            "compute": {"backend": backend},
+            "generation_mode": "regional_inpaint",
+            "identity_profile_id": profile_id,
+            "parent_asset_id": asset_id,
+            "regional_inpainting": inpaint_metadata,
+            "quality": quality_report,
+        }
+        output_filename = _save_generated_png(result)
+        try:
+            saved = _persist_generated_asset(
+                "image",
+                output_filename,
+                title=title,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                original_prompt=source_asset.get("original_prompt") or source_asset.get("prompt") or "",
+                upsampled_prompt="",
+                model_family="sd15",
+                profile=profile,
+                backend=backend,
+                generation_mode="regional_inpaint",
+                generation_metadata=generation_metadata,
+            )
+        except RuntimeError as exc:
+            (OUTPUT_DIR / output_filename).unlink(missing_ok=True)
+            return jsonify(error=str(exc)), 503
+
+        return jsonify(
+            status="completed",
+            asset_id=saved["id"],
+            parent_asset_id=asset_id,
+            title=saved["title"],
+            image_url=f"/assets/{saved['id']}/content",
+            model_family="sd15",
+            backend=backend,
+            quality_report=quality_report,
+            regional_inpainting=inpaint_metadata,
+            message="Regional repair saved as a new image. Pixels outside the expanded repair mask were preserved from the source.",
+        )
+    except Exception as exc:
+        app.logger.exception("Regional inpainting request failed")
+        if output_filename:
+            (OUTPUT_DIR / output_filename).unlink(missing_ok=True)
+        return jsonify(error="Regional repair failed: " + str(exc)[:700]), 500
     finally:
         generation_lock.release()
 
