@@ -38,7 +38,7 @@ from flask import Flask, request, send_from_directory, send_file, jsonify, rende
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend, select_generation_backend
-from image_generation import build_generation_prompts, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_generation import build_generation_prompts, infer_reference_strength, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
 from face_restoration import resolve_face_restoration_options, restore_faces
 from identity_evaluation import evaluate_identity_similarity
@@ -3171,7 +3171,7 @@ def generate():
         steps = int(request.form.get("steps", "4" if model_family == "flux2_klein" else "25"))
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
-        image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
+        image_preset = validate_image_preset(request.form.get("image_preset") or "standard")
         generation_profile = (request.form.get("generation_profile") or "custom").strip().lower()
         if generation_profile not in {"preserve_reference", "photorealistic", "custom"}:
             raise ValueError("Choose Preserve reference, Photorealistic, or Custom generation.")
@@ -3275,8 +3275,8 @@ def generate():
                 init_image = ImageOps.fit(init_image, (width, height), method=Image.Resampling.LANCZOS)
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
         return jsonify(error="Use a valid PNG, JPG or WEBP reference image."), 400
-    if generation_profile == "preserve_reference" and init_image is None:
-        return jsonify(error="Upload a reference image to use Preserve reference mode."), 400
+    # Infer img2img strength from the user's original request; never expose a manual slider.
+    strength = infer_reference_strength(original_prompt, has_reference_image=init_image is not None)
     prompt_is_final = _truthy(request.form.get("prompt_is_final"))
     if not prompt_is_final:
         structured_prompt = build_structured_prompt(
