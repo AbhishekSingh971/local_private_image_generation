@@ -339,13 +339,12 @@ def test_structured_prompt_rejects_unsupported_select_values():
         build_structured_prompt("Portrait", {"style": "make it amazing"})
 
 
-def test_structured_prompt_preserves_original_and_adds_default_integrity_guidance():
+def test_structured_prompt_preserves_short_text_to_image_prompt_without_boilerplate():
     from prompt_compiler import build_structured_prompt
 
     original = "  Keep this exact prompt  "
-    compiled = build_structured_prompt(original, {})
-    assert compiled.startswith(original)
-    assert "Instruction-aware guidance:" in compiled
+    compiled = build_structured_prompt(original, {}, has_trained_identity=True)
+    assert compiled == original
 
 
 
@@ -433,8 +432,8 @@ def test_sd15_long_prompt_chunks_are_cached_per_pipeline(monkeypatch):
     pipeline = FakePipeline(FakeTokenizer(77))
     pipeline.text_encoder = object()
 
-    encode_sd15_prompt_embeddings(pipeline, "a portrait")
-    encode_sd15_prompt_embeddings(pipeline, "a second portrait")
+    encode_sd15_prompt_embeddings(pipeline, " ".join(["portrait"] * 82))
+    encode_sd15_prompt_embeddings(pipeline, " ".join(["portrait"] * 84))
 
     assert constructions["count"] == 1
 
