@@ -146,7 +146,7 @@ def test_invalid_generation_seed_is_rejected(seed):
 
 def test_reference_strength_is_low_for_preservation_requests():
     assert infer_reference_strength(
-        "Keep the same face and clothing, only make a subtle lighting adjustment",
+        "Keep the same face and clothing exactly as the reference",
         has_reference_image=True,
     ) == 0.30
 
