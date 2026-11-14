@@ -161,8 +161,11 @@ def test_digital_clock_gets_display_not_analog_hands():
     assert "hour/minute hands" not in guidance
 
 
-def test_text_to_image_does_not_append_generic_unlisted_object_guidance():
-    guidance = build_instruction_guidance("A brass desk lamp beside a notebook")
+def test_short_named_person_prompt_does_not_append_object_or_anatomy_boilerplate():
+    guidance = build_instruction_guidance(
+        "A realistic portrait of Kashvi in a quiet garden",
+        has_trained_identity=True,
+    )
     assert guidance == ""
 
 
