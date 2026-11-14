@@ -200,7 +200,7 @@ def infer_reference_strength(prompt: str, *, has_reference_image: bool) -> float
 
     major_change_patterns = (
         r"\b(?:full[ -]?body|head to toe|entire body|reframe|outpaint|extend the canvas)\b",
-        r"\b(?:completely different|transform|replace the background|new background|different outfit|change clothes|new pose|change the pose|turn .* into)\b",
+        r"\b(?:completely different|transform|replace the background|new background|different outfit|change (?:the )?outfit|change clothes|new pose|change the pose|turn .* into)\b",
         r"\b(?:change the scene|move .* to|place .* in|different location)\b",
     )
     if any(re.search(pattern, text) for pattern in major_change_patterns):
