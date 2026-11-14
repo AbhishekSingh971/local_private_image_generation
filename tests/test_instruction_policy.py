@@ -179,3 +179,14 @@ def test_reference_edits_keep_compact_scene_preservation_guidance():
     assert "Change only details requested" in guidance
     assert "Keep the reference clothing." in guidance
     assert len(guidance.split()) < 80
+
+
+
+def test_short_named_identity_prompt_stays_close_to_user_text():
+    prompt = "Generate a realistic full-body portrait of Kashvi"
+    result = build_structured_prompt(
+        prompt,
+        has_reference_image=False,
+        has_trained_identity=True,
+    )
+    assert result == prompt
