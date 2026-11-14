@@ -1048,7 +1048,6 @@
     }
   }
 
-  const stepsControl = $("#steps");
   const generationForm = $("#generationForm");
   const modelFamilySelect = $("#imageModelFamily");
   const faceProfileInput = $("#faceProfile");
@@ -1081,7 +1080,6 @@
     if (faceProfileInput) faceProfileInput.disabled = !faceControlsEnabled;
     if (globalBodyModelInput) {
       globalBodyModelInput.disabled = !faceControlsEnabled;
-      if (!faceControlsEnabled) globalBodyModelInput.checked = false;
     }
     if (aspectRatioSelect) {
       const labels = family === "flux2_klein"
