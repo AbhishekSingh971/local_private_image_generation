@@ -171,3 +171,18 @@ def test_reference_strength_uses_balanced_default_for_unspecified_reference_edit
 
 def test_reference_strength_is_irrelevant_without_reference_image():
     assert infer_reference_strength("A landscape at sunset", has_reference_image=False) == 0.45
+
+
+
+def test_reference_strength_prioritizes_explicit_change_over_preserved_identity():
+    assert infer_reference_strength(
+        "Keep the same face but change the outfit",
+        has_reference_image=True,
+    ) == 0.72
+
+
+def test_reference_strength_balances_preservation_and_small_requested_edit():
+    assert infer_reference_strength(
+        "Keep the same face and make a subtle lighting adjustment",
+        has_reference_image=True,
+    ) == 0.52
