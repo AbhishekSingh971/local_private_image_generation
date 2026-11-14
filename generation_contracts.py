@@ -147,6 +147,18 @@ def encode_sd15_prompt_embeddings(
             "Keep the most important subject, action, identity, pose and scene details."
         )
 
+    # The regular Diffusers text path is faster and identical for prompts that
+    # fit in CLIP's 77 positions (75 content tokens plus BOS/EOS).
+    if largest_count <= 75:
+        return {
+            "prompt_embeds": None,
+            "negative_prompt_embeds": None,
+            "prompt_token_count": positive_count + 2,
+            "negative_prompt_token_count": negative_count + 2 if negative_text else 0,
+            "chunk_count": 1,
+            "max_prompt_tokens": int(max_prompt_tokens),
+        }
+
     try:
         from compel import Compel, ReturnedEmbeddingsType
     except ImportError as exc:
