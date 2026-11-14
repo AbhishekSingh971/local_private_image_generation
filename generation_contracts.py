@@ -98,3 +98,85 @@ def count_flux2_prompt_tokens(pipeline, prompt: str) -> int:
     count = count_tokens_without_truncation(tokenizer, formatted)
     maximum = int(getattr(pipeline, "tokenizer_max_length", 512))
     return ensure_token_capacity(count, maximum, "FLUX.2 prompt")
+
+
+MAX_SD15_PROMPT_TOKENS = 300
+"""Safety cap for chunked SD 1.5 prompts (four 75-content-token CLIP chunks)."""
+
+
+def _raw_token_count(tokenizer, text: str) -> int:
+    encoded = tokenizer(text, add_special_tokens=False, truncation=False)
+    input_ids = encoded.get("input_ids") if hasattr(encoded, "get") else None
+    if input_ids is None:
+        raise RuntimeError("The SD 1.5 tokenizer did not return input_ids.")
+    shape = getattr(input_ids, "shape", None)
+    if shape is not None:
+        return int(shape[-1])
+    if input_ids and isinstance(input_ids[0], (list, tuple)):
+        return len(input_ids[0])
+    return len(input_ids)
+
+
+def encode_sd15_prompt_embeddings(
+    pipeline,
+    prompt: str,
+    negative_prompt: str = "",
+    *,
+    max_prompt_tokens: int = MAX_SD15_PROMPT_TOKENS,
+) -> dict:
+    """Encode long SD 1.5 prompts as multiple CLIP chunks without truncation.
+
+    CLIP still encodes at its native 77-position window. Compel splits longer
+    text into 75-content-token chunks (BOS/EOS included per chunk), then the
+    embeddings are padded to equal lengths for classifier-free guidance.
+    """
+    tokenizer = getattr(pipeline, "tokenizer", None)
+    text_encoder = getattr(pipeline, "text_encoder", None)
+    if tokenizer is None or text_encoder is None:
+        raise RuntimeError("The selected SD 1.5 pipeline has no tokenizer or text encoder.")
+
+    positive_text = str(prompt or "")
+    negative_text = str(negative_prompt or "")
+    positive_count = _raw_token_count(tokenizer, positive_text)
+    negative_count = _raw_token_count(tokenizer, negative_text)
+    largest_count = max(positive_count, negative_count)
+    if largest_count > int(max_prompt_tokens):
+        raise ValueError(
+            f"SD 1.5 supports up to {int(max_prompt_tokens)} prompt tokens with chunked CLIP encoding "
+            f"({(int(max_prompt_tokens) + 74) // 75} chunks). Your prompt contains {largest_count} tokens. "
+            "Keep the most important subject, action, identity, pose and scene details."
+        )
+
+    try:
+        from compel import Compel, ReturnedEmbeddingsType
+    except ImportError as exc:
+        raise RuntimeError(
+            "Long-prompt support is not installed. Install the project requirements, including compel."
+        ) from exc
+
+    embedder = getattr(pipeline, "_private_face_compel", None)
+    if embedder is None:
+        device = getattr(pipeline, "_execution_device", None)
+        embedder = Compel(
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            truncate_long_prompts=False,
+            returned_embeddings_type=ReturnedEmbeddingsType.LAST_HIDDEN_STATES_NORMALIZED,
+            device=str(device) if device is not None else None,
+        )
+        pipeline._private_face_compel = embedder
+
+    positive_embeds = embedder.build_conditioning_tensor(positive_text)
+    negative_embeds = embedder.build_conditioning_tensor(negative_text)
+    positive_embeds, negative_embeds = embedder.pad_conditioning_tensors_to_same_length(
+        [positive_embeds, negative_embeds]
+    )
+    chunk_count = max(1, (largest_count + 74) // 75)
+    return {
+        "prompt_embeds": positive_embeds,
+        "negative_prompt_embeds": negative_embeds,
+        "prompt_token_count": positive_count + 2,
+        "negative_prompt_token_count": negative_count + 2 if negative_text else 0,
+        "chunk_count": chunk_count,
+        "max_prompt_tokens": int(max_prompt_tokens),
+    }
