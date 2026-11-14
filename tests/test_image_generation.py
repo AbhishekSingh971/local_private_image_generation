@@ -6,6 +6,7 @@ from image_generation import (
     validate_image_preset,
     resolve_generation_seed,
     MAX_GENERATION_SEED,
+    infer_reference_strength,
 )
 
 
@@ -140,3 +141,33 @@ def test_generation_seed_generates_a_valid_seed_when_missing():
 def test_invalid_generation_seed_is_rejected(seed):
     with pytest.raises(ValueError, match="Seed must be an integer"):
         resolve_generation_seed(seed)
+
+
+
+def test_reference_strength_is_low_for_preservation_requests():
+    assert infer_reference_strength(
+        "Keep the same face and clothing, only make a subtle lighting adjustment",
+        has_reference_image=True,
+    ) == 0.30
+
+
+def test_reference_strength_is_high_for_major_reframing_requests():
+    assert infer_reference_strength(
+        "Reframe this portrait as a full-body head-to-toe image",
+        has_reference_image=True,
+    ) == 0.72
+
+
+def test_reference_strength_is_moderate_for_local_expression_edits():
+    assert infer_reference_strength(
+        "Change the expression to a gentle smile",
+        has_reference_image=True,
+    ) == 0.52
+
+
+def test_reference_strength_uses_balanced_default_for_unspecified_reference_edit():
+    assert infer_reference_strength("A beautiful portrait", has_reference_image=True) == 0.40
+
+
+def test_reference_strength_is_irrelevant_without_reference_image():
+    assert infer_reference_strength("A landscape at sunset", has_reference_image=False) == 0.45
