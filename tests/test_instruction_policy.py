@@ -73,9 +73,12 @@ def test_object_integrity_does_not_force_removed_component():
     assert "aligned wheels" not in guidance
 
 
-def test_human_anatomy_is_supported_without_overriding_requested_removal():
-    guidance = build_instruction_guidance("A person standing")
-    assert "anatomically coherent human anatomy" in guidance
+def test_text_to_image_prompt_does_not_receive_long_generic_anatomy_boilerplate():
+    guidance = build_instruction_guidance(
+        "A person standing",
+        has_trained_identity=True,
+    )
+    assert guidance == ""
 
 
 def test_prompt_compiler_applies_reference_and_identity_guidance():
@@ -144,12 +147,12 @@ def test_expression_change_does_not_release_trained_identity():
     assert "original facial expression" not in guidance
 
 
-def test_trained_identity_is_preserved_without_reference_image():
+def test_trained_lora_does_not_add_redundant_identity_text_to_prompt():
     guidance = build_instruction_guidance(
         "A portrait of the trained person smiling",
         has_trained_identity=True,
     )
-    assert "selected trained person's identity" in guidance
+    assert guidance == ""
 
 
 def test_digital_clock_gets_display_not_analog_hands():
@@ -162,3 +165,16 @@ def test_unlisted_objects_receive_general_integrity_guidance():
     guidance = build_instruction_guidance("A brass desk lamp beside a notebook")
     assert "recognizable complete form" in guidance
     assert "physically consistent geometry" in guidance
+
+
+
+def test_reference_edits_keep_compact_scene_preservation_guidance():
+    guidance = build_instruction_guidance(
+        "Change the person's expression to a smile",
+        has_reference_image=True,
+        has_trained_identity=True,
+    )
+    assert "Keep the selected trained identity." in guidance
+    assert "Change only details requested" in guidance
+    assert "Keep the reference clothing." in guidance
+    assert len(guidance.split()) < 80
