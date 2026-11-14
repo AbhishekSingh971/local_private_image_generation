@@ -448,3 +448,18 @@ def test_sd15_prompt_safety_cap_rejects_only_extreme_overflow():
 
     with pytest.raises(ValueError, match="up to 300 prompt tokens with chunked CLIP encoding"):
         encode_sd15_prompt_embeddings(pipeline, prompt, "")
+
+
+
+def test_short_sd15_prompt_uses_native_diffusers_text_path_without_compel():
+    from generation_contracts import encode_sd15_prompt_embeddings
+
+    pipeline = FakePipeline(FakeTokenizer(77))
+    pipeline.text_encoder = object()
+
+    result = encode_sd15_prompt_embeddings(pipeline, "a short portrait prompt", "")
+
+    assert result["prompt_embeds"] is None
+    assert result["negative_prompt_embeds"] is None
+    assert result["chunk_count"] == 1
+    assert result["prompt_token_count"] == 6
