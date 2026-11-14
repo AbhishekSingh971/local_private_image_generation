@@ -184,3 +184,41 @@ def build_generation_prompts(
     enhanced_prompt = clean_prompt if clean_prompt.lower().startswith(prefix.rstrip(", ").lower()) else prefix + clean_prompt
     enhanced_negative = ", ".join(part for part in (negative_prefix, clean_negative) if part)
     return enhanced_prompt, enhanced_negative
+
+def infer_reference_strength(prompt: str, *, has_reference_image: bool) -> float:
+    """Choose img2img denoising strength from the user's requested edit scope.
+
+    Lower values preserve the source. Higher values permit broader changes.
+    This is a deterministic heuristic, not a learned semantic model.
+    """
+    if not has_reference_image:
+        return 0.45
+
+    text = re.sub(r"\\s+", " ", str(prompt or "").casefold()).strip()
+    if not text:
+        return 0.35
+
+    preserve_patterns = (
+        r"\\b(?:keep|preserve|retain|same|unchanged|exactly as|do not change|don't change)\\b.{0,70}\\b(?:identity|face|person|pose|clothing|outfit|background|everything|reference)\\b",
+        r"\\b(?:minor|subtle|slight|small)\\s+(?:edit|change|adjustment|correction)\\b",
+        r"\\b(?:only|just)\\s+(?:fix|adjust|change)\\b",
+    )
+    if any(re.search(pattern, text) for pattern in preserve_patterns):
+        return 0.30
+
+    major_change_patterns = (
+        r"\\b(?:full[ -]?body|head to toe|entire body|reframe|outpaint|extend the canvas)\\b",
+        r"\\b(?:completely different|transform|replace the background|new background|different outfit|change clothes|new pose|change the pose|turn .* into)\\b",
+        r"\\b(?:change the scene|move .* to|place .* in|different location)\\b",
+    )
+    if any(re.search(pattern, text) for pattern in major_change_patterns):
+        return 0.72
+
+    moderate_change_patterns = (
+        r"\\b(?:change|adjust|modify|add|remove|replace|make)\\b.{0,60}\\b(?:expression|smile|lighting|color|colour|hair|makeup|clothing|outfit|pose|background)\\b",
+        r"\\b(?:smile|laugh|serious expression|lighting|color grade|hairstyle)\\b",
+    )
+    if any(re.search(pattern, text) for pattern in moderate_change_patterns):
+        return 0.52
+
+    return 0.40
