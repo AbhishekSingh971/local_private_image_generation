@@ -891,8 +891,12 @@ def remote_generate():
                     "chunks": encoded_prompt["chunk_count"],
                     "max_prompt_tokens": encoded_prompt["max_prompt_tokens"],
                 }
-                kwargs["prompt_embeds"] = encoded_prompt["prompt_embeds"]
-                kwargs["negative_prompt_embeds"] = encoded_prompt["negative_prompt_embeds"]
+                if encoded_prompt["prompt_embeds"] is not None:
+                    kwargs["prompt_embeds"] = encoded_prompt["prompt_embeds"]
+                    kwargs["negative_prompt_embeds"] = encoded_prompt["negative_prompt_embeds"]
+                else:
+                    kwargs["prompt"] = effective_prompt
+                    kwargs["negative_prompt"] = effective_negative_prompt or None
             else:
                 from generation_contracts import validate_diffusion_prompt_capacity
                 prompt_token_count = validate_diffusion_prompt_capacity(
