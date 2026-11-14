@@ -199,48 +199,32 @@ def build_instruction_guidance(
     }
     guidance: list[str] = []
 
-    if has_trained_identity and "identity" not in changed:
-        guidance.append(
-            "Keep the selected trained person's identity and stable facial structure consistent; "
-            "a requested expression change is allowed without changing who the person is."
-        )
-    elif has_reference_image and "identity" not in changed:
-        guidance.append("Keep the reference subject's identity and stable facial structure consistent.")
-
+    # A trained LoRA already conditions the generated identity. Do not append
+    # identity boilerplate to ordinary text-to-image prompts; only add compact
+    # preservation guidance when editing an actual reference image.
     if has_reference_image:
-        guidance.append(
-            "Edit the supplied reference selectively: change only what the user explicitly requested; "
-            "keep all other visible details, object count, spatial relationships and scene structure consistent. "
-            "Do not silently add, remove, duplicate or rearrange unrequested elements."
-        )
+        if has_trained_identity and "identity" not in changed:
+            guidance.append("Keep the selected trained identity.")
+        elif "identity" not in changed:
+            guidance.append("Keep the reference identity.")
+
+        guidance.append("Change only details requested in the prompt; preserve the rest of the reference and its layout.")
         if "pose" not in changed:
-            guidance.append("Keep the original body pose and posture.")
+            guidance.append("Keep the reference pose.")
         elif "body_shape" not in changed:
-            guidance.append("The requested pose may change, but keep the person's underlying body proportions consistent.")
+            guidance.append("Change the pose but preserve body proportions.")
         if "body_shape" not in changed:
-            guidance.append("Do not unintentionally change body shape or proportions.")
+            guidance.append("Preserve body proportions.")
         if "expression" not in changed:
-            guidance.append("Keep the original facial expression.")
+            guidance.append("Keep the reference expression.")
         if "clothing" not in changed:
-            guidance.append("Keep the original clothing and accessories.")
+            guidance.append("Keep the reference clothing.")
         if "background" not in changed:
-            guidance.append("Keep the original background and environment.")
+            guidance.append("Keep the reference background.")
         if "camera" not in changed:
-            guidance.append("Keep the original camera viewpoint, framing and perspective.")
+            guidance.append("Keep the reference framing and viewpoint.")
         if "lighting" not in changed:
-            guidance.append("Keep the original lighting and shadow direction.")
-
-    if _HUMAN_SUBJECT.search(source):
-        guidance.append(
-            "Render anatomically coherent human anatomy with naturally connected limbs, "
-            "plausible joints, complete hands and naturally formed fingers unless the user explicitly requests otherwise."
-        )
-
-    guidance.append(
-        "For every other depicted object, keep a recognizable complete form, coherent parts, "
-        "plausible connections and physically consistent geometry; apply explicit removals or "
-        "transformations exactly as requested."
-    )
+            guidance.append("Keep the reference lighting.")
 
     object_guidance: list[str] = []
     for subject_pattern, structural_core, components in _OBJECT_RULES:
