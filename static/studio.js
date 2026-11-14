@@ -1068,18 +1068,13 @@
   const stepsControl = $("#steps");
   const generationForm = $("#generationForm");
   const modelFamilySelect = $("#imageModelFamily");
-  const strengthGroup = $("#strengthGroup");
   const faceProfileInput = $("#faceProfile");
   const globalBodyModelInput = $("#useGlobalBodyModel");
-  const globalBodyModelStatus = $("#globalBodyGenerationStatus");
-  const faceAngleGroup = $("#faceAngleGroup");
-  const faceExpressionGroup = $("#faceExpressionGroup");
   const modelFamilyHelp = $("#modelFamilyHelp");
   const aspectRatioSelect = $("#aspectRatio");
   const imagePresetSelect = $("#imagePreset");
   const generationProfileSelect = $("#generationProfile");
   const strengthInput = $("#strength");
-  const strengthNumberInput = $("#strengthNumber");
 
   function updateImageModelControls() {
     const family = modelFamilySelect?.value || "sd15";
@@ -1096,7 +1091,6 @@
         if (Number(stepsInput.value) > 25 || Number(stepsInput.value) < 5) stepsInput.value = "25";
       }
     }
-    if (strengthGroup) strengthGroup.hidden = isFlux2;
     if (strengthInput) strengthInput.disabled = isFlux2;
     if (imagePresetSelect) imagePresetSelect.disabled = isFlux2;
     if (generationProfileSelect) generationProfileSelect.disabled = isFlux2;
@@ -1105,27 +1099,6 @@
     if (globalBodyModelInput) {
       globalBodyModelInput.disabled = !faceControlsEnabled;
       if (!faceControlsEnabled) globalBodyModelInput.checked = false;
-    }
-    if (globalBodyModelStatus) {
-      globalBodyModelStatus.textContent = faceControlsEnabled
-        ? "Optional SD 1.5 adapter. Generate body samples and train the shared model before applying it."
-        : "This model uses its built-in anatomy. The SD 1.5 body adapter is unavailable here and is not required.";
-    }
-    if (faceAngleGroup) {
-      faceAngleGroup.hidden = !faceControlsEnabled;
-      const angleField = faceAngleGroup.querySelector("select");
-      if (angleField) {
-        angleField.disabled = !faceControlsEnabled;
-        if (!faceControlsEnabled) angleField.value = "";
-      }
-    }
-    if (faceExpressionGroup) {
-      faceExpressionGroup.hidden = !faceControlsEnabled;
-      const expressionField = faceExpressionGroup.querySelector("select");
-      if (expressionField) {
-        expressionField.disabled = !faceControlsEnabled;
-        if (!faceControlsEnabled) expressionField.value = "";
-      }
     }
     if (aspectRatioSelect) {
       const labels = family === "flux2_klein"
@@ -1141,9 +1114,9 @@
       if (isFlux2) {
         modelFamilyHelp.textContent = "FLUX.2 Klein 4B is the advanced Apache-2.0 text-to-image and reference-image editing backend. It is designed for consumer GPUs (around 13 GB VRAM with suitable settings). The distilled checkpoint uses 4 steps. Your prompt is passed directly without automatic caption rewriting; prompts exceeding its 512-token text context are rejected. Existing SD 1.5 face/body LoRAs and the SD 1.5 face-pose ControlNet are not compatible. It does not accept a negative prompt or denoising-strength control. The app does not add clothing or hide anatomy, but the model has its own safety fine-tuning and may still refuse or under-depict some requests.";
       } else if (family === "sdxl") {
-        modelFamilyHelp.textContent = "SDXL uses a larger native canvas and typically needs more GPU memory. Existing SD 1.5 face/body LoRAs and face-pose ControlNet are not compatible with SDXL.";
+        modelFamilyHelp.textContent = "SDXL uses a larger native canvas and typically needs more GPU memory. Your SD 1.5 identity and body adapters are not compatible with this model.";
       } else {
-        modelFamilyHelp.textContent = "Stable Diffusion 1.5 is the current identity-training backend. Your existing face/body LoRAs and face-pose ControlNet are compatible with this model family.";
+        modelFamilyHelp.textContent = "Stable Diffusion 1.5 supports your trained face identity and expression examples. A trained shared body adapter is applied automatically when available.";
       }
     }
   }
