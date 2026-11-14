@@ -46,3 +46,17 @@ This does not stream tensor pages directly from Google Drive into VRAM. With no
 FUSE and the current Diffusers loader, the required weight files must be present
 as local files before `from_pretrained` can load them. The benefit is avoiding
 the 48 GiB bulk copy and fetching only the exact inference files from Drive.
+
+
+## SD 1.5 prompt length
+
+SD 1.5's CLIP encoder still has a native 77-position window. The application now
+keeps the normal Diffusers path for prompts that fit, and uses Compel to split
+longer prompts into 75-content-token chunks without truncation. The current
+safety cap is 300 content tokens (up to four chunks) to keep cross-attention
+memory use bounded on consumer GPUs. This is not an unlimited context window.
+Install the updated project requirements so `compel` is available:
+
+```bash
+python -m pip install -r requirements.txt
+```
