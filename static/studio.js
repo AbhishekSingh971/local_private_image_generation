@@ -1166,7 +1166,7 @@
       } else if (family === "sdxl") {
         modelFamilyHelp.textContent = "SDXL uses a larger native canvas and typically needs more GPU memory. Your SD 1.5 identity and body adapters are not compatible with this model.";
       } else {
-        modelFamilyHelp.textContent = "Stable Diffusion 1.5 supports your trained face identity and expression examples. A trained shared body adapter is applied automatically when available.";
+        modelFamilyHelp.textContent = "Stable Diffusion 1.5 supports your trained face identity and expression examples. Shared body-type conditioning is optional and stays off by default to prioritize face identity.";
       }
     }
   }
