@@ -42,6 +42,7 @@ from image_generation import build_generation_prompts, infer_reference_strength,
 from image_upscaling import resolve_upscale_options, upscale_image
 from face_restoration import resolve_face_restoration_options, restore_faces
 from identity_evaluation import evaluate_identity_similarity
+from identity_prompt import ensure_face_identity_trigger
 from video_quality import evaluate_video_identity
 from model_artifacts import safe_extract_lora_bundle, sha256_bytes
 from private_data_crypto import encryption_configured
@@ -3327,6 +3328,13 @@ def generate():
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
+    if profile_id and model_family == "sd15":
+        try:
+            # Training uses this exact profile token in every caption. Add it at
+            # inference too; without it, the adapter's identity concept is not activated.
+            prompt = ensure_face_identity_trigger(prompt, profile["token"])
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
     if profile_id and not supports_face_lora(model_family):
         return jsonify(
             error="This face profile has an SD 1.5 LoRA and cannot be loaded by the selected model family. "
