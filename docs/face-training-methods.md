@@ -17,7 +17,9 @@ The face-training page offers two methods for Stable Diffusion 1.5 face profiles
 - Requires a CUDA GPU with at least 24 GB VRAM. The API and GHive worker check actual VRAM before starting.
 - Saves to `models/face_finetunes/<profile_id>`; it never overwrites the base SD 1.5 model or the LoRA adapter.
 
-The selected method becomes active only after its checkpoint is successfully saved. Starting a retrain does not switch the profile away from its last working model, and a failed full fine-tune leaves the previous model selection unchanged.\n\nUse this option only when the compact LoRA adapter is not giving the result you need. Full U-Net updates can overfit small datasets more easily, use substantially more VRAM, and create a much larger checkpoint. Keep the initial run around 300–400 steps and review generation quality before increasing it.
+The selected method becomes active only after its checkpoint is successfully saved. Starting a retrain does not switch the profile away from its last working model, and a failed full fine-tune leaves the previous model selection unchanged.
+
+Use this option only when the compact LoRA adapter is not giving the result you need. Full U-Net updates can overfit small datasets more easily, use substantially more VRAM, and create a much larger checkpoint. Keep the initial run around 300–400 steps and review generation quality before increasing it.
 
 ## GHive / Google Drive persistence
 
@@ -34,6 +36,8 @@ gdrive:Local Ai/models/face-finetunes/<profile_id>
 ```
 
 When a profile is selected on the GHive worker and the local checkpoint cache is missing, it lazily restores the folder with `rclone`. The web app does not proxy multi-gigabyte U-Net checkpoints through Render or store them in the LoRA PostgreSQL backup table. A Drive sync warning means the checkpoint trained on the current worker but was not confirmed in Drive; do not stop the rented GPU until you have repaired the sync or copied the checkpoint elsewhere.
+
+**Profile metadata must also survive worker restarts.** For automatic profile lookup and model-mode selection after a GHive restart, configure the worker with the same `DATABASE_URL` as the web app, or use a persistent worker volume for its face-profile registry. Google Drive stores the large U-Net checkpoint; it does not by itself restore face-profile metadata or approved training photos.
 
 Set the same Drive remote in the GHive rclone configuration. The remote name and folder can be changed with `FACE_FINETUNE_DRIVE_REMOTE` in the worker environment.
 
