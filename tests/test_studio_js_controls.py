@@ -30,3 +30,11 @@ def test_generate_photo_uses_prompt_first_form_without_manual_strength_controls(
     assert 'flux2_klein: { min: 4, max: 4, default: 4 }' in source
     assert 'const sd15Selected = (modelFamilySelect?.value || "sd15") === "sd15";' in source
     assert 'const controlsEnabled = profileSelected && sd15Selected;' in source
+
+
+
+def test_local_and_rented_gpu_generation_share_step_validation():
+    app_source = Path("app.py").read_text(encoding="utf-8")
+    worker_source = Path("gpu_worker.py").read_text(encoding="utf-8")
+    assert "steps = resolve_image_inference_steps(request.form.get(\"steps\"), model_family)" in app_source
+    assert "steps = local_engine.resolve_image_inference_steps(request.form.get(\"steps\"), model_family)" in worker_source
