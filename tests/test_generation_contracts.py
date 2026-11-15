@@ -339,13 +339,12 @@ def test_structured_prompt_rejects_unsupported_select_values():
         build_structured_prompt("Portrait", {"style": "make it amazing"})
 
 
-def test_structured_prompt_preserves_original_and_adds_default_integrity_guidance():
+def test_structured_prompt_preserves_short_text_to_image_prompt_without_boilerplate():
     from prompt_compiler import build_structured_prompt
 
     original = "  Keep this exact prompt  "
-    compiled = build_structured_prompt(original, {})
-    assert compiled.startswith(original)
-    assert "Instruction-aware guidance:" in compiled
+    compiled = build_structured_prompt(original, {}, has_trained_identity=True)
+    assert compiled == original
 
 
 
@@ -362,3 +361,104 @@ def test_face_restoration_options_validate_fidelity():
 
     with pytest.raises(ValueError, match="between 0 and 1"):
         resolve_face_restoration_options(True, 1.5)
+
+
+
+def test_sd15_long_prompt_uses_compel_chunks_without_truncation(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from generation_contracts import encode_sd15_prompt_embeddings
+
+    calls = {}
+
+    class FakeCompel:
+        def __init__(self, **kwargs):
+            calls["init"] = kwargs
+
+        def build_conditioning_tensor(self, text):
+            return {"text": text}
+
+        def pad_conditioning_tensors_to_same_length(self, tensors):
+            calls["padded"] = tensors
+            return tensors
+
+    fake_module = SimpleNamespace(
+        Compel=FakeCompel,
+        ReturnedEmbeddingsType=SimpleNamespace(LAST_HIDDEN_STATES_NORMALIZED="last_hidden_states_normalized"),
+    )
+    monkeypatch.setitem(sys.modules, "compel", fake_module)
+
+    pipeline = FakePipeline(FakeTokenizer(77))
+    pipeline.text_encoder = object()
+    pipeline._execution_device = "cuda"
+    prompt = " ".join(["portrait"] * 82)
+
+    result = encode_sd15_prompt_embeddings(pipeline, prompt, "")
+
+    assert calls["init"]["truncate_long_prompts"] is False
+    assert calls["init"]["returned_embeddings_type"] == "last_hidden_states_normalized"
+    assert result["chunk_count"] == 2
+    assert result["prompt_token_count"] == 84
+    assert result["negative_prompt_token_count"] == 0
+    assert result["prompt_embeds"]["text"] == prompt
+    assert result["negative_prompt_embeds"]["text"] == ""
+
+
+def test_sd15_long_prompt_chunks_are_cached_per_pipeline(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from generation_contracts import encode_sd15_prompt_embeddings
+
+    constructions = {"count": 0}
+
+    class FakeCompel:
+        def __init__(self, **kwargs):
+            constructions["count"] += 1
+
+        def build_conditioning_tensor(self, text):
+            return text
+
+        def pad_conditioning_tensors_to_same_length(self, tensors):
+            return tensors
+
+    monkeypatch.setitem(
+        sys.modules,
+        "compel",
+        SimpleNamespace(
+            Compel=FakeCompel,
+            ReturnedEmbeddingsType=SimpleNamespace(LAST_HIDDEN_STATES_NORMALIZED="normalized"),
+        ),
+    )
+    pipeline = FakePipeline(FakeTokenizer(77))
+    pipeline.text_encoder = object()
+
+    encode_sd15_prompt_embeddings(pipeline, " ".join(["portrait"] * 82))
+    encode_sd15_prompt_embeddings(pipeline, " ".join(["portrait"] * 84))
+
+    assert constructions["count"] == 1
+
+
+def test_sd15_prompt_safety_cap_rejects_only_extreme_overflow():
+    from generation_contracts import encode_sd15_prompt_embeddings
+
+    pipeline = FakePipeline(FakeTokenizer(77))
+    pipeline.text_encoder = object()
+    prompt = " ".join(["detail"] * 301)
+
+    with pytest.raises(ValueError, match="up to 300 prompt tokens with chunked CLIP encoding"):
+        encode_sd15_prompt_embeddings(pipeline, prompt, "")
+
+
+
+def test_short_sd15_prompt_uses_native_diffusers_text_path_without_compel():
+    from generation_contracts import encode_sd15_prompt_embeddings
+
+    pipeline = FakePipeline(FakeTokenizer(77))
+    pipeline.text_encoder = object()
+
+    result = encode_sd15_prompt_embeddings(pipeline, "a short portrait prompt", "")
+
+    assert result["prompt_embeds"] is None
+    assert result["negative_prompt_embeds"] is None
+    assert result["chunk_count"] == 1
+    assert result["prompt_token_count"] == 6

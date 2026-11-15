@@ -10,11 +10,11 @@ def test_reference_edit_preserves_unrequested_attributes():
         has_reference_image=True,
         has_trained_identity=True,
     )
-    assert "selected trained person's identity" in guidance
-    assert "original body pose" in guidance
-    assert "original clothing" in guidance
-    assert "original background" in guidance
-    assert "original facial expression" not in guidance
+    assert "Keep the selected trained identity." in guidance
+    assert "Keep the reference pose." in guidance
+    assert "Keep the reference clothing." in guidance
+    assert "Keep the reference background." in guidance
+    assert "Keep the reference expression." not in guidance
 
 
 def test_requested_pose_change_keeps_body_proportions():
@@ -23,8 +23,8 @@ def test_requested_pose_change_keeps_body_proportions():
         has_reference_image=True,
         has_trained_identity=True,
     )
-    assert "original body pose" not in guidance
-    assert "underlying body proportions" in guidance
+    assert "Keep the reference pose." not in guidance
+    assert "Change the pose but preserve body proportions." in guidance
 
 
 def test_requested_body_shape_change_is_not_blocked():
@@ -33,7 +33,7 @@ def test_requested_body_shape_change_is_not_blocked():
         has_reference_image=True,
         has_trained_identity=True,
     )
-    assert "Do not unintentionally change body shape" not in guidance
+    assert "Preserve body proportions." not in guidance
 
 
 def test_requested_identity_change_is_not_blocked():
@@ -42,7 +42,7 @@ def test_requested_identity_change_is_not_blocked():
         has_reference_image=True,
         has_trained_identity=True,
     )
-    assert "selected trained person's identity" not in guidance
+    assert "Keep the selected trained identity." not in guidance
 
 
 def test_clock_is_complete_by_default():
@@ -73,9 +73,12 @@ def test_object_integrity_does_not_force_removed_component():
     assert "aligned wheels" not in guidance
 
 
-def test_human_anatomy_is_supported_without_overriding_requested_removal():
-    guidance = build_instruction_guidance("A person standing")
-    assert "anatomically coherent human anatomy" in guidance
+def test_text_to_image_prompt_does_not_receive_long_generic_anatomy_boilerplate():
+    guidance = build_instruction_guidance(
+        "A person standing",
+        has_trained_identity=True,
+    )
+    assert guidance == ""
 
 
 def test_prompt_compiler_applies_reference_and_identity_guidance():
@@ -86,7 +89,7 @@ def test_prompt_compiler_applies_reference_and_identity_guidance():
         has_trained_identity=True,
     )
     assert "Expression: gentle smile." in result
-    assert "selected trained person's identity" in result
+    assert "Keep the selected trained identity." in result
 
 
 def test_prompt_compiler_keeps_original_prompt_and_explicit_controls():
@@ -104,9 +107,9 @@ def test_descriptive_reference_details_are_not_mistaken_for_edit_requests():
         "A woman wearing a red dress, standing in a room",
         has_reference_image=True,
     )
-    assert "original clothing" in guidance
-    assert "original body pose" in guidance
-    assert "original background" in guidance
+    assert "Keep the reference clothing." in guidance
+    assert "Keep the reference pose." in guidance
+    assert "Keep the reference background." in guidance
 
 
 def test_change_background_does_not_release_outfit_preservation():
@@ -114,8 +117,8 @@ def test_change_background_does_not_release_outfit_preservation():
         "Change the background to a beach but keep the red dress",
         has_reference_image=True,
     )
-    assert "original background" not in guidance
-    assert "original clothing" in guidance
+    assert "Keep the reference background." not in guidance
+    assert "Keep the reference clothing." in guidance
 
 
 def test_remove_hands_before_clock_does_not_remove_whole_clock():
@@ -131,7 +134,7 @@ def test_negated_change_is_not_treated_as_a_requested_change():
         "Do not change the clothing",
         has_reference_image=True,
     )
-    assert "original clothing" in guidance
+    assert "Keep the reference clothing." in guidance
 
 
 def test_expression_change_does_not_release_trained_identity():
@@ -140,16 +143,16 @@ def test_expression_change_does_not_release_trained_identity():
         has_reference_image=True,
         has_trained_identity=True,
     )
-    assert "selected trained person's identity" in guidance
-    assert "original facial expression" not in guidance
+    assert "Keep the selected trained identity." in guidance
+    assert "Keep the reference expression." not in guidance
 
 
-def test_trained_identity_is_preserved_without_reference_image():
+def test_trained_lora_does_not_add_redundant_identity_text_to_prompt():
     guidance = build_instruction_guidance(
         "A portrait of the trained person smiling",
         has_trained_identity=True,
     )
-    assert "selected trained person's identity" in guidance
+    assert guidance == ""
 
 
 def test_digital_clock_gets_display_not_analog_hands():
@@ -158,7 +161,35 @@ def test_digital_clock_gets_display_not_analog_hands():
     assert "hour/minute hands" not in guidance
 
 
-def test_unlisted_objects_receive_general_integrity_guidance():
-    guidance = build_instruction_guidance("A brass desk lamp beside a notebook")
-    assert "recognizable complete form" in guidance
-    assert "physically consistent geometry" in guidance
+def test_short_named_person_prompt_does_not_append_object_or_anatomy_boilerplate():
+    guidance = build_instruction_guidance(
+        "A realistic portrait of Kashvi in a quiet garden",
+        has_trained_identity=True,
+    )
+    assert guidance == ""
+
+
+
+
+
+def test_reference_edits_keep_compact_scene_preservation_guidance():
+    guidance = build_instruction_guidance(
+        "Change the person's expression to a smile",
+        has_reference_image=True,
+        has_trained_identity=True,
+    )
+    assert "Keep the selected trained identity." in guidance
+    assert "Change only details requested" in guidance
+    assert "Keep the reference clothing." in guidance
+    assert len(guidance.split()) < 80
+
+
+
+def test_short_named_identity_prompt_stays_close_to_user_text():
+    prompt = "Generate a realistic full-body portrait of Kashvi"
+    result = build_structured_prompt(
+        prompt,
+        has_reference_image=False,
+        has_trained_identity=True,
+    )
+    assert result == prompt

@@ -873,19 +873,37 @@ def remote_generate():
                 effective_prompt, effective_negative_prompt = build_generation_prompts(
                     prompt, negative_prompt, image_preset, has_reference_image=image is not None
                 )
-            from generation_contracts import validate_diffusion_prompt_capacity
-            prompt_token_count = validate_diffusion_prompt_capacity(
-                pipeline, effective_prompt, effective_negative_prompt or ""
-            )
             kwargs = {
-                "prompt": effective_prompt,
-                "negative_prompt": effective_negative_prompt or None,
                 "width": width,
                 "height": height,
                 "num_inference_steps": steps,
                 "guidance_scale": 7.5,
                 "generator": generator,
             }
+            if model_family == "sd15":
+                from generation_contracts import encode_sd15_prompt_embeddings
+                encoded_prompt = encode_sd15_prompt_embeddings(
+                    pipeline, effective_prompt, effective_negative_prompt or ""
+                )
+                prompt_token_count = {
+                    "tokenizer_prompt": encoded_prompt["prompt_token_count"],
+                    "tokenizer_negative_prompt": encoded_prompt["negative_prompt_token_count"],
+                    "chunks": encoded_prompt["chunk_count"],
+                    "max_prompt_tokens": encoded_prompt["max_prompt_tokens"],
+                }
+                if encoded_prompt["prompt_embeds"] is not None:
+                    kwargs["prompt_embeds"] = encoded_prompt["prompt_embeds"]
+                    kwargs["negative_prompt_embeds"] = encoded_prompt["negative_prompt_embeds"]
+                else:
+                    kwargs["prompt"] = effective_prompt
+                    kwargs["negative_prompt"] = effective_negative_prompt or None
+            else:
+                from generation_contracts import validate_diffusion_prompt_capacity
+                prompt_token_count = validate_diffusion_prompt_capacity(
+                    pipeline, effective_prompt, effective_negative_prompt or ""
+                )
+                kwargs["prompt"] = effective_prompt
+                kwargs["negative_prompt"] = effective_negative_prompt or None
             if image is not None:
                 kwargs.update(image=image, strength=strength)
             if pose_control_image is not None:

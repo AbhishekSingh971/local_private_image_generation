@@ -1,5 +1,6 @@
 """Train a local Stable Diffusion 1.5 face-identity LoRA on a CUDA-enabled NVIDIA GPU."""
 import argparse
+import os
 import random
 import re
 from pathlib import Path
@@ -23,7 +24,12 @@ from face_profiles import get_profile
 from training_approval import select_approved_training_files
 
 ROOT = Path(__file__).resolve().parent
-BASE_MODEL = ROOT / "models" / "stable-diffusion-v1-5"
+MODEL_PATH_OVERRIDE = os.environ.get("SD_MODEL_PATH", "").strip()
+BASE_MODEL = (
+    Path(MODEL_PATH_OVERRIDE).expanduser()
+    if MODEL_PATH_OVERRIDE
+    else ROOT / "models" / "stable-diffusion-v1-5"
+)
 LEGACY_DATASET_DIR = ROOT / "data" / "face_dataset"
 PROFILE_DATASET_ROOT = ROOT / "data" / "face_profiles"
 OUTPUT_ROOT = ROOT / "models" / "face_loras"
@@ -82,7 +88,7 @@ class FaceDataset(Dataset):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train a reusable face LoRA from data/face_dataset using the local SD 1.5 model."
+        description="Train a reusable face LoRA from approved face photos using the configured SD 1.5 model."
     )
     parser.add_argument("--profile-id", default=None, help="Persistent face profile ID; uses that profile's dataset.")
     parser.add_argument(
@@ -126,7 +132,10 @@ def main():
             "Use an NVIDIA GPU and a CUDA-enabled PyTorch installation."
         )
     if not (BASE_MODEL / "model_index.json").is_file():
-        raise SystemExit("Local SD 1.5 model missing. Run download_model.bat first.")
+        raise SystemExit(
+            f"Stable Diffusion 1.5 model missing at {BASE_MODEL}. "
+            "Set SD_MODEL_PATH to a complete local Diffusers model folder or run download_model.bat."
+        )
     dataset_dir = (
         PROFILE_DATASET_ROOT / args.profile_id / "dataset"
         if args.profile_id else LEGACY_DATASET_DIR
