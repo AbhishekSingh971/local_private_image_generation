@@ -2852,7 +2852,7 @@ def api_train_face_profile(profile_id):
             return jsonify(error="Cloud GPU worker did not return a training job ID."), 502
         update_profile(
             profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
-            runpod_training_error=None, runpod_model_ready=False,
+            runpod_training_mode=training_mode, runpod_training_error=None, runpod_model_ready=False,
         )
         method_label = "Full SD 1.5 U-Net fine-tuning" if training_mode == TRAINING_MODE_FULL_FINETUNE else "LoRA training"
         return jsonify(
@@ -2875,7 +2875,7 @@ def api_train_face_profile(profile_id):
     job_id = uuid.uuid4().hex
     update_profile(
         profile_id, local_training_state="running", local_training_job_id=job_id,
-        local_training_error=None, local_model_ready=False,
+        local_training_mode=training_mode, local_training_error=None, local_model_ready=False,
     )
     with LOCAL_TRAIN_JOBS_LOCK:
         LOCAL_TRAIN_JOBS[job_id] = {
