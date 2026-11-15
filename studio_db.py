@@ -266,8 +266,9 @@ def create_face_profile_record(record):
     values=_profile_values(record)
     try:
         _run("""INSERT INTO face_profiles(id,name,name_key,token,description,created_at,local_model_ready,runpod_model_ready,
-            local_training_state,runpod_training_state,local_training_error,local_training_job_id,runpod_training_error,runpod_training_job_id)
-            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING""", values)
+            local_training_state,runpod_training_state,local_training_mode,runpod_training_mode,
+            local_training_error,local_training_job_id,runpod_training_error,runpod_training_job_id)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING""", values)
     except UniqueViolation as exc:
         raise ValueError("A face profile with that name or prompt token already exists. Choose a unique value.") from exc
     return get_face_profile_record(record["id"])
