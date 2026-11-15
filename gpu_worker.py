@@ -31,6 +31,7 @@ from image_generation import build_generation_prompts, resolve_generation_seed, 
 from image_upscaling import resolve_upscale_options, upscale_image
 from face_restoration import resolve_face_restoration_options, restore_faces
 from generation_contracts import preserve_generation_text
+from identity_prompt import ensure_face_identity_trigger
 from model_artifacts import safe_extract_lora_bundle, sha256_bytes
 from regional_inpainting import run_sd15_regional_inpainting
 import shutil
@@ -871,6 +872,13 @@ def remote_generate():
         profile = get_profile(profile_id)
         if not profile or not profile.get("local_model_ready"):
             return jsonify(error="The selected face model is not trained or available on this GPU worker."), 400
+        if model_family == "sd15":
+            try:
+                # Defensively apply the profile token even when this endpoint is
+                # called directly instead of through the main Flask app.
+                prompt = ensure_face_identity_trigger(prompt, profile["token"])
+            except ValueError as exc:
+                return jsonify(error=str(exc)), 400
     if use_global_body_model:
         if model_family != "sd15":
             use_global_body_model = False
