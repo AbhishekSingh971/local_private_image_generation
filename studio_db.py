@@ -89,6 +89,8 @@ def ensure_schema() -> None:
                 local_model_ready BOOLEAN NOT NULL DEFAULT FALSE, runpod_model_ready BOOLEAN NOT NULL DEFAULT FALSE,
                 local_training_state VARCHAR(32) NOT NULL DEFAULT 'not_trained',
                 runpod_training_state VARCHAR(32) NOT NULL DEFAULT 'not_trained',
+                local_training_mode VARCHAR(24) NOT NULL DEFAULT 'lora',
+                runpod_training_mode VARCHAR(24) NOT NULL DEFAULT 'lora',
                 local_training_error TEXT, local_training_job_id VARCHAR(128),
                 runpod_training_error TEXT, runpod_training_job_id VARCHAR(128))""",
             """CREATE TABLE IF NOT EXISTS face_dataset_groups (
@@ -144,6 +146,8 @@ def ensure_schema() -> None:
                 for statement in statements:
                     cur.execute(statement)
             _ensure_column(conn, "face_profiles", "description", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "face_profiles", "local_training_mode", "VARCHAR(24) NOT NULL DEFAULT 'lora'")
+            _ensure_column(conn, "face_profiles", "runpod_training_mode", "VARCHAR(24) NOT NULL DEFAULT 'lora'")
             _ensure_column(conn, "generated_assets", "original_prompt", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(conn, "generated_assets", "upsampled_prompt", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(conn, "generated_assets", "model_family", "VARCHAR(16) NOT NULL DEFAULT 'sd15'")
@@ -221,7 +225,7 @@ def database_status() -> dict:
 def _profile_dict(row):
     if not row: return None
     return {k: row.get(k) for k in ("id","name","token","description","created_at","local_model_ready","runpod_model_ready",
-        "local_training_state","runpod_training_state","local_training_error","local_training_job_id","runpod_training_error","runpod_training_job_id")}
+        "local_training_state","runpod_training_state","local_training_mode","runpod_training_mode","local_training_error","local_training_job_id","runpod_training_error","runpod_training_job_id")}
 
 
 def get_face_profile_record(profile_id):
@@ -240,6 +244,7 @@ def _profile_values(record):
     return (record["id"],record["name"],record["name"].casefold(),record["token"],record.get("description","") or "",record["created_at"],
         bool(record.get("local_model_ready",False)),bool(record.get("runpod_model_ready",False)),
         record.get("local_training_state","not_trained"),record.get("runpod_training_state","not_trained"),
+        record.get("local_training_mode","lora"),record.get("runpod_training_mode","lora"),
         record.get("local_training_error"),record.get("local_training_job_id"),record.get("runpod_training_error"),record.get("runpod_training_job_id"))
 
 
@@ -248,8 +253,9 @@ def insert_face_profile_record(record):
     values=_profile_values(record)
     try:
         _run("""INSERT INTO face_profiles(id,name,name_key,token,description,created_at,local_model_ready,runpod_model_ready,
-            local_training_state,runpod_training_state,local_training_error,local_training_job_id,runpod_training_error,runpod_training_job_id)
-            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING""", values)
+            local_training_state,runpod_training_state,local_training_mode,runpod_training_mode,
+            local_training_error,local_training_job_id,runpod_training_error,runpod_training_job_id)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING""", values)
     except UniqueViolation as exc:
         raise ValueError("A face profile name or prompt token already exists in PostgreSQL.") from exc
     return get_face_profile_record(record["id"])
@@ -268,7 +274,8 @@ def create_face_profile_record(record):
 
 
 def update_face_profile_record(profile_id, fields):
-    allowed={"local_model_ready","runpod_model_ready","local_training_state","runpod_training_state","local_training_error",
+    allowed={"local_model_ready","runpod_model_ready","local_training_state","runpod_training_state",
+        "local_training_mode","runpod_training_mode","local_training_error",
         "local_training_job_id","runpod_training_error","runpod_training_job_id","token","description"}
     if set(fields)-allowed: raise ValueError("Unsupported profile fields: "+", ".join(sorted(set(fields)-allowed)))
     if not fields: return get_face_profile_record(profile_id)
