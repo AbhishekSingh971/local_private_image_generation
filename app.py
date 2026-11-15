@@ -2293,15 +2293,15 @@ def api_preview_face_photo_edit(photo_id):
         prompt = _clean_prompt(request.form.get("prompt"), "Edit prompt", 1200)
         negative_prompt = _clean_prompt(request.form.get("negative_prompt", ""), "Negative prompt", 600)
         strength = float(request.form.get("strength", "0.35"))
-        steps = int(request.form.get("steps", "20"))
+        steps = resolve_image_inference_steps(request.form.get("steps"), "sd15")
         backend = _resolve_compute_backend(request.form)
         use_global_body_model = _truthy(request.form.get("use_global_body_model"))
         seed = resolve_generation_seed(request.form.get("seed"))
         task_id = (request.form.get("task_id") or uuid.uuid4().hex).strip().lower()
         if not re.fullmatch(r"[a-f0-9]{32}", task_id):
             raise ValueError("Invalid generation task ID.")
-        if not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
-            raise ValueError("Strength must be 0.20–0.95 and steps must be 5–25.")
+        if not 0.2 <= strength <= 0.95:
+            raise ValueError("Edit strength must be 0.20–0.95.")
         if not prompt:
             raise ValueError("Describe the change you want to preview.")
     except (ValueError, TypeError) as exc:
