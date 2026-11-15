@@ -1593,6 +1593,8 @@ def _render_face_dataset_target(job: dict, target: dict, source_image, source_im
         )
         strength = float(target["strength"])
     prompt = identity_instruction + pose_instruction + "Photorealistic close head-and-shoulders DSLR portrait, realistic anatomy, no illustration."
+    if use_face_lora and profile:
+        prompt = ensure_face_identity_trigger(prompt, profile["token"])
     negative_prompt = (
         "different person, identity drift, changed face shape, different eyes, different nose, different lips, changed hairstyle, "
         "frontal face when a side profile is requested, wrong head direction, looking only with the eyes, duplicate face, "
