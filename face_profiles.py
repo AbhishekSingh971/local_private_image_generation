@@ -120,17 +120,24 @@ def _local_full_finetune_ready(profile_id: str) -> bool:
     )
 
 
-def set_profile_model_training_mode(profile_id: str, training_mode: str) -> None:
-    """Record which trained artifact is active without changing legacy profile rows."""
+def set_profile_model_training_mode(
+    profile_id: str, training_mode: str, backend: str = "local"
+) -> None:
+    """Persist the active model type for the selected compute backend."""
     profile_id = validate_profile_id(profile_id)
     mode = str(training_mode or "").strip().lower()
     if mode not in {"lora", "full_finetune"}:
         raise ValueError("Training mode must be lora or full_finetune.")
+    if backend not in {"local", "runpod", "cloud_gpu"}:
+        raise ValueError("Training mode backend must be local or cloud_gpu.")
+    field = "local_training_mode" if backend == "local" else "runpod_training_mode"
+    update_profile(profile_id, **{field: mode})
+
     mode_dir = ACTIVE_MODEL_MODE_DIR / profile_id
     mode_dir.mkdir(parents=True, exist_ok=True)
     target = mode_dir / "active.json"
     temporary = mode_dir / ("active." + uuid.uuid4().hex + ".tmp")
-    payload = {"training_mode": mode, "updated_at": _utc_now()}
+    payload = {"training_mode": mode, "backend": backend, "updated_at": _utc_now()}
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temporary.replace(target)
 
@@ -141,9 +148,15 @@ def set_profile_model_training_mode(profile_id: str, training_mode: str) -> None
     )
 
 
-def profile_model_training_mode(profile_id: str) -> str:
-    """Return the active model type; old profiles continue to default to LoRA."""
+def profile_model_training_mode(profile_id: str, backend: str = "local") -> str:
+    """Return the selected backend's active model type; legacy profiles default to LoRA."""
     profile_id = validate_profile_id(profile_id)
+    profile = get_profile(profile_id) or {}
+    field = "local_training_mode" if backend == "local" else "runpod_training_mode"
+    mode = str(profile.get(field) or "").strip().lower()
+    if mode in {"lora", "full_finetune"}:
+        return mode
+
     marker = ACTIVE_MODEL_MODE_DIR / profile_id / "active.json"
     try:
         data = json.loads(marker.read_text(encoding="utf-8"))
@@ -339,6 +352,8 @@ def create_profile(name: str, profile_id: str | None = None, token: str | None =
             "runpod_model_ready": False,
             "local_training_state": "not_trained",
             "runpod_training_state": "not_trained",
+            "local_training_mode": "lora",
+            "runpod_training_mode": "lora",
             "local_training_error": None,
             "local_training_job_id": None,
             "runpod_training_error": None,
@@ -371,6 +386,8 @@ def update_profile(profile_id: str, **fields) -> dict:
         "runpod_model_ready",
         "local_training_state",
         "runpod_training_state",
+        "local_training_mode",
+        "runpod_training_mode",
         "local_training_error",
         "local_training_job_id",
         "runpod_training_error",
