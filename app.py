@@ -3445,6 +3445,7 @@ def generate():
     face_restore_status = "not_requested"
     quality_report = None
     flux_prompt_token_count = None
+    identity_conditioning = None
     try:
         if backend == "cloud_gpu":
             if profile_id and not profile.get("runpod_model_ready"):
@@ -3489,6 +3490,10 @@ def generate():
             upscale_warning = response.headers.get("X-Upscale-Warning", "")
             face_restore_warning = response.headers.get("X-Face-Restoration-Warning", "")
             face_restore_status = response.headers.get("X-Face-Restoration-Status", "not_requested")
+            try:
+                identity_conditioning = json.loads(response.headers.get("X-Identity-Conditioning", "null"))
+            except (TypeError, ValueError):
+                identity_conditioning = None
             filename = f"{uuid.uuid4().hex}.png"
             output_path = OUTPUT_DIR / filename
             output_path.write_bytes(response.content)
@@ -3528,6 +3533,7 @@ def generate():
                     ai_upscale=ai_upscale, upscale_options=upscale_options,
                     upscale_warning=upscale_warning, quality_report=quality_report,
                     prompt_token_count=prompt_token_count, profile=profile,
+                    identity_conditioning=identity_conditioning,
                     face_restore_options=face_restore_options, face_restore_warning=face_restore_warning,
                     face_restore_status=face_restore_status,
                 )
@@ -3591,6 +3597,17 @@ def generate():
                     mode, profile_id, backend, use_global_body_model=use_global_body_model,
                     model_family=model_family,
                 )
+                active_training_mode = profile_model_training_mode(profile_id, "local") if profile_id else None
+                identity_conditioning = {
+                    "face_profile_selected": bool(profile_id),
+                    "face_profile_id": profile_id,
+                    "training_mode": active_training_mode,
+                    "face_adapter_loaded": bool(getattr(pipeline, "_private_face_lora_loaded", False)),
+                    "face_adapter_profile_id": getattr(pipeline, "_private_face_lora_profile_id", None),
+                    "face_adapter_weight": getattr(pipeline, "_private_face_lora_weight", None),
+                    "body_adapter_loaded": bool(getattr(pipeline, "_private_body_lora_loaded", False)),
+                    "trigger_token_applied": bool(profile and model_family == "sd15" and profile["token"].casefold() in prompt.casefold()),
+                }
                 generator_device = "cuda" if backend == "local_gpu" else "cpu"
                 _set_generation_progress(
                     task_id, asset_type="image", backend=backend, status="running", progress=5,
@@ -3725,6 +3742,7 @@ def generate():
             ai_upscale=ai_upscale, upscale_options=upscale_options,
             upscale_warning=upscale_warning, quality_report=quality_report,
             prompt_token_count=flux_prompt_token_count or prompt_token_count, profile=profile,
+            identity_conditioning=identity_conditioning,
             face_restore_options=face_restore_options, face_restore_warning=face_restore_warning,
             face_restore_status=face_restore_status,
         )
