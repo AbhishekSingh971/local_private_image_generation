@@ -2993,6 +2993,7 @@ def api_face_train_status(profile_id):
             local_job = LOCAL_TRAIN_JOBS.get(job_id, {}) if job_id else {}
         return jsonify(
             status=profile.get("local_training_state", "not_trained"),
+            training_mode=profile.get("local_training_mode", TRAINING_MODE_LORA),
             error=profile.get("local_training_error"),
             job=local_job,
             profile=get_profile(profile_id),
@@ -3037,7 +3038,11 @@ def api_face_train_status(profile_id):
             runpod_training_error=(payload.get("error") or "Cloud GPU training failed")[-3500:],
         )
     updated_profile = get_profile(profile_id)
-    return jsonify(status=state, error=payload.get("error"), job=payload, profile=updated_profile)
+    return jsonify(
+        status=state, error=payload.get("error"), job=payload,
+        training_mode=(updated_profile or {}).get("runpod_training_mode", TRAINING_MODE_LORA),
+        profile=updated_profile,
+    )
 
 
 def _load_cpu_or_gpu_pipeline(
