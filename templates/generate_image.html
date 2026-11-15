@@ -69,7 +69,8 @@
         <div class="twocol">
           <div><label for="aspectRatio">Aspect ratio</label><select id="aspectRatio" name="aspect_ratio"><option value="portrait" selected>Portrait 2:3</option><option value="square">Square 1:1</option><option value="landscape">Landscape 3:2</option></select></div>
           <div><label for="outputResolution">Output size</label><select id="outputResolution" name="output_resolution"><option value="native" selected>Native · fastest</option><option value="hd">HD · 1280 px</option><option value="1080p">Full HD · 1920 px</option><option value="4k">4K equivalent · 3840 px</option></select></div>
-          <div><label for="steps">Inference steps</label><input id="steps" name="steps" type="number" min="5" max="25" step="1" value="25"></div>
+          <div><label for="steps">Inference steps</label><input id="steps" name="steps" type="number" min="5" max="35" step="1" value="25">
+            <p class="field-help">Maximum steps depend on the model: SD 1.5 up to 35, SDXL up to 30, FLUX.2 Klein fixed at 4.</p></div>
           <div><label for="imageSeed">Seed <span class="optional">optional</span></label><input id="imageSeed" name="seed" type="number" min="0" max="2147483647" step="1" placeholder="Random"></div>
         </div>
         <label class="switchline" for="aiUpscale"><input id="aiUpscale" name="ai_upscale" type="checkbox" value="true"> AI x4 upscaling <span class="optional">GPU and upscaler model required</span></label>
