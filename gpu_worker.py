@@ -743,11 +743,11 @@ def remote_generate():
     prompt = request.form.get("prompt") or ""
     negative_prompt = request.form.get("negative_prompt") or ""
     try:
-        steps = int(request.form.get("steps", "4" if (request.form.get("model_family") or "sd15").strip().lower() == "flux2_klein" else "25"))
+        model_family = resolve_model_family(request.form.get("model_family") or "sd15")
+        steps = local_engine.resolve_image_inference_steps(request.form.get("steps"), model_family)
         strength = float(request.form.get("strength", "0.45"))
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
         image_preset = validate_image_preset(request.form.get("image_preset") or "full_body_photo")
-        model_family = resolve_model_family(request.form.get("model_family") or "sd15")
         width, height = resolve_image_dimensions(aspect_ratio, model_family)
         profile_id = validate_profile_id(request.form["face_profile_id"]) if request.form.get("face_profile_id") else None
         seed = resolve_generation_seed(request.form.get("seed"))
@@ -770,10 +770,8 @@ def remote_generate():
     if model_family == "flux2_klein":
         if negative_prompt.strip():
             return jsonify(error="FLUX.2 Klein 4B distilled does not accept a negative prompt."), 400
-        if steps != 4:
-            return jsonify(error="FLUX.2 Klein 4B distilled uses a fixed 4-step generation schedule."), 400
-    elif not 5 <= steps <= 25 or not 0.2 <= strength <= 0.95:
-        return jsonify(error="Invalid step count or image strength."), 400
+    elif not 0.2 <= strength <= 0.95:
+        return jsonify(error="Invalid image strength."), 400
     if not torch.cuda.is_available():
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
         return jsonify(error="CUDA is not available on this worker."), 503
