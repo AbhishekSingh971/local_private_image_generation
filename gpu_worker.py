@@ -862,10 +862,15 @@ def remote_generate():
         return jsonify(error="CUDA is not available on this worker."), 503
     if profile_id:
         if not supports_face_lora(model_family):
-            return jsonify(error="This face LoRA was trained for SD 1.5 and cannot be loaded by the selected model family. Select SD 1.5 for this identity or continue without the trained face."), 400
+            return jsonify(error="This trained face model is for SD 1.5 and cannot be loaded by the selected model family. Select SD 1.5 for this identity or continue without the trained face."), 400
+        try:
+            if local_engine.profile_model_training_mode(profile_id, "local") == TRAINING_MODE_FULL_FINETUNE:
+                local_engine.ensure_full_finetune_model_cached(profile_id)
+        except (RuntimeError, ValueError) as exc:
+            return jsonify(error=str(exc)), 503
         profile = get_profile(profile_id)
         if not profile or not profile.get("local_model_ready"):
-            return jsonify(error="The selected face LoRA is not trained on this GPU worker."), 400
+            return jsonify(error="The selected face model is not trained or available on this GPU worker."), 400
     if use_global_body_model:
         if model_family != "sd15":
             use_global_body_model = False
