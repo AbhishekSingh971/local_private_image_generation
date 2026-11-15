@@ -83,3 +83,12 @@ def test_generation_metadata_reports_actual_identity_adapter_state():
     assert '"body_adapter_loaded": bool(getattr(pipeline, "_private_body_lora_loaded", False))' in app_source
     assert 'response.headers["X-Identity-Conditioning"]' in worker_source
     assert 'identity_conditioning=identity_conditioning' in app_source
+
+
+
+def test_generation_status_displays_face_adapter_activation_report():
+    source = Path("static/studio.js").read_text(encoding="utf-8")
+    assert 'identity.training_mode==="full_finetune"?"full fine-tune"' in source
+    assert 'identity.face_adapter_loaded?"face LoRA loaded":"FACE LoRA NOT LOADED"' in source
+    assert 'identity.trigger_token_applied?"applied":"missing"' in source
+    assert 'identity.body_adapter_loaded?"on":"off"' in source
