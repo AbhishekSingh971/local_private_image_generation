@@ -291,6 +291,44 @@ def remote_health():
     )
 
 
+def _profile_has_active_worker_training(profile_id):
+    """Check the worker's live job registry and OS process table before blocking a retry."""
+    with TASKS_LOCK:
+        active_task = any(
+            task.get("profile_id") == profile_id
+            and str(task.get("status") or "").lower() in {"queued", "running", "in_progress"}
+            for task in TASKS.values()
+        )
+    if active_task:
+        return True
+
+    # A worker restart clears TASKS. A subprocess may briefly outlive its parent,
+    # so inspect the process table before treating a persisted running flag as stale.
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "args="], capture_output=True, text=True,
+            timeout=5, check=False,
+        )
+        if result.returncode == 0:
+            for command_line in result.stdout.splitlines():
+                if (
+                    ("train_face_lora.py" in command_line or "train_face_finetune.py" in command_line)
+                    and "--profile-id" in command_line
+                ):
+                    parts = command_line.split()
+                    try:
+                        profile_index = parts.index("--profile-id") + 1
+                    except (ValueError, IndexError):
+                        continue
+                    if profile_index < len(parts) and parts[profile_index] == profile_id:
+                        return True
+    except (OSError, subprocess.SubprocessError):
+        # If process inspection is unavailable, fail closed rather than risk
+        # starting a second trainer over the same profile's model directory.
+        return True
+    return False
+
+
 @worker.post("/api/remote/train-profile")
 def remote_train_profile():
     if not torch.cuda.is_available():
@@ -319,7 +357,15 @@ def remote_train_profile():
                 continue
         existing = get_profile(profile_id)
         if existing and existing.get("local_training_state") == "running":
-            return jsonify(error="This face profile is already training on the GPU worker."), 409
+            if _profile_has_active_worker_training(profile_id):
+                return jsonify(error="This face profile is already training on the GPU worker."), 409
+            # No live task or matching trainer process remains: recover the stale
+            # persisted lock so the user can safely retry training.
+            update_profile(
+                profile_id,
+                local_training_state="failed",
+                local_training_error="Previous GPU training was interrupted; stale worker lock recovered.",
+            )
         create_profile(name, profile_id=profile_id, token=token, description=description)
         approved_filenames = []
         worker_dataset = dataset_dir(profile_id)
