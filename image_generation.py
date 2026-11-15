@@ -18,6 +18,39 @@ IMAGE_DIMENSIONS = {
 IMAGE_PRESETS = {"standard", "photorealistic", "full_body_photo"}
 MAX_GENERATION_SEED = (2 ** 31) - 1
 
+IMAGE_STEP_LIMITS = {
+    "sd15": {"min": 5, "max": 35, "default": 25},
+    "sdxl": {"min": 5, "max": 30, "default": 25},
+    "flux2_klein": {"min": 4, "max": 4, "default": 4},
+}
+
+
+def resolve_image_inference_steps(steps: object = None, model_family: str = "sd15") -> int:
+    """Validate the requested inference-step count for the selected image model."""
+    family = str(model_family or "sd15").strip().lower()
+    limits = IMAGE_STEP_LIMITS.get(family)
+    if limits is None:
+        raise ValueError("Image model family must be sd15, sdxl or flux2_klein.")
+
+    raw_steps = steps
+    if raw_steps is None or str(raw_steps).strip() == "":
+        return limits["default"]
+    try:
+        value = int(str(raw_steps).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Image generation steps must be a whole number.") from exc
+
+    if not limits["min"] <= value <= limits["max"]:
+        if family == "flux2_klein":
+            raise ValueError("FLUX.2 Klein 4B distilled uses a fixed 4-step generation schedule.")
+        model_name = "SD 1.5" if family == "sd15" else "SDXL"
+        raise ValueError(
+            f"{model_name} image generation steps must be between "
+            f"{limits['min']} and {limits['max']}."
+        )
+    return value
+
+
 
 def resolve_generation_seed(seed: object = None) -> int:
     """Return a safe 31-bit seed, creating one when the caller leaves it blank."""
