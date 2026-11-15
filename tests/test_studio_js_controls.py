@@ -24,5 +24,9 @@ def test_generate_photo_uses_prompt_first_form_without_manual_strength_controls(
     assert 'id="imagePreset"' in template
     assert 'id="faceAngle" name="face_angle"' in template
     assert 'id="faceExpression" name="face_expression"' in template
+    assert 'id="steps" name="steps" type="number" min="5" max="35"' in template
+    assert 'sd15: { min: 5, max: 35, default: 25 }' in source
+    assert 'sdxl: { min: 5, max: 30, default: 25 }' in source
+    assert 'flux2_klein: { min: 4, max: 4, default: 4 }' in source
     assert 'const sd15Selected = (modelFamilySelect?.value || "sd15") === "sd15";' in source
     assert 'const controlsEnabled = profileSelected && sd15Selected;' in source
