@@ -24,17 +24,22 @@
 
       <label for="prompt">Describe the image</label>
       <textarea id="prompt" name="prompt" rows="5" required placeholder="Describe what you want to create or what should change in your reference image. Include the subject, expression, pose, clothing, scene and details that matter."></textarea>
-      <p class="field-help">Use your own words. Your prompt takes priority; trained identity and compatible body adapters are applied automatically. Reference strength is selected from the changes you describe.</p>
+      <p class="field-help">Use your own words. Your prompt takes priority. The selected face identity is applied independently; shared body conditioning is optional and off by default. Reference strength is selected from the changes you describe.</p>
 
       <input type="hidden" name="strength" id="strength" value="0.45">
       <input type="hidden" name="image_preset" id="imagePreset" value="standard">
       <input type="hidden" name="generation_profile" id="generationProfile" value="custom">
       <input type="hidden" name="negative_prompt" value="">
-      <input type="hidden" name="use_global_body_model" id="useGlobalBodyModel" value="true">
+      
 
       <details class="advanced-prompt-controls">
         <summary>Advanced options <span class="optional">optional</span></summary>
         <p class="field-help">Only set a filter when you want to override what your prompt describes. Blank filters leave the prompt in control.</p>
+        <label class="switchline" for="useGlobalBodyModel">
+          <input type="checkbox" name="use_global_body_model" id="useGlobalBodyModel" value="true">
+          Apply shared body-type LoRA <span class="optional">optional · off by default</span>
+        </label>
+        <p class="field-help">Keep this off when testing face identity. The shared body adapter can change facial and visual features because it also modifies the diffusion U-Net.</p>
         <div class="twocol face-condition-controls">
           <div id="faceAngleGroup">
             <label for="faceAngle">Face angle <span class="optional">optional · SD 1.5 trained identity</span></label>
