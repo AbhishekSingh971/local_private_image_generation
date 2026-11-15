@@ -1024,10 +1024,6 @@
     if(!id){if(status)status.textContent="Create or select a face profile first.";return;}
     if(!profile||profile.image_count<5){if(status)status.textContent="Add at least 5 good photos to this profile before training.";return;}
     const trainingMode=trainingModeSelect?.value||"lora";
-    if(trainingMode==="full_finetune"&&(!useGpuAcceleration?.checked||!computeBackend||!["cloud_gpu","runpod","local_gpu","auto"].includes(computeBackend.value))){
-      if(status)status.textContent="Full fine-tuning requires a selected CUDA GPU with at least 20 GB VRAM.";
-      return;
-    }
     button.disabled=true;if(status)status.textContent="Checking the selected GPU and submitting "+(trainingMode==="full_finetune"?"full fine-tuning":"LoRA")+"…";
     const backend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
     try{
