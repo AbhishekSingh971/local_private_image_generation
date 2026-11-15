@@ -38,7 +38,7 @@ from flask import Flask, request, send_from_directory, send_file, jsonify, rende
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from compute_routing import select_compute_backend, select_generation_backend
-from image_generation import build_generation_prompts, infer_reference_strength, resolve_generation_seed, resolve_image_dimensions, validate_image_preset
+from image_generation import build_generation_prompts, infer_reference_strength, resolve_generation_seed, resolve_image_dimensions, resolve_image_inference_steps, validate_image_preset
 from image_upscaling import resolve_upscale_options, upscale_image
 from face_restoration import resolve_face_restoration_options, restore_faces
 from identity_evaluation import evaluate_identity_similarity
@@ -3168,7 +3168,7 @@ def generate():
         model_family = resolve_model_family(request.form.get("model_family") or "sd15")
         profile_id = validate_profile_id(request.form.get("face_profile_id")) if request.form.get("face_profile_id") else None
         strength = float(request.form.get("strength", "0.45"))
-        steps = int(request.form.get("steps", "4" if model_family == "flux2_klein" else "25"))
+        steps = resolve_image_inference_steps(request.form.get("steps"), model_family)
         title = _clean_prompt(request.form.get("title"), "Title", 160)
         aspect_ratio = (request.form.get("aspect_ratio") or "portrait").strip().lower()
         image_preset = validate_image_preset(request.form.get("image_preset") or "standard")
@@ -3218,10 +3218,8 @@ def generate():
     if model_family == "flux2_klein":
         if negative_prompt.strip():
             return jsonify(error="FLUX.2 Klein 4B distilled does not accept a negative prompt. Clear it or select SD 1.5 / SDXL."), 400
-        if steps != 4:
-            return jsonify(error="FLUX.2 Klein 4B distilled uses a fixed 4-step generation schedule."), 400
-    elif not 0.2 <= strength <= 0.95 or not 5 <= steps <= 25:
-        return jsonify(error="Strength must be 0.20–0.95 and steps must be 5–25."), 400
+    elif not 0.2 <= strength <= 0.95:
+        return jsonify(error="Reference strength must be 0.20–0.95."), 400
     profile = get_profile(profile_id) if profile_id else None
     if profile_id and not profile:
         return jsonify(error="Face profile not found."), 404
