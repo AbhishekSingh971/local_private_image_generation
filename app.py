@@ -753,7 +753,7 @@ def _generation_metadata(
     *, model_family, backend, seed, steps, width, height, output_width, output_height,
     aspect_ratio, generation_mode, strength, ai_upscale, upscale_options,
     upscale_warning="", quality_report=None, prompt_token_count=None, profile=None,
-    face_restore_options=None, face_restore_warning="", face_restore_status="not_requested",
+    identity_conditioning=None, face_restore_options=None, face_restore_warning="", face_restore_status="not_requested",
 ):
     """Capture enough provenance to reproduce or compare a generated asset."""
     config = model_configuration(model_family)
@@ -789,6 +789,13 @@ def _generation_metadata(
         },
         "generation_mode": generation_mode,
         "identity_profile_id": profile.get("id") if profile else None,
+        "identity_conditioning": identity_conditioning or {
+            "face_profile_selected": bool(profile),
+            "face_adapter_loaded": None,
+            "body_adapter_loaded": None,
+            "trigger_token_applied": None,
+            "note": "Runtime adapter details were not reported by this generation path.",
+        },
         "prompt_token_count": prompt_token_count,
         "prompt_contract_version": 1,
         "upscaling": {
@@ -3177,6 +3184,10 @@ def _load_cpu_or_gpu_pipeline(
                 except Exception:
                     pass
                 loaded._private_face_ip_adapter_loaded = False
+                loaded._private_face_lora_loaded = False
+                loaded._private_face_lora_profile_id = None
+                loaded._private_face_lora_weight = None
+                loaded._private_body_lora_loaded = False
                 if mode == "pose_img2img" and _truthy(os.environ.get("FACE_IDENTITY_IP_ADAPTER_ENABLED", "true")):
                     try:
                         loaded.load_ip_adapter(
@@ -3234,6 +3245,11 @@ def _load_cpu_or_gpu_pipeline(
             if adapter_names:
                 pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
             active_lora = requested_loras
+
+        pipe._private_face_lora_loaded = bool(identity_lora_id)
+        pipe._private_face_lora_profile_id = identity_lora_id
+        pipe._private_face_lora_weight = 1.0 if identity_lora_id else None
+        pipe._private_body_lora_loaded = bool(use_global_body_model)
         return pipe
 
 
