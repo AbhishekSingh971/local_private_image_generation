@@ -36,6 +36,13 @@ from regional_inpainting import run_sd15_regional_inpainting
 import shutil
 import tempfile
 from model_registry import model_configuration, resolve_model_family, supports_face_lora
+from training_modes import (
+    TRAINING_MODE_FULL_FINETUNE,
+    TRAINING_MODE_LORA,
+    resolve_training_mode,
+    validate_training_settings,
+    validate_training_vram,
+)
 from face_profiles import (
     create_profile,
     dataset_dir,
@@ -131,28 +138,40 @@ def _valid_profile(profile_id):
     return value if get_profile(value) else None
 
 
-def _training_job(profile_id, job_id, steps, resolution, approved_filenames):
+def _training_job(profile_id, job_id, steps, resolution, approved_filenames, training_mode=TRAINING_MODE_LORA):
     profile = get_profile(profile_id)
+    training_mode = resolve_training_mode(training_mode)
     if not profile:
         with TASKS_LOCK:
-            TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": "Profile not found."}
+            TASKS[job_id] = {
+                "job_id": job_id, "profile_id": profile_id,
+                "training_mode": training_mode, "status": "failed",
+                "error": "Profile not found.",
+            }
         return
 
+    script_name = (
+        "train_face_finetune.py"
+        if training_mode == TRAINING_MODE_FULL_FINETUNE else "train_face_lora.py"
+    )
     command = [
-        sys.executable, str(ROOT / "train_face_lora.py"),
+        sys.executable, str(ROOT / script_name),
         "--profile-id", profile_id,
-        "--output-name", profile_id,
-        "--token", profile["token"],
         "--steps", str(steps),
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
     ]
+    if training_mode == TRAINING_MODE_LORA:
+        command.extend([
+            "--output-name", profile_id,
+            "--token", profile["token"],
+        ])
     for filename in approved_filenames:
         command.extend(["--approved-filename", filename])
     with TASKS_LOCK:
         TASKS[job_id] = {
             "job_id": job_id, "profile_id": profile_id, "status": "running",
-            "started_at": time.time(), "logs": "",
+            "training_mode": training_mode, "started_at": time.time(), "logs": "",
         }
     try:
         completed = subprocess.run(
@@ -160,29 +179,83 @@ def _training_job(profile_id, job_id, steps, resolution, approved_filenames):
             check=False,
         )
         logs = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-        if completed.returncode == 0 and (
-            (model_path(profile_id) / "pytorch_lora_weights.safetensors").is_file()
-            or (model_path(profile_id) / "pytorch_lora_weights.bin").is_file()
-        ):
+        if training_mode == TRAINING_MODE_FULL_FINETUNE:
+            full_path = local_engine.full_finetune_model_path(profile_id)
+            artifact_ready = (
+                (full_path / "config.json").is_file()
+                and (full_path / "diffusion_pytorch_model.safetensors").is_file()
+            )
+        else:
+            lora_path = model_path(profile_id)
+            artifact_ready = (
+                (lora_path / "pytorch_lora_weights.safetensors").is_file()
+                or (lora_path / "pytorch_lora_weights.bin").is_file()
+            )
+
+        if completed.returncode == 0 and artifact_ready:
+            local_engine.set_profile_model_training_mode(profile_id, training_mode)
+            storage_warning = None
+            persisted_to_drive = False
+            if training_mode == TRAINING_MODE_FULL_FINETUNE:
+                drive_root = os.environ.get(
+                    "FACE_FINETUNE_DRIVE_REMOTE", "gdrive:Local Ai/models/face-finetunes"
+                ).strip().rstrip("/")
+                try:
+                    result = subprocess.run(
+                        [
+                            "rclone", "copy", str(full_path), f"{drive_root}/{profile_id}",
+                            "--transfers", "4", "--checkers", "8", "--retries", "2",
+                            "--low-level-retries", "3", "--stats-one-line",
+                        ],
+                        cwd=ROOT, capture_output=True, text=True,
+                        timeout=60 * 60, check=False,
+                    )
+                    if result.returncode == 0:
+                        persisted_to_drive = True
+                        print(f"Full fine-tune checkpoint synced to Google Drive: {drive_root}/{profile_id}")
+                    else:
+                        detail = (result.stderr or result.stdout or "rclone returned an error").strip()[-1200:]
+                        storage_warning = "The model trained successfully but Drive backup failed: " + detail
+                        worker.logger.exception("Full fine-tune Drive backup returned non-zero: %s", detail)
+                except Exception as drive_exc:
+                    storage_warning = "The model trained successfully but Drive backup failed: " + str(drive_exc)[:800]
+                    worker.logger.exception("Could not sync full fine-tuned model to Google Drive")
             update_profile(
                 profile_id, local_model_ready=True, local_training_state="completed",
                 local_training_error=None,
             )
-            task = {"job_id": job_id, "profile_id": profile_id, "status": "completed", "logs": logs[-5000:]}
+            message = (
+                "Full SD 1.5 U-Net fine-tuning completed on the cloud GPU."
+                if training_mode == TRAINING_MODE_FULL_FINETUNE else
+                "Face LoRA training completed on the cloud GPU."
+            )
+            task = {
+                "job_id": job_id, "profile_id": profile_id, "status": "completed",
+                "training_mode": training_mode, "message": message,
+                "logs": logs[-5000:], "persisted_to_drive": persisted_to_drive,
+            }
+            if storage_warning:
+                task["warning"] = storage_warning
         else:
-            error = logs[-3500:] or f"Training exited with code {completed.returncode}."
+            error = logs[-3500:] or f"Training exited with code {completed.returncode} or did not save its model artifact."
             update_profile(
                 profile_id, local_training_state="failed", local_training_error=error,
                 local_model_ready=False,
             )
-            task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error, "logs": logs[-5000:]}
+            task = {
+                "job_id": job_id, "profile_id": profile_id, "status": "failed",
+                "training_mode": training_mode, "error": error, "logs": logs[-5000:],
+            }
     except Exception as exc:
         error = str(exc)
         update_profile(
             profile_id, local_training_state="failed", local_training_error=error,
             local_model_ready=False,
         )
-        task = {"job_id": job_id, "profile_id": profile_id, "status": "failed", "error": error}
+        task = {
+            "job_id": job_id, "profile_id": profile_id, "status": "failed",
+            "training_mode": training_mode, "error": error,
+        }
     cleanup_warnings = []
     for filename in approved_filenames:
         safe_name = Path(filename).name
@@ -223,17 +296,20 @@ def remote_train_profile():
         return jsonify(error="This cloud GPU worker has no CUDA GPU attached."), 503
     try:
         profile_id = validate_profile_id(request.form.get("profile_id", ""))
+        training_mode = resolve_training_mode(request.form.get("training_mode"))
         name = (request.form.get("name") or "").strip()
         token = (request.form.get("token") or "").strip()
         description = request.form.get("description") or ""
-        steps = int(request.form.get("steps", "800"))
-        resolution = int(request.form.get("resolution", "512"))
-        if not 100 <= steps <= 3000 or resolution not in (384, 512):
-            raise ValueError("Training steps must be 100–3000 and resolution must be 384 or 512.")
+        steps, resolution = validate_training_settings(
+            training_mode, request.form.get("steps", "400" if training_mode == TRAINING_MODE_FULL_FINETUNE else "800"),
+            request.form.get("resolution", "512"),
+        )
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        validate_training_vram(training_mode, vram_gb)
         photo_uploads = request.files.getlist("photos")
         images = local_engine._parse_uploads(photo_uploads)
         if len(images) < 5:
-            raise ValueError("At least 5 valid face photos are required.")
+            raise ValueError("At least 5 valid approved face photos are required.")
         caption_by_name = {}
         for caption_file in request.files.getlist("captions"):
             try:
@@ -263,9 +339,18 @@ def remote_train_profile():
             local_training_error=None, local_model_ready=False,
         )
         with TASKS_LOCK:
-            TASKS[job_id] = {"job_id": job_id, "profile_id": profile_id, "status": "queued"}
-        TRAIN_POOL.submit(_training_job, profile_id, job_id, steps, resolution, approved_filenames)
-        return jsonify(status="queued", job_id=job_id, profile_id=profile_id), 202
+            TASKS[job_id] = {
+                "job_id": job_id, "profile_id": profile_id,
+                "training_mode": training_mode, "status": "queued",
+            }
+        TRAIN_POOL.submit(
+            _training_job, profile_id, job_id, steps, resolution,
+            approved_filenames, training_mode,
+        )
+        return jsonify(
+            status="queued", job_id=job_id, profile_id=profile_id,
+            training_mode=training_mode, vram_gb=round(vram_gb, 2),
+        ), 202
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     except RuntimeError as exc:
