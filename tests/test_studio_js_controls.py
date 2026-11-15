@@ -38,3 +38,12 @@ def test_local_and_rented_gpu_generation_share_step_validation():
     worker_source = Path("gpu_worker.py").read_text(encoding="utf-8")
     assert "steps = resolve_image_inference_steps(request.form.get(\"steps\"), model_family)" in app_source
     assert "steps = local_engine.resolve_image_inference_steps(request.form.get(\"steps\"), model_family)" in worker_source
+
+
+
+def test_training_photo_edit_preview_uses_sd15_limit():
+    app_source = Path("app.py").read_text(encoding="utf-8")
+    template = Path("templates/training_data.html").read_text(encoding="utf-8")
+    assert 'steps = resolve_image_inference_steps(request.form.get("steps"), "sd15")' in app_source
+    assert '<option value="30">30</option>' in template
+    assert '<option value="35">35 · maximum for SD 1.5</option>' in template
