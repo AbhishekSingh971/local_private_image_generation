@@ -336,7 +336,7 @@ def remote_train_profile():
         job_id = uuid.uuid4().hex
         update_profile(
             profile_id, local_training_state="running", local_training_job_id=job_id,
-            local_training_error=None, local_model_ready=False,
+            local_training_error=None,
         )
         with TASKS_LOCK:
             TASKS[job_id] = {
