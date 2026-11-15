@@ -173,7 +173,7 @@ def profile_model_training_mode(profile_id: str, backend: str = "local") -> str:
     return "lora"
 
 
-def ensure_full_finetune_model_cached(profile_id: str) -> Path:
+def ensure_full_finetune_model_cached(profile_id: str, backend: str = "local") -> Path:
     """Lazily restore a large full-tuned SD 1.5 U-Net from the configured Drive remote."""
     profile_id = validate_profile_id(profile_id)
     target = full_finetune_model_path(profile_id)
@@ -213,7 +213,7 @@ def ensure_full_finetune_model_cached(profile_id: str) -> Path:
         if target.exists():
             shutil.rmtree(target)
         staging.replace(target)
-        set_profile_model_training_mode(profile_id, "full_finetune")
+        set_profile_model_training_mode(profile_id, "full_finetune", backend=backend)
         return target
     finally:
         if staging.exists():
