@@ -861,6 +861,7 @@ def remote_generate():
     if not torch.cuda.is_available():
         _set_generation_progress(task_id, asset_type="image", status="failed", progress=0, total_steps=steps, stage="failed", message="CUDA is not available on this worker.")
         return jsonify(error="CUDA is not available on this worker."), 503
+    profile = None
     if profile_id:
         if not supports_face_lora(model_family):
             return jsonify(error="This trained face model is for SD 1.5 and cannot be loaded by the selected model family. Select SD 1.5 for this identity or continue without the trained face."), 400
