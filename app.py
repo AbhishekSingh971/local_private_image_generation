@@ -3010,7 +3010,12 @@ def api_face_train_status(profile_id):
         return jsonify(error=str(exc), status="running", profile=profile), 502
     state = payload.get("status", "running")
     if state == "completed":
-        if database_url_configured() and profile.get("runpod_training_state") != "completed":
+        training_mode = resolve_training_mode(payload.get("training_mode"))
+        if (
+            training_mode == TRAINING_MODE_LORA
+            and database_url_configured()
+            and profile.get("runpod_training_state") != "completed"
+        ):
             try:
                 model_response = cloud_worker_request(
                     "GET", f"/api/remote/models/{profile_id}", timeout=(15, 120)
@@ -3019,10 +3024,13 @@ def api_face_train_status(profile_id):
                 _persist_face_model_bundle(profile_id, "runpod", model_response.content, file_count)
             except Exception as exc:
                 app.logger.warning("Could not back up cloud GPU LoRA bundle to PostgreSQL: %s", type(exc).__name__)
+        # Full U-Net checkpoints are large and remain on the worker's configured
+        # Google Drive model archive; do not stream gigabytes through the web app.
         update_profile(
             profile_id, runpod_training_state="completed", runpod_training_error=None,
             runpod_model_ready=True,
         )
+        payload["training_mode"] = training_mode
     elif state == "failed":
         update_profile(
             profile_id, runpod_training_state="failed",
@@ -3037,16 +3045,20 @@ def _load_cpu_or_gpu_pipeline(
     mode, profile_id, compute_backend="cpu", *, use_global_body_model=False, model_family="sd15"
 ):
     """Load one compatible image model family and its optional SD 1.5 adapters."""
-    global pipe, pipeline_mode, pipeline_device, pipeline_family, active_lora, model_error
+    global pipe, pipeline_mode, pipeline_device, pipeline_family, pipeline_profile_key, active_lora, model_error
     global video_pipe, active_video_lora
     family = resolve_model_family(model_family)
     config = model_configuration(family)
+    training_mode = profile_model_training_mode(profile_id) if profile_id else TRAINING_MODE_LORA
+    requested_profile_key = profile_id if profile_id and training_mode == TRAINING_MODE_FULL_FINETUNE else None
 
     if profile_id and not supports_face_lora(family):
         raise ValueError(
-            "The selected face LoRA was trained for Stable Diffusion 1.5 and is incompatible with the selected model family. "
-            "Choose Stable Diffusion 1.5 for this trained identity, or generate with the selected base model without that adapter."
+            "The selected trained face model is for Stable Diffusion 1.5 and is incompatible with the selected model family. "
+            "Choose Stable Diffusion 1.5 for this trained identity, or generate without that identity model."
         )
+    if profile_id and training_mode == TRAINING_MODE_FULL_FINETUNE:
+        ensure_full_finetune_model_cached(profile_id)
     if use_global_body_model and family != "sd15":
         raise ValueError(
             "The shared body LoRA was trained for Stable Diffusion 1.5 and is unavailable for the selected model family. "
@@ -3065,11 +3077,15 @@ def _load_cpu_or_gpu_pipeline(
     with model_lock:
         use_cuda = compute_backend == "local_gpu"
         device = "cuda" if use_cuda else "cpu"
-        if pipe is None or pipeline_mode != mode or pipeline_device != device or pipeline_family != family:
+        if (
+            pipe is None or pipeline_mode != mode or pipeline_device != device
+            or pipeline_family != family or pipeline_profile_key != requested_profile_key
+        ):
             pipe = None
             pipeline_mode = None
             pipeline_device = None
             pipeline_family = None
+            pipeline_profile_key = None
             active_lora = None
             video_pipe = None
             active_video_lora = None
@@ -3119,6 +3135,14 @@ def _load_cpu_or_gpu_pipeline(
             }
             if controlnet is not None:
                 kwargs["controlnet"] = controlnet
+            if profile_id and training_mode == TRAINING_MODE_FULL_FINETUNE:
+                from diffusers import UNet2DConditionModel
+                finetuned_unet_path = full_finetune_model_path(profile_id)
+                if not (finetuned_unet_path / "config.json").is_file():
+                    raise ValueError("The selected full fine-tuned SD 1.5 U-Net checkpoint is incomplete.")
+                kwargs["unet"] = UNet2DConditionModel.from_pretrained(
+                    str(finetuned_unet_path), torch_dtype=dtype, local_files_only=True,
+                )
             if isinstance(local_model, Path):
                 if not (local_model / "model_index.json").is_file():
                     raise ValueError(
@@ -3164,20 +3188,25 @@ def _load_cpu_or_gpu_pipeline(
                 pipeline_mode = mode
                 pipeline_device = device
                 pipeline_family = family
+                pipeline_profile_key = requested_profile_key
                 model_error = None
             except Exception as exc:
                 model_error = str(exc)
                 raise
 
-        requested_loras = (profile_id or None, bool(use_global_body_model), family)
+        identity_lora_id = profile_id if profile_id and training_mode == TRAINING_MODE_LORA else None
+        requested_loras = (identity_lora_id, bool(use_global_body_model), family)
         if active_lora != requested_loras:
             if active_lora is not None:
                 pipe.unload_lora_weights()
             adapter_names = []
             adapter_weights = []
-            if profile_id:
-                identity_path = model_path(profile_id)
-                if not profile_ready_for_backend(profile_id, "local") or not identity_path.is_dir():
+            if identity_lora_id:
+                identity_path = model_path(identity_lora_id)
+                if not profile_ready_for_backend(identity_lora_id, "local") or not (
+                    (identity_path / "pytorch_lora_weights.safetensors").is_file()
+                    or (identity_path / "pytorch_lora_weights.bin").is_file()
+                ):
                     raise ValueError(
                         "This face profile has no locally trained SD 1.5 LoRA. Train it locally or use a compatible remote worker."
                     )
