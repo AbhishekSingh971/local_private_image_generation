@@ -47,7 +47,7 @@ def test_both_training_modes_reject_unsupported_resolutions():
 def test_full_finetune_requires_at_least_20_gb_vram():
     validate_training_vram("full_finetune", FULL_FINETUNE_MIN_VRAM_GB)
     validate_training_vram("full_finetune", 24)
-    with pytest.raises(ValueError, match="requires at least 20 GB"):
+    with pytest.raises(ValueError, match="requires at least 24 GB"):
         validate_training_vram("full_finetune", 16)
 
 
