@@ -64,3 +64,22 @@ def test_face_training_ui_offers_lora_and_full_finetuning():
     assert 'value="full_finetune"' in template
     assert 'Full U-Net fine-tuning: 100–2000 steps.' in source
     assert 'Full fine-tuning updates every SD 1.5 U-Net weight' in source
+
+
+
+def test_shared_body_adapter_is_opt_in_for_face_identity_generation():
+    template = Path("templates/generate_image.html").read_text(encoding="utf-8")
+    source = Path("static/studio.js").read_text(encoding="utf-8")
+    assert '<input type="checkbox" name="use_global_body_model" id="useGlobalBodyModel" value="true">' in template
+    assert 'id="useGlobalBodyModel" value="true"></span>' not in template
+    assert "optional and off by default" in template
+    assert "Shared body-type conditioning is optional and stays off by default" in source
+
+
+def test_generation_metadata_reports_actual_identity_adapter_state():
+    app_source = Path("app.py").read_text(encoding="utf-8")
+    worker_source = Path("gpu_worker.py").read_text(encoding="utf-8")
+    assert '"face_adapter_loaded": bool(getattr(pipeline, "_private_face_lora_loaded", False))' in app_source
+    assert '"body_adapter_loaded": bool(getattr(pipeline, "_private_body_lora_loaded", False))' in app_source
+    assert 'response.headers["X-Identity-Conditioning"]' in worker_source
+    assert 'identity_conditioning=identity_conditioning' in app_source
