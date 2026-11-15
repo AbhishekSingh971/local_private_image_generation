@@ -1211,6 +1211,78 @@ def api_asset_detail(asset_id):
     return jsonify(status="deleted", id=asset_id)
 
 
+def _face_profile_has_active_training(profile: dict) -> bool:
+    """Verify persisted training locks against the live local/remote job state.
+
+    A stale database 'running' flag must not permanently prevent profile deletion.
+    Unknown remote-worker failures remain locked conservatively because the job may
+    still be writing model files.
+    """
+    profile_id = profile.get("id")
+
+    if profile.get("local_training_state") == "running":
+        local_job_id = profile.get("local_training_job_id")
+        with LOCAL_TRAIN_JOBS_LOCK:
+            local_job = LOCAL_TRAIN_JOBS.get(local_job_id, {}) if local_job_id else {}
+        local_status = str(local_job.get("status") or "").lower()
+        if local_status in {"queued", "running"}:
+            return True
+
+        # The local job is no longer present in this app process, or has reached
+        # a terminal state. Keep any previously saved model-ready flag untouched.
+        update_profile(
+            profile_id,
+            local_training_state="failed",
+            local_training_error=(
+                local_job.get("error")
+                or "Training was interrupted or its worker restarted before completion."
+            )[:3500],
+        )
+        profile["local_training_state"] = "failed"
+
+    if profile.get("runpod_training_state") == "running":
+        remote_job_id = profile.get("runpod_training_job_id")
+        if not remote_job_id:
+            update_profile(
+                profile_id, runpod_training_state="failed",
+                runpod_training_error="Remote training job ID is missing; the persisted running state was stale.",
+            )
+            profile["runpod_training_state"] = "failed"
+        else:
+            try:
+                payload = cloud_worker_request(
+                    "GET", f"/api/remote/jobs/{remote_job_id}", timeout=(5, 8)
+                ).json()
+                remote_status = str(payload.get("status") or "running").lower()
+            except RuntimeError as exc:
+                # A 404 means the worker has no such in-memory job (commonly after
+                # a worker restart). Network/auth/5xx errors are ambiguous, so keep
+                # the deletion lock rather than risk deleting files mid-training.
+                if "HTTP 404" not in str(exc):
+                    return True
+                remote_status = "interrupted"
+                payload = {"error": "Remote worker no longer has this job; training was interrupted."}
+
+            if remote_status in {"queued", "running", "in_progress"}:
+                return True
+            if remote_status in {"completed", "failed", "cancelled", "canceled", "interrupted"}:
+                completed = remote_status == "completed"
+                update_profile(
+                    profile_id,
+                    runpod_training_state="completed" if completed else "failed",
+                    runpod_training_error=None if completed else (
+                        payload.get("error") or f"Remote training ended with status: {remote_status}."
+                    )[:3500],
+                    runpod_model_ready=True if completed else profile.get("runpod_model_ready", False),
+                )
+                profile["runpod_training_state"] = "completed" if completed else "failed"
+            else:
+                # Unknown worker states are treated as active until verified.
+                return True
+
+    return False
+
+
 @app.delete("/api/face-profiles/<profile_id>")
 def api_delete_face_profile(profile_id):
     try:
@@ -1222,8 +1294,8 @@ def api_delete_face_profile(profile_id):
     profile = get_profile(profile_id)
     if not profile:
         return jsonify(error="Face profile not found."), 404
-    if profile.get("local_training_state") == "running" or profile.get("runpod_training_state") == "running":
-        return jsonify(error="This face profile is training. Wait for the job to finish before deleting it."), 409
+    if _face_profile_has_active_training(profile):
+        return jsonify(error="This face profile is actively training. Wait for the job to finish before deleting it."), 409
     try:
         deleted = delete_profile(profile_id)
     except Exception:
