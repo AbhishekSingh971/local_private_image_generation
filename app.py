@@ -3042,14 +3042,15 @@ def api_face_train_status(profile_id):
 
 
 def _load_cpu_or_gpu_pipeline(
-    mode, profile_id, compute_backend="cpu", *, use_global_body_model=False, model_family="sd15"
+    mode, profile_id, compute_backend="cpu", *, use_global_body_model=False,
+    model_family="sd15", profile_training_backend="local",
 ):
     """Load one compatible image model family and its optional SD 1.5 adapters."""
     global pipe, pipeline_mode, pipeline_device, pipeline_family, pipeline_profile_key, active_lora, model_error
     global video_pipe, active_video_lora
     family = resolve_model_family(model_family)
     config = model_configuration(family)
-    training_mode = profile_model_training_mode(profile_id) if profile_id else TRAINING_MODE_LORA
+    training_mode = profile_model_training_mode(profile_id, profile_training_backend) if profile_id else TRAINING_MODE_LORA
     requested_profile_key = profile_id if profile_id and training_mode == TRAINING_MODE_FULL_FINETUNE else None
 
     if profile_id and not supports_face_lora(family):
@@ -3058,7 +3059,7 @@ def _load_cpu_or_gpu_pipeline(
             "Choose Stable Diffusion 1.5 for this trained identity, or generate without that identity model."
         )
     if profile_id and training_mode == TRAINING_MODE_FULL_FINETUNE:
-        ensure_full_finetune_model_cached(profile_id)
+        ensure_full_finetune_model_cached(profile_id, backend=profile_training_backend)
     if use_global_body_model and family != "sd15":
         raise ValueError(
             "The shared body LoRA was trained for Stable Diffusion 1.5 and is unavailable for the selected model family. "
