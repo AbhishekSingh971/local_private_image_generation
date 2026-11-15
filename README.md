@@ -1,13 +1,13 @@
 # Private Face Studio
 
-A local-first Windows/Flask application for image generation, separate face-identity LoRA training, image editing, and private media-library management. It supports local CUDA and a provider-neutral authenticated remote CUDA GPU worker. Notebook-hosted GPU integrations are not included.
+A local-first Windows/Flask application for image generation, per-profile face identity training (LoRA or full SD 1.5 U-Net fine-tuning), image editing, and private media-library management. It supports local CUDA and a provider-neutral authenticated remote CUDA GPU worker. Notebook-hosted GPU integrations are not included.
 
 ## Features
 
 - Local text-to-image and image-to-image generation with selectable 512×768 portrait, 512×512 square, or 768×512 landscape composition.
 - Image-generation presets: standard, photorealistic, and full-body photorealistic. The full-body preset prioritizes head-to-toe framing, adds relevant negative terms for cropped images/anatomy, and discourages clothing when the prompt requests nude adult fine-art imagery.
 - Separate sidebar pages for overview, image generation, video generation, face model training, generated images and generated videos.
-- PostgreSQL persistence for face profiles, face-training photos, trained LoRA ZIP backups and generated media bytes plus prompts, backend, timestamps and titles.
+- PostgreSQL persistence for face profiles, face-training photos, trained LoRA ZIP backups and generated media bytes plus prompts, backend, timestamps and titles. Full U-Net fine-tune checkpoints are kept separately and synced by the GHive worker to Google Drive because they are much larger than LoRA adapters.
 - Local working copies of per-profile photo datasets under `data/face_profiles/<profile-id>/dataset/`; adding a second person's photos does not mix them with the first person's dataset.
 - Image/video library CRUD: preview, search, edit title and prompts, download original media bytes, and delete from the database and local output copy.
 - Add model-training photos either by uploading local files or by selecting saved generated images from the image library.
@@ -15,7 +15,8 @@ A local-first Windows/Flask application for image generation, separate face-iden
 - Generate a separate **ten-target facial-expression dataset**: neutral, gentle smile, broad smile, laughing, sad, angry, surprised, fearful, disgusted and confused. Expressions are conditioned to preserve the source head direction where possible and are not mixed with the angle target set.
 - Face-angle and expression generation run as **server-managed background jobs** with persisted progress, cancellation and failed-target records. The user can navigate between pages without stopping the job. Each output is saved immediately to the image library and its training group before the next target starts. Cancellation stops at the next supported denoising check and preserves completed results. Failed-target retry submits only failed targets, not previously saved views.
 - A separate Training datasets page displays grouped source/angle photos over time and links back to the selected face profile for retraining and later image generation. Dataset groups can be renamed or deleted as a whole. Individual grouped photos can be previewed, relabeled, replaced by a local image, or deleted; local and saved-library photos can also be added to an existing group. Deleting a group/photo removes its training-dataset copy and metadata, but leaves the original generated-library image intact.
-- Reusable LoRA adapters stored under `models/face_loras/<profile-id>/`.
+- Reusable LoRA adapters stored under `models/face_loras/<profile-id>/`, or full SD 1.5 U-Net checkpoints under `models/face_finetunes/<profile-id>/`.
+- Two SD 1.5 face-training methods: compact LoRA (default) or full U-Net fine-tuning. Full fine-tuning freezes the VAE and CLIP text encoder and requires a CUDA GPU with at least 20 GB VRAM. See [Face training methods](docs/face-training-methods.md) for the trade-offs and Google Drive persistence setup.
 - Face selector for photo and video generation.
 - A GPU acceleration toggle that is OFF by default: OFF forces local CPU; ON checks actual local CUDA and connected cloud GPU availability.
 - A backend selector for local System GPU, a configured authenticated remote GPU worker, and CPU for compatible workloads. Auto prefers a usable local CUDA GPU, then the remote worker, then CPU for models that support it.
@@ -55,7 +56,7 @@ The script is safe to rerun for ordinary primary-key/unique-constraint duplicate
 
 On first library access, existing generated files already present under `data/outputs/` and `data/videos/` are imported into the library when missing from the database, so older locally generated files can appear alongside new results. Their old prompts may not be recoverable, so those records use an imported/unknown metadata label.
 
-The database stores generated image/video file bytes, profile photo bytes, and trained LoRA ZIP backups in PostgreSQL binary columns, in addition to metadata. Local LoRA model folders remain on the compute host so Diffusers can load them directly. **Supabase free-tier database storage is limited, and generated media can consume it quickly**; monitor usage and keep local backups. If the library grows substantially, consider storing large media files in Supabase Storage and keeping only their metadata in PostgreSQL as a separate future change.
+The database stores generated image/video file bytes, profile photo bytes, and trained LoRA ZIP backups in PostgreSQL binary columns, in addition to metadata. Local LoRA and full fine-tune model folders remain on the compute host so Diffusers can load them directly; GHive full fine-tune checkpoints are separately copied to the configured Google Drive model archive. **Supabase free-tier database storage is limited, and generated media can consume it quickly**; monitor usage and keep local backups. If the library grows substantially, consider storing large media files in Supabase Storage and keeping only their metadata in PostgreSQL as a separate future change.
 
 `DATABASE_URL` must point to PostgreSQL/Supabase. The app does not use a local SQLite database.
 
