@@ -1060,19 +1060,31 @@
   const generationProfileSelect = $("#generationProfile");
   const strengthInput = $("#strength");
 
+  const imageStepLimits = {
+    sd15: { min: 5, max: 35, default: 25 },
+    sdxl: { min: 5, max: 30, default: 25 },
+    flux2_klein: { min: 4, max: 4, default: 4 },
+  };
+
   function updateImageModelControls() {
     const family = modelFamilySelect?.value || "sd15";
     const isFlux2 = family === "flux2_klein";
+    const stepLimits = imageStepLimits[family] || imageStepLimits.sd15;
     const stepsInput = $("#steps");
     if (stepsInput) {
-      stepsInput.min = isFlux2 ? "4" : "5";
-      stepsInput.max = isFlux2 ? "4" : "25";
+      stepsInput.min = String(stepLimits.min);
+      stepsInput.max = String(stepLimits.max);
       if (isFlux2) {
-        stepsInput.value = "4";
+        stepsInput.value = String(stepLimits.default);
         stepsInput.disabled = true;
       } else {
         stepsInput.disabled = false;
-        if (Number(stepsInput.value) > 25 || Number(stepsInput.value) < 5) stepsInput.value = "25";
+        const requestedSteps = Number(stepsInput.value);
+        if (!Number.isInteger(requestedSteps) || requestedSteps < stepLimits.min) {
+          stepsInput.value = String(stepLimits.default);
+        } else if (requestedSteps > stepLimits.max) {
+          stepsInput.value = String(stepLimits.max);
+        }
       }
     }
     if (strengthInput) strengthInput.disabled = isFlux2;
