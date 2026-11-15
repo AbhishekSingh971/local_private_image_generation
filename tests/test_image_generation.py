@@ -7,6 +7,7 @@ from image_generation import (
     resolve_generation_seed,
     MAX_GENERATION_SEED,
     infer_reference_strength,
+    resolve_image_inference_steps,
 )
 
 
@@ -186,3 +187,34 @@ def test_reference_strength_balances_preservation_and_small_requested_edit():
         "Keep the same face and make a subtle lighting adjustment",
         has_reference_image=True,
     ) == 0.52
+
+
+@pytest.mark.parametrize(
+    ("model_family", "requested_steps", "expected"),
+    [
+        ("sd15", "35", 35),
+        ("sdxl", "30", 30),
+        ("flux2_klein", "4", 4),
+        ("sd15", None, 25),
+        ("sdxl", "", 25),
+        ("flux2_klein", None, 4),
+    ],
+)
+def test_image_inference_steps_use_model_specific_limits(model_family, requested_steps, expected):
+    assert resolve_image_inference_steps(requested_steps, model_family) == expected
+
+
+@pytest.mark.parametrize(
+    ("model_family", "requested_steps", "message"),
+    [
+        ("sd15", "36", "between 5 and 35"),
+        ("sdxl", "31", "between 5 and 30"),
+        ("flux2_klein", "5", "fixed 4-step"),
+        ("sd15", "4", "between 5 and 35"),
+        ("sdxl", "4", "between 5 and 30"),
+        ("sd15", "many", "whole number"),
+    ],
+)
+def test_image_inference_steps_reject_values_outside_model_limits(model_family, requested_steps, message):
+    with pytest.raises(ValueError, match=message):
+        resolve_image_inference_steps(requested_steps, model_family)
