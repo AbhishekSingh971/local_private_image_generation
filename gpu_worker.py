@@ -923,6 +923,7 @@ def remote_generate():
     try:
         upsampled_prompt = ""
         prompt_token_count = None
+        identity_conditioning = None
         if model_family == "flux2_klein":
             if pose_control_image is not None:
                 return jsonify(error="FLUX.2 Klein uses reference-image editing rather than the SD 1.5 face-pose ControlNet path."), 400
@@ -949,6 +950,17 @@ def remote_generate():
                 mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
                 model_family=model_family, profile_training_backend="runpod",
             )
+            active_training_mode = local_engine.profile_model_training_mode(profile_id, "runpod") if profile_id else None
+            identity_conditioning = {
+                "face_profile_selected": bool(profile_id),
+                "face_profile_id": profile_id,
+                "training_mode": active_training_mode,
+                "face_adapter_loaded": bool(getattr(pipeline, "_private_face_lora_loaded", False)),
+                "face_adapter_profile_id": getattr(pipeline, "_private_face_lora_profile_id", None),
+                "face_adapter_weight": getattr(pipeline, "_private_face_lora_weight", None),
+                "body_adapter_loaded": bool(getattr(pipeline, "_private_body_lora_loaded", False)),
+                "trigger_token_applied": bool(profile and model_family == "sd15" and profile["token"].casefold() in prompt.casefold()),
+            }
             _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the remote GPU…")
             def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
                 if _remote_generation_cancelled(task_id):
@@ -1064,6 +1076,8 @@ def remote_generate():
         if face_restore_warning:
             response.headers["X-Face-Restoration-Warning"] = face_restore_warning.replace("\\r", " ").replace("\\n", " ").encode("ascii", "replace").decode("ascii")[:500]
         response.headers["X-Face-Restoration-Status"] = face_restore_status
+        if identity_conditioning is not None:
+            response.headers["X-Identity-Conditioning"] = json.dumps(identity_conditioning, separators=(",", ":"))
         response.headers["X-Prompt-Token-Count"] = json.dumps(prompt_token_count, separators=(",", ":"))
         return response
     except RemoteGenerationCancelled:
