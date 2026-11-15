@@ -71,8 +71,8 @@ def test_shared_body_adapter_is_opt_in_for_face_identity_generation():
     template = Path("templates/generate_image.html").read_text(encoding="utf-8")
     source = Path("static/studio.js").read_text(encoding="utf-8")
     assert '<input type="checkbox" name="use_global_body_model" id="useGlobalBodyModel" value="true">' in template
-    assert 'id="useGlobalBodyModel" value="true"></span>' not in template
-    assert "optional and off by default" in template
+    assert 'type="hidden" name="use_global_body_model"' not in template
+    assert "optional · off by default" in template
     assert "Shared body-type conditioning is optional and stays off by default" in source
 
 
