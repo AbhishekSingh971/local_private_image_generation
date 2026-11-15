@@ -23,7 +23,7 @@
     <input id="trainingPhotoEditNegative" name="negative_prompt" type="text" maxlength="600" placeholder="different person, changed hairstyle, cartoon, blur">
     <div class="twocol">
       <div><label for="trainingPhotoEditStrength">Edit strength</label><input id="trainingPhotoEditStrength" name="strength" type="range" min="0.20" max="0.95" step="0.05" value="0.35"><p class="field-help">Lower values preserve more of the existing image.</p></div>
-      <div><label for="trainingPhotoEditSteps">Inference steps</label><select id="trainingPhotoEditSteps" name="steps"><option value="10">10 · quicker</option><option value="15">15</option><option value="20" selected>20</option><option value="25">25 · slower</option></select></div>
+      <div><label for="trainingPhotoEditSteps">Inference steps</label><select id="trainingPhotoEditSteps" name="steps"><option value="10">10 · quicker</option><option value="15">15</option><option value="20" selected>20</option><option value="25">25</option><option value="30">30</option><option value="35">35 · maximum for SD 1.5</option></select></div>
     </div>
     <label class="switchline" for="trainingPhotoUseBodyModel"><input id="trainingPhotoUseBodyModel" type="checkbox"> Apply shared body-type model</label>
     <div class="photo-edit-comparison">
