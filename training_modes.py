@@ -5,7 +5,7 @@ from __future__ import annotations
 TRAINING_MODE_LORA = "lora"
 TRAINING_MODE_FULL_FINETUNE = "full_finetune"
 SUPPORTED_TRAINING_MODES = (TRAINING_MODE_LORA, TRAINING_MODE_FULL_FINETUNE)
-FULL_FINETUNE_MIN_VRAM_GB = 20.0
+FULL_FINETUNE_MIN_VRAM_GB = 24.0
 
 
 def resolve_training_mode(value: str | None = None) -> str:
