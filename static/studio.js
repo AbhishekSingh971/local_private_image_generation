@@ -615,7 +615,15 @@
       else if(job.status==="failed")status.textContent=job.error||"The generation job failed before it could complete.";
       else if(job.status==="partial"||job.status==="interrupted")status.textContent=job.error||"Some targets did not finish; saved images remain available.";
       else if(job.status==="cancelling")status.textContent="Cancellation requested. The current denoising step will stop when the backend reaches its cancellation check.";
-      else status.textContent=(sub?.message||("Generating "+targetName+"…"))+" "+targetName+" ("+Math.min(Number(job.current_index||1),expected)+"/"+expected+").";
+      else {
+        const failed=(job.failed_targets||[]).filter(item=>item&&typeof item==="object");
+        const latestFailure=failed[failed.length-1];
+        const backendLabel=job.backend==="cloud_gpu"||job.backend==="runpod"?"Cloud GPU":job.backend==="local_gpu"?"System GPU":job.backend==="cpu"?"Local CPU":(job.backend||"GPU");
+        const failureText=latestFailure
+          ? " Latest failure: "+String(latestFailure.label||"Target")+": "+String(latestFailure.error||"Unknown error").slice(0,500)
+          : "";
+        status.textContent=(sub?.message||("Generating "+targetName+"…"))+" "+targetName+" ("+Math.min(Number(job.current_index||1),expected)+"/"+expected+") · "+backendLabel+"."+failureText;
+      }
     }
     if(progress){progress.value=percent;progress.setAttribute("aria-valuenow",String(percent));}
     if(counts)counts.textContent=done+" of "+expected+" targets saved · "+(job.failed_targets?.length||0)+" failed · "+(job.review_targets?.length||0)+" need review";
@@ -660,8 +668,10 @@
         }
         renderBackgroundFaceDatasetJob(active);
         if($("#faceAnglesStatus")){
+          const backendLabel=active.backend==="cloud_gpu"||active.backend==="runpod"?"Cloud GPU":active.backend==="local_gpu"?"System GPU":active.backend==="cpu"?"Local CPU":(active.backend||"GPU");
+          const failedCount=(active.failed_targets||[]).length;
           $("#faceAnglesStatus").textContent=(active.status==="cancelling"?"Cancelling ":active.status==="queued"?"Queued ":"Generating ")+
-            trainingJobLabel(active)+" · "+(active.current_label||"preparing")+ " · "+active.generated_count+"/"+active.expected_count+" saved.";
+            trainingJobLabel(active)+" · "+(active.current_label||"preparing")+ " · "+active.generated_count+"/"+active.expected_count+" saved · "+backendLabel+" · "+failedCount+" failed.";
         }
         if($("#faceAnglesProgress")){
           $("#faceAnglesProgress").hidden=false;
@@ -672,7 +682,14 @@
           if(percent)percent.textContent=Math.min(100,p)+"%";
           const stage=$("#faceAnglesProgressStage");const detail=$("#faceAnglesProgressDetail");
           if(stage)stage.textContent=active.status==="cancelling"?"Cancelling":trainingJobLabel(active)+" · "+(active.current_label||"starting");
-          if(detail)detail.textContent=(progress?.message||"Background job is running on the server.")+" Completed "+active.generated_count+" of "+active.expected_count+".";
+          if(detail){
+            const failed=(active.failed_targets||[]).filter(item=>item&&typeof item==="object");
+            const latestFailure=failed[failed.length-1];
+            const failureText=latestFailure
+              ? " Latest failed target: "+String(latestFailure.label||"Target")+" — "+String(latestFailure.error||"Unknown error").slice(0,500)
+              : "";
+            detail.textContent=(progress?.message||"Background job is running on the server.")+" Completed "+active.generated_count+" of "+active.expected_count+"."+failureText;
+          }
         }
         if($("#datasetGroups")&&Date.now()-lastDatasetRefreshAt>1800){
           lastDatasetRefreshAt=Date.now();
