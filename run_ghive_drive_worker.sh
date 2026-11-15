@@ -8,6 +8,7 @@ cd "$(dirname "$0")"
 export GPU_WORKER_PORT="${GPU_WORKER_PORT:-8000}"
 export SD_MODEL_DRIVE_REMOTE="${SD_MODEL_DRIVE_REMOTE:-gdrive:Local Ai/models/stable-diffusion-v1-5/vae}"
 export SD_MODEL_CACHE_DIR="${SD_MODEL_CACHE_DIR:-$HOME/.cache/local_private_image_generation/sd15}"
+export FACE_FINETUNE_DRIVE_REMOTE="${FACE_FINETUNE_DRIVE_REMOTE:-gdrive:Local Ai/models/face-finetunes}"
 
 echo "Checking GHive CUDA..."
 python - <<'PY'
