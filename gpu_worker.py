@@ -193,7 +193,7 @@ def _training_job(profile_id, job_id, steps, resolution, approved_filenames, tra
             )
 
         if completed.returncode == 0 and artifact_ready:
-            local_engine.set_profile_model_training_mode(profile_id, training_mode)
+            local_engine.set_profile_model_training_mode(profile_id, training_mode, backend="runpod")
             storage_warning = None
             persisted_to_drive = False
             if training_mode == TRAINING_MODE_FULL_FINETUNE:
@@ -336,7 +336,7 @@ def remote_train_profile():
         job_id = uuid.uuid4().hex
         update_profile(
             profile_id, local_training_state="running", local_training_job_id=job_id,
-            local_training_mode=training_mode, local_training_error=None, local_model_ready=False,
+            runpod_training_mode=training_mode, local_training_error=None, local_model_ready=False,
         )
         with TASKS_LOCK:
             TASKS[job_id] = {
@@ -864,8 +864,8 @@ def remote_generate():
         if not supports_face_lora(model_family):
             return jsonify(error="This trained face model is for SD 1.5 and cannot be loaded by the selected model family. Select SD 1.5 for this identity or continue without the trained face."), 400
         try:
-            if local_engine.profile_model_training_mode(profile_id, "local") == TRAINING_MODE_FULL_FINETUNE:
-                local_engine.ensure_full_finetune_model_cached(profile_id)
+            if local_engine.profile_model_training_mode(profile_id, "runpod") == TRAINING_MODE_FULL_FINETUNE:
+                local_engine.ensure_full_finetune_model_cached(profile_id, backend="runpod")
         except (RuntimeError, ValueError) as exc:
             return jsonify(error=str(exc)), 503
         profile = get_profile(profile_id)
@@ -939,7 +939,7 @@ def remote_generate():
             mode = "pose_img2img" if pose_control_image is not None else ("img2img" if image is not None else "txt2img")
             pipeline = local_engine._load_cpu_or_gpu_pipeline(
                 mode, profile_id, "local_gpu", use_global_body_model=use_global_body_model,
-                model_family=model_family,
+                model_family=model_family, profile_training_backend="runpod",
             )
             _set_generation_progress(task_id, asset_type="image", status="running", progress=5, total_steps=steps, stage="denoising", message="Starting image denoising steps on the remote GPU…")
             def on_step_end(active_pipeline, step_index, _timestep, callback_kwargs):
