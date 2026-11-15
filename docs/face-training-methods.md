@@ -17,7 +17,7 @@ The face-training page offers two methods for Stable Diffusion 1.5 face profiles
 - Requires a CUDA GPU with at least 24 GB VRAM. The API and GHive worker check actual VRAM before starting.
 - Saves to `models/face_finetunes/<profile_id>`; it never overwrites the base SD 1.5 model or the LoRA adapter.
 
-Use this option only when the compact LoRA adapter is not giving the result you need. Full U-Net updates can overfit small datasets more easily, use substantially more VRAM, and create a much larger checkpoint. Keep the initial run around 300–400 steps and review generation quality before increasing it.
+The selected method becomes active only after its checkpoint is successfully saved. Starting a retrain does not switch the profile away from its last working model, and a failed full fine-tune leaves the previous model selection unchanged.\n\nUse this option only when the compact LoRA adapter is not giving the result you need. Full U-Net updates can overfit small datasets more easily, use substantially more VRAM, and create a much larger checkpoint. Keep the initial run around 300–400 steps and review generation quality before increasing it.
 
 ## GHive / Google Drive persistence
 
