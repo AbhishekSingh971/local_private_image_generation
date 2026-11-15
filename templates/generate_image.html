@@ -35,6 +35,31 @@
       <details class="advanced-prompt-controls">
         <summary>Advanced options <span class="optional">optional</span></summary>
         <p class="field-help">Only set a filter when you want to override what your prompt describes. Blank filters leave the prompt in control.</p>
+        <div class="twocol face-condition-controls">
+          <div id="faceAngleGroup">
+            <label for="faceAngle">Face angle <span class="optional">optional · SD 1.5 trained identity</span></label>
+            <select id="faceAngle" name="face_angle">
+              <option value="">Follow prompt / model</option>
+              <option value="front">Front view</option>
+              <option value="three_quarter_left">Three-quarter left</option>
+              <option value="three_quarter_right">Three-quarter right</option>
+              <option value="left_profile">Left profile</option>
+              <option value="right_profile">Right profile</option>
+            </select>
+          </div>
+          <div id="faceExpressionGroup">
+            <label for="faceExpression">Face expression <span class="optional">optional · SD 1.5 trained identity</span></label>
+            <select id="faceExpression" name="face_expression">
+              <option value="">Follow prompt / model</option>
+              <option value="neutral">Neutral</option>
+              <option value="smile">Gentle smile</option>
+              <option value="laugh">Laughing</option>
+              <option value="serious">Serious</option>
+              <option value="surprised">Surprised</option>
+            </select>
+          </div>
+        </div>
+        <p class="field-help">These optional controls are available only with a selected trained SD 1.5 identity. Your prompt remains the primary instruction.</p>
         <div class="twocol">
           <div><label for="styleControl">Visual style</label><select id="styleControl" name="style"><option value="">Follow prompt</option><option value="photorealistic">Photorealistic</option><option value="cinematic">Cinematic</option><option value="illustration">Illustration</option><option value="anime">Anime</option><option value="3d cgi">3D CGI</option><option value="oil painting">Oil painting</option><option value="watercolor">Watercolor</option><option value="pencil sketch">Pencil sketch</option></select></div>
           <div><label for="compositionControl">Composition</label><select id="compositionControl" name="composition"><option value="">Follow prompt</option><option value="close-up">Close-up</option><option value="headshot">Headshot</option><option value="waist-up">Waist-up</option><option value="three-quarter body">Three-quarter body</option><option value="full-body">Full body</option><option value="wide scene">Wide scene</option></select></div>
