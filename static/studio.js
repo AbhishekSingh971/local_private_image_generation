@@ -1005,7 +1005,9 @@
         if(!response.ok&&response.status!==502)throw new Error(data.error||"Could not check training status.");
         const state=data.status||"running";
         const status=$("#trainStatus");
-        const method=data.job?.training_mode==="full_finetune"?"Full SD 1.5 U-Net fine-tuning":"LoRA";
+        const activeTrainingMode=data.training_mode||data.job?.training_mode||
+          (backend==="runpod"||backend==="cloud_gpu"?data.profile?.runpod_training_mode:data.profile?.local_training_mode)||"lora";
+        const method=activeTrainingMode==="full_finetune"?"Full SD 1.5 U-Net fine-tuning":"LoRA";
         if(state!==previous&&status){status.textContent=method+" · "+state+(data.error?"\n"+data.error:"");previous=state;}
         if(state==="completed"){
           const warning=data.job?.warning;
