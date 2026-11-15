@@ -983,7 +983,7 @@
     }
     if (trainingModeHelp) {
       trainingModeHelp.textContent = fullFinetune
-        ? "Full fine-tuning updates every SD 1.5 U-Net weight while freezing the VAE and CLIP text encoder. It needs at least 20 GB VRAM, is slower, and produces a large checkpoint. GHive saves that checkpoint to Google Drive for later restoration. Use this when LoRA has reached its limits."
+        ? "Full fine-tuning updates every SD 1.5 U-Net weight while freezing the VAE and CLIP text encoder. It needs at least 24 GB VRAM, is slower, and produces a large checkpoint. GHive saves that checkpoint to Google Drive for later restoration. Use this when LoRA has reached its limits."
         : "LoRA trains a compact adapter and is the recommended starting point. It is faster, uses less VRAM, and is easy to switch between profiles.";
     }
     if (trainStepsHelp) {
