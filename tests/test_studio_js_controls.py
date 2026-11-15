@@ -54,3 +54,13 @@ def test_face_angle_live_status_shows_backend_and_failed_target_error():
     assert 'active.backend==="cloud_gpu"||active.backend==="runpod"?"Cloud GPU"' in source
     assert 'String(latestFailure.error||"Unknown error").slice(0,500)' in source
     assert '· "+failedCount+" failed."' in source
+
+    
+def test_face_training_ui_offers_lora_and_full_finetuning():
+    template = Path("templates/faces.html").read_text(encoding="utf-8")
+    source = Path("static/studio.js").read_text(encoding="utf-8")
+    assert 'name="training_mode"' in template
+    assert 'value="lora"' in template
+    assert 'value="full_finetune"' in template
+    assert 'Full U-Net fine-tuning: 100–2000 steps.' in source
+    assert 'Full fine-tuning updates every SD 1.5 U-Net weight' in source
