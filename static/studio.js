@@ -966,6 +966,35 @@
   });
 
   const trainForm=$("#trainForm");
+  const trainingModeSelect=$("#trainingMode");
+  const trainStepsInput=$("#trainSteps");
+  const trainingModeHelp=$("#trainingModeHelp");
+  const trainStepsHelp=$("#trainStepsHelp");
+
+  function updateTrainingModeControls() {
+    const fullFinetune = trainingModeSelect?.value === "full_finetune";
+    if (trainStepsInput) {
+      const previousSteps = Number(trainStepsInput.value);
+      trainStepsInput.min = "100";
+      trainStepsInput.max = fullFinetune ? "2000" : "3000";
+      if (fullFinetune && previousSteps === 800) trainStepsInput.value = "400";
+      else if (!fullFinetune && previousSteps === 400) trainStepsInput.value = "800";
+      if (previousSteps > Number(trainStepsInput.max)) trainStepsInput.value = trainStepsInput.max;
+    }
+    if (trainingModeHelp) {
+      trainingModeHelp.textContent = fullFinetune
+        ? "Full fine-tuning updates every SD 1.5 U-Net weight while freezing the VAE and CLIP text encoder. It needs at least 20 GB VRAM, is slower, and produces a large checkpoint. GHive saves that checkpoint to Google Drive for later restoration. Use this when LoRA has reached its limits."
+        : "LoRA trains a compact adapter and is the recommended starting point. It is faster, uses less VRAM, and is easy to switch between profiles.";
+    }
+    if (trainStepsHelp) {
+      trainStepsHelp.textContent = fullFinetune
+        ? "Full U-Net fine-tuning: 100–2000 steps. Start around 300–400; too many steps can overfit a small face dataset."
+        : "LoRA: 100–3000 steps. Start at 800 and increase only when needed.";
+    }
+  }
+  trainingModeSelect?.addEventListener("change", updateTrainingModeControls);
+  updateTrainingModeControls();
+
   async function pollTraining(profileId, backend) {
     const started=Date.now();let previous="";
     while(Date.now()-started<8*60*60*1000){
@@ -976,9 +1005,14 @@
         if(!response.ok&&response.status!==502)throw new Error(data.error||"Could not check training status.");
         const state=data.status||"running";
         const status=$("#trainStatus");
-        if(state!==previous&&status){status.textContent="Training status: "+state+(data.error?"\n"+data.error:"");previous=state;}
-        if(state==="completed"){if(status)status.textContent="Training completed successfully.";await refreshProfiles();return;}
-        if(state==="failed"){if(status)status.textContent="Training failed.\n"+(data.error||data.profile?.local_training_error||data.profile?.runpod_training_error||"No error details returned.");await refreshProfiles();return;}
+        const method=data.job?.training_mode==="full_finetune"?"Full SD 1.5 U-Net fine-tuning":"LoRA";
+        if(state!==previous&&status){status.textContent=method+" · "+state+(data.error?"\n"+data.error:"");previous=state;}
+        if(state==="completed"){
+          const warning=data.job?.warning;
+          if(status)status.textContent=method+" completed successfully."+(warning?"\n"+warning:"");
+          await refreshProfiles();return;
+        }
+        if(state==="failed"){if(status)status.textContent=method+" failed.\n"+(data.error||data.profile?.local_training_error||data.profile?.runpod_training_error||"No error details returned.");await refreshProfiles();return;}
       }catch(error){const status=$("#trainStatus");if(status)status.textContent="Training may still be running; status polling had an issue: "+error.message;}
     }
     if($("#trainStatus"))$("#trainStatus").textContent="Stopped polling after 8 hours. Check the worker logs and profile state.";
@@ -989,7 +1023,12 @@
     const profile=profiles.find(item=>item.id===id);
     if(!id){if(status)status.textContent="Create or select a face profile first.";return;}
     if(!profile||profile.image_count<5){if(status)status.textContent="Add at least 5 good photos to this profile before training.";return;}
-    button.disabled=true;if(status)status.textContent="Checking selected compute backend and submitting the face training job…";
+    const trainingMode=trainingModeSelect?.value||"lora";
+    if(trainingMode==="full_finetune"&&(!useGpuAcceleration?.checked||!computeBackend||!["cloud_gpu","runpod","local_gpu","auto"].includes(computeBackend.value))){
+      if(status)status.textContent="Full fine-tuning requires a selected CUDA GPU with at least 20 GB VRAM.";
+      return;
+    }
+    button.disabled=true;if(status)status.textContent="Checking the selected GPU and submitting "+(trainingMode==="full_finetune"?"full fine-tuning":"LoRA")+"…";
     const backend=useGpuAcceleration?.checked?(computeBackend?.value||"auto"):"cpu";
     try{
       const data=await readJson(await fetch("/api/face-profiles/"+id+"/train",{method:"POST",body:addComputeData(new FormData(trainForm))}));
