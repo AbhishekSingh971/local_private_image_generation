@@ -1485,7 +1485,15 @@
       download.href=data.image_url+"?download=1";download.hidden=false;
       pill.textContent="Saved to library";
       setFinalGenerationProgress("image",true,data.message||"Image generated and saved to the library.");
-      if(status)status.textContent=(data.message||"Image generated.")+" Saved as “"+data.title+"”.";
+      if(status){
+        const identity=data.generation_metadata?.identity_conditioning;
+        const identityStatus=identity?.face_profile_selected
+          ? " Identity check · "+(identity.training_mode==="full_finetune"?"full fine-tune":(identity.face_adapter_loaded?"face LoRA loaded":"FACE LoRA NOT LOADED"))
+            +" · trigger "+(identity.trigger_token_applied?"applied":"missing")
+            +" · shared body adapter "+(identity.body_adapter_loaded?"on":"off")+"."
+          : "";
+        status.textContent=(data.message||"Image generated.")+" Saved as “"+data.title+"”."+identityStatus;
+      }
     }catch(error){
       setFinalGenerationProgress("image",false,error.message);
       if(status)status.textContent="Generation failed: "+error.message;
