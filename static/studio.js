@@ -180,12 +180,14 @@
     if (profiles.some(profile => profile.id === selected)) select.value = selected;
   }
   function updateFaceConditionControls() {
-    const profileSelected=Boolean($("#faceProfile")?.value);
-    ["faceAngle","faceExpression"].forEach(id=>{
-      const control=$("#"+id);
-      if(!control)return;
-      control.disabled=!profileSelected;
-      if(!profileSelected)control.value="";
+    const profileSelected = Boolean($("#faceProfile")?.value);
+    const sd15Selected = (modelFamilySelect?.value || "sd15") === "sd15";
+    const controlsEnabled = profileSelected && sd15Selected;
+    ["faceAngle", "faceExpression"].forEach(id => {
+      const control = $("#" + id);
+      if (!control) return;
+      control.disabled = !controlsEnabled;
+      if (!controlsEnabled) control.value = "";
     });
   }
   $("#faceProfile")?.addEventListener("change",updateFaceConditionControls);
@@ -1081,6 +1083,7 @@
     if (globalBodyModelInput) {
       globalBodyModelInput.disabled = !faceControlsEnabled;
     }
+    updateFaceConditionControls();
     if (aspectRatioSelect) {
       const labels = family === "flux2_klein"
         ? ["Portrait 2:3 · 832 × 1216", "Square · 1024 × 1024", "Landscape 3:2 · 1216 × 832"]
