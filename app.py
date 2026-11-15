@@ -2852,7 +2852,7 @@ def api_train_face_profile(profile_id):
             return jsonify(error="Cloud GPU worker did not return a training job ID."), 502
         update_profile(
             profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
-            runpod_training_error=None, runpod_model_ready=False,
+            runpod_training_error=None,
         )
         method_label = "Full SD 1.5 U-Net fine-tuning" if training_mode == TRAINING_MODE_FULL_FINETUNE else "LoRA training"
         return jsonify(
@@ -3035,7 +3035,6 @@ def api_face_train_status(profile_id):
         update_profile(
             profile_id, runpod_training_state="failed",
             runpod_training_error=(payload.get("error") or "Cloud GPU training failed")[-3500:],
-            runpod_model_ready=False,
         )
     updated_profile = get_profile(profile_id)
     return jsonify(status=state, error=payload.get("error"), job=payload, profile=updated_profile)
