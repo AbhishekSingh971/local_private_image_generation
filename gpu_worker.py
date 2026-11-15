@@ -216,7 +216,7 @@ def _training_job(profile_id, job_id, steps, resolution, approved_filenames, tra
                     else:
                         detail = (result.stderr or result.stdout or "rclone returned an error").strip()[-1200:]
                         storage_warning = "The model trained successfully but Drive backup failed: " + detail
-                        worker.logger.exception("Full fine-tune Drive backup returned non-zero: %s", detail)
+                        worker.logger.warning("Full fine-tune Drive backup returned non-zero: %s", detail)
                 except Exception as drive_exc:
                     storage_warning = "The model trained successfully but Drive backup failed: " + str(drive_exc)[:800]
                     worker.logger.exception("Could not sync full fine-tuned model to Google Drive")
@@ -336,7 +336,7 @@ def remote_train_profile():
         job_id = uuid.uuid4().hex
         update_profile(
             profile_id, local_training_state="running", local_training_job_id=job_id,
-            local_training_error=None, local_model_ready=False,
+            local_training_mode=training_mode, local_training_error=None, local_model_ready=False,
         )
         with TASKS_LOCK:
             TASKS[job_id] = {
