@@ -22,5 +22,7 @@ def test_generate_photo_uses_prompt_first_form_without_manual_strength_controls(
     assert 'name="lighting"' in template
     assert 'id="generationProfile"' in template
     assert 'id="imagePreset"' in template
-    assert 'id="faceExpression"' not in template
-    assert 'id="faceAngle"' not in template
+    assert 'id="faceAngle" name="face_angle"' in template
+    assert 'id="faceExpression" name="face_expression"' in template
+    assert 'const sd15Selected = (modelFamilySelect?.value || "sd15") === "sd15";' in source
+    assert 'const controlsEnabled = profileSelected && sd15Selected;' in source
