@@ -47,3 +47,10 @@ def test_training_photo_edit_preview_uses_sd15_limit():
     assert 'steps = resolve_image_inference_steps(request.form.get("steps"), "sd15")' in app_source
     assert '<option value="30">30</option>' in template
     assert '<option value="35">35 · maximum for SD 1.5</option>' in template
+
+    
+def test_face_angle_live_status_shows_backend_and_failed_target_error():
+    source = Path("static/studio.js").read_text(encoding="utf-8")
+    assert 'active.backend==="cloud_gpu"||active.backend==="runpod"?"Cloud GPU"' in source
+    assert 'String(latestFailure.error||"Unknown error").slice(0,500)' in source
+    assert '· "+failedCount+" failed."' in source
