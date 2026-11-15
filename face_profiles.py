@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -19,6 +21,8 @@ DATA_DIR = ROOT / "data"
 PROFILES_FILE = DATA_DIR / "face_profiles.json"
 PROFILES_DIR = DATA_DIR / "face_profiles"
 LORA_DIR = ROOT / "models" / "face_loras"
+FULL_FINETUNE_DIR = ROOT / "models" / "face_finetunes"
+ACTIVE_MODEL_MODE_DIR = ROOT / "models" / "face_model_modes"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 PROFILE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 GLOBAL_BODY_PROFILE_ID = "ffffffffffffffffffffffffffffffff"
@@ -36,7 +40,7 @@ def validate_profile_description(description: str | None) -> str:
     return value
 _DB_MIGRATED = False
 
-for folder in (DATA_DIR, PROFILES_DIR, LORA_DIR):
+for folder in (DATA_DIR, PROFILES_DIR, LORA_DIR, FULL_FINETUNE_DIR, ACTIVE_MODEL_MODE_DIR):
     folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -104,12 +108,111 @@ def _local_lora_ready(profile_id: str) -> bool:
     )
 
 
+def full_finetune_model_path(profile_id: str) -> Path:
+    return FULL_FINETUNE_DIR / validate_profile_id(profile_id)
+
+
+def _local_full_finetune_ready(profile_id: str) -> bool:
+    folder = full_finetune_model_path(profile_id)
+    return (folder / "config.json").is_file() and (
+        (folder / "diffusion_pytorch_model.safetensors").is_file()
+        or (folder / "diffusion_pytorch_model.bin").is_file()
+    )
+
+
+def set_profile_model_training_mode(profile_id: str, training_mode: str) -> None:
+    """Record which trained artifact is active without changing legacy profile rows."""
+    profile_id = validate_profile_id(profile_id)
+    mode = str(training_mode or "").strip().lower()
+    if mode not in {"lora", "full_finetune"}:
+        raise ValueError("Training mode must be lora or full_finetune.")
+    mode_dir = ACTIVE_MODEL_MODE_DIR / profile_id
+    mode_dir.mkdir(parents=True, exist_ok=True)
+    target = mode_dir / "active.json"
+    temporary = mode_dir / ("active." + uuid.uuid4().hex + ".tmp")
+    payload = {"training_mode": mode, "updated_at": _utc_now()}
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(target)
+
+    artifact_dir = LORA_DIR / profile_id if mode == "lora" else full_finetune_model_path(profile_id)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "training_mode.json").write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def profile_model_training_mode(profile_id: str) -> str:
+    """Return the active model type; old profiles continue to default to LoRA."""
+    profile_id = validate_profile_id(profile_id)
+    marker = ACTIVE_MODEL_MODE_DIR / profile_id / "active.json"
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        mode = str(data.get("training_mode") or "").strip().lower()
+        if mode in {"lora", "full_finetune"}:
+            return mode
+    except (OSError, ValueError, AttributeError):
+        pass
+
+    full_ready = _local_full_finetune_ready(profile_id)
+    lora_ready = _local_lora_ready(profile_id)
+    if full_ready and not lora_ready:
+        return "full_finetune"
+    return "lora"
+
+
+def ensure_full_finetune_model_cached(profile_id: str) -> Path:
+    """Lazily restore a large full-tuned SD 1.5 U-Net from the configured Drive remote."""
+    profile_id = validate_profile_id(profile_id)
+    target = full_finetune_model_path(profile_id)
+    if _local_full_finetune_ready(profile_id):
+        return target
+
+    remote_root = os.environ.get(
+        "FACE_FINETUNE_DRIVE_REMOTE", "gdrive:Local Ai/models/face-finetunes"
+    ).strip().rstrip("/")
+    rclone = shutil.which("rclone")
+    if not rclone:
+        raise RuntimeError(
+            "The full fine-tuned model is not cached on this GPU worker and rclone is unavailable. "
+            "Restore it from the configured Google Drive model archive or retrain it."
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / ("." + profile_id + ".restore-" + uuid.uuid4().hex)
+    try:
+        result = subprocess.run(
+            [rclone, "copy", f"{remote_root}/{profile_id}", str(staging),
+             "--transfers", "4", "--checkers", "8", "--retries", "2",
+             "--low-level-retries", "3", "--stats-one-line"],
+            capture_output=True, text=True, timeout=2400, check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "rclone returned an error").strip()[-1200:]
+            raise RuntimeError("Could not restore the full fine-tuned model from Google Drive: " + detail)
+        if not (
+            (staging / "config.json").is_file()
+            and ((staging / "diffusion_pytorch_model.safetensors").is_file()
+                 or (staging / "diffusion_pytorch_model.bin").is_file())
+        ):
+            raise RuntimeError(
+                "The Google Drive full fine-tune folder is incomplete; the U-Net config or weights are missing."
+            )
+        if target.exists():
+            shutil.rmtree(target)
+        staging.replace(target)
+        set_profile_model_training_mode(profile_id, "full_finetune")
+        return target
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
 def _public_record(record: dict) -> dict:
     profile_id = record["id"]
     result = dict(record)
     result["description"] = record.get("description") or ""
     result["image_count"] = max(_image_count(profile_id), int(record.get("image_count", 0) or 0))
-    result["local_model_ready"] = _local_lora_ready(profile_id)
+    result["local_model_ready"] = _local_lora_ready(profile_id) or _local_full_finetune_ready(profile_id)
     result["runpod_model_ready"] = bool(record.get("runpod_model_ready"))
     result.pop("dataset_dir", None)
     return result
