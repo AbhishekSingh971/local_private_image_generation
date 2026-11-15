@@ -68,6 +68,10 @@ from face_profiles import (
     get_profile,
     list_profiles,
     model_path,
+    full_finetune_model_path,
+    ensure_full_finetune_model_cached,
+    profile_model_training_mode,
+    set_profile_model_training_mode,
     profile_ready_for_backend,
     save_profile_image,
     update_profile,
@@ -77,6 +81,14 @@ from pose_validation import assess_face_geometry, build_pose_control_image, esti
 from training_generation import targets_for_dataset_type
 from image_quality import assess_image_quality
 from safe_diagnostics import format_exception_detail
+from training_modes import (
+    TRAINING_MODE_FULL_FINETUNE,
+    TRAINING_MODE_LORA,
+    FULL_FINETUNE_MIN_VRAM_GB,
+    resolve_training_mode,
+    validate_training_settings,
+    validate_training_vram,
+)
 
 from studio_db import (
     count_assets,
@@ -164,6 +176,7 @@ pipe = None
 pipeline_mode = None
 pipeline_device = None
 pipeline_family = None
+pipeline_profile_key = None
 active_lora = None
 model_error = None
 video_pipe = None
@@ -842,44 +855,78 @@ def _approved_profile_training_paths(profile_id: str) -> list[Path]:
 
 
 def _run_local_training(
-    profile_id: str, steps: int, resolution: int, job_id: str, approved_filenames: list[str]
+    profile_id: str, steps: int, resolution: int, job_id: str,
+    approved_filenames: list[str], training_mode: str = TRAINING_MODE_LORA,
 ) -> None:
     profile = get_profile(profile_id)
     if not profile:
         return
+    training_mode = resolve_training_mode(training_mode)
+    script_name = (
+        "train_face_finetune.py"
+        if training_mode == TRAINING_MODE_FULL_FINETUNE else "train_face_lora.py"
+    )
     args = [
-        sys.executable, str(APP_DIR / "train_face_lora.py"),
+        sys.executable, str(APP_DIR / script_name),
         "--profile-id", profile_id,
-        "--output-name", profile_id,
-        "--token", profile["token"],
         "--steps", str(steps),
         "--resolution", str(resolution),
         "--mixed-precision", "fp16",
     ]
+    if training_mode == TRAINING_MODE_LORA:
+        args.extend(["--output-name", profile_id, "--token", profile["token"]])
     for name in approved_filenames:
         args.extend(["--approved-filename", name])
+    with LOCAL_TRAIN_JOBS_LOCK:
+        LOCAL_TRAIN_JOBS[job_id] = {
+            "status": "running", "profile_id": profile_id, "training_mode": training_mode,
+        }
     try:
         completed = subprocess.run(
             args, cwd=APP_DIR, capture_output=True, text=True, timeout=8 * 60 * 60,
             check=False,
         )
-        logs = (completed.stdout or "") + "\n" + (completed.stderr or "")
-        if completed.returncode != 0:
-            error = logs.strip()[-3500:] or f"Trainer exited with code {completed.returncode}."
+        logs = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+        if training_mode == TRAINING_MODE_FULL_FINETUNE:
+            artifact_ready = (
+                (full_finetune_model_path(profile_id) / "config.json").is_file()
+                and (full_finetune_model_path(profile_id) / "diffusion_pytorch_model.safetensors").is_file()
+            )
+        else:
+            artifact_ready = (
+                (model_path(profile_id) / "pytorch_lora_weights.safetensors").is_file()
+                or (model_path(profile_id) / "pytorch_lora_weights.bin").is_file()
+            )
+        if completed.returncode != 0 or not artifact_ready:
+            error = logs[-3500:] or f"Trainer exited with code {completed.returncode} or did not save its model artifact."
             update_profile(
                 profile_id, local_training_state="failed",
                 local_training_error=error, local_model_ready=False,
             )
             with LOCAL_TRAIN_JOBS_LOCK:
-                LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
+                LOCAL_TRAIN_JOBS[job_id] = {
+                    "status": "failed", "error": error, "logs": logs[-5000:],
+                    "training_mode": training_mode,
+                }
             return
-        _persist_face_model_bundle(profile_id, "local")
+
+        set_profile_model_training_mode(profile_id, training_mode)
+        if training_mode == TRAINING_MODE_LORA:
+            _persist_face_model_bundle(profile_id, "local")
         update_profile(
             profile_id, local_training_state="completed",
             local_training_error=None, local_model_ready=True,
         )
+        message = (
+            "Full SD 1.5 U-Net fine-tuning completed locally."
+            if training_mode == TRAINING_MODE_FULL_FINETUNE
+            else "Face LoRA trained locally."
+        )
         with LOCAL_TRAIN_JOBS_LOCK:
-            LOCAL_TRAIN_JOBS[job_id] = {"status": "completed", "message": "Face LoRA trained locally."}
+            LOCAL_TRAIN_JOBS[job_id] = {
+                "status": "completed", "message": message,
+                "training_mode": training_mode, "logs": logs[-5000:],
+            }
     except Exception as exc:
         error = str(exc)
         update_profile(
@@ -887,7 +934,9 @@ def _run_local_training(
             local_training_error=error, local_model_ready=False,
         )
         with LOCAL_TRAIN_JOBS_LOCK:
-            LOCAL_TRAIN_JOBS[job_id] = {"status": "failed", "error": error}
+            LOCAL_TRAIN_JOBS[job_id] = {
+                "status": "failed", "error": error, "training_mode": training_mode,
+            }
 
 
 def _request_is_same_origin() -> bool:
@@ -2738,21 +2787,19 @@ def api_train_face_profile(profile_id):
                   "Review the photos in Training datasets and approve the usable images first."
         ), 400
     try:
-        steps = int(request.form.get("steps", "800"))
-        resolution = int(request.form.get("resolution", "512"))
-    except (TypeError, ValueError):
-        return jsonify(error="Invalid training steps or resolution."), 400
-    if not 100 <= steps <= 3000 or resolution not in (384, 512):
-        return jsonify(error="Training steps must be 100–3000 and resolution must be 384 or 512."), 400
-
-    try:
+        training_mode = resolve_training_mode(request.form.get("training_mode"))
+        steps, resolution = validate_training_settings(
+            training_mode, request.form.get("steps", "400" if training_mode == TRAINING_MODE_FULL_FINETUNE else "800"),
+            request.form.get("resolution", "512"),
+        )
         backend = _resolve_compute_backend(request.form)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+
     if backend == "cpu":
         return jsonify(error=(
-            "Face LoRA training needs a GPU. Turn on Enable GPU acceleration, then select an available "
-            "System GPU or cloud GPU. CPU fallback is not supported for this training workflow."
+            "Face-model training requires a CUDA GPU. Enable GPU acceleration and select an available "
+            "System GPU or cloud GPU. CPU fallback is not supported for training."
         )), 400
 
     if backend == "cloud_gpu":
@@ -2761,11 +2808,17 @@ def api_train_face_profile(profile_id):
                 "Cloud GPU worker is not configured. Set GPU_WORKER_URL and REMOTE_API_TOKEN in .env, "
                 "start the configured remote GPU worker and its HTTPS endpoint, then restart the app."
             )), 400
+        if training_mode == TRAINING_MODE_FULL_FINETUNE:
+            try:
+                health = cloud_worker_request("GET", "/api/remote/health", timeout=(8, 12)).json()
+                validate_training_vram(training_mode, health.get("vram_gb"))
+            except (RuntimeError, ValueError) as exc:
+                return jsonify(error=str(exc)), 400
+
         opened_files = []
         try:
-            dataset_paths = approved_paths
             files = []
-            for path in dataset_paths:
+            for path in approved_paths:
                 handle = path.open("rb")
                 opened_files.append(handle)
                 files.append(("photos", (path.name, handle, "image/jpeg")))
@@ -2784,6 +2837,7 @@ def api_train_face_profile(profile_id):
                     "description": profile.get("description", ""),
                     "steps": str(steps),
                     "resolution": str(resolution),
+                    "training_mode": training_mode,
                 },
                 files=files, timeout=(15, 90),
             )
@@ -2800,13 +2854,23 @@ def api_train_face_profile(profile_id):
             profile_id, runpod_training_state="running", runpod_training_job_id=job_id,
             runpod_training_error=None, runpod_model_ready=False,
         )
-        return jsonify(status="running", backend="runpod", job_id=job_id, message="Cloud GPU face training has started."), 202
+        method_label = "Full SD 1.5 U-Net fine-tuning" if training_mode == TRAINING_MODE_FULL_FINETUNE else "LoRA training"
+        return jsonify(
+            status="running", backend="runpod", job_id=job_id, training_mode=training_mode,
+            message=f"Cloud GPU {method_label} has started.",
+        ), 202
 
     if not torch.cuda.is_available():
         return jsonify(error=(
             "System GPU was selected, but this Python environment cannot access a CUDA GPU. "
             "Choose cloud GPU or install a compatible CUDA-enabled PyTorch build."
         )), 400
+    if training_mode == TRAINING_MODE_FULL_FINETUNE:
+        try:
+            local_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            validate_training_vram(training_mode, local_vram_gb)
+        except (RuntimeError, ValueError) as exc:
+            return jsonify(error=str(exc)), 400
 
     job_id = uuid.uuid4().hex
     update_profile(
@@ -2814,12 +2878,18 @@ def api_train_face_profile(profile_id):
         local_training_error=None, local_model_ready=False,
     )
     with LOCAL_TRAIN_JOBS_LOCK:
-        LOCAL_TRAIN_JOBS[job_id] = {"status": "running", "profile_id": profile_id}
+        LOCAL_TRAIN_JOBS[job_id] = {
+            "status": "running", "profile_id": profile_id, "training_mode": training_mode,
+        }
     TRAINING_POOL.submit(
         _run_local_training, profile_id, steps, resolution, job_id,
-        [path.name for path in approved_paths],
+        [path.name for path in approved_paths], training_mode,
     )
-    return jsonify(status="running", backend="local", job_id=job_id, message="Local face training has started."), 202
+    method_label = "Full SD 1.5 U-Net fine-tuning" if training_mode == TRAINING_MODE_FULL_FINETUNE else "LoRA training"
+    return jsonify(
+        status="running", backend="local", job_id=job_id, training_mode=training_mode,
+        message=f"Local {method_label} has started.",
+    ), 202
 
 
 @app.get("/api/face-profiles/<profile_id>/model-versions")
